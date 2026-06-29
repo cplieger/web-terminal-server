@@ -30,7 +30,7 @@ package, not here.
 ## Local development
 
 The engine and UI are not published yet, so local builds resolve them from
-sibling working-tree checkouts (`../vterm` and `../web-terminal-ui`).
+sibling working-tree checkouts (`../web-terminal-engine` and `../web-terminal-ui`).
 
 ```sh
 go build ./...          # server only (needs the go.work below)
@@ -46,11 +46,12 @@ resolves the unpublished engine:
 ```
 go 1.26.4
 use .
-replace github.com/cplieger/web-terminal-engine => ../vterm
+replace github.com/cplieger/web-terminal-engine => ../web-terminal-engine
 ```
 
-`go.work` is gitignored (local-dev only). The `replace` reads `../vterm/go.mod`
-directly so Go doesn't try to fetch the placeholder version pinned in `go.mod`.
+`go.work` is gitignored (local-dev only). The `replace` reads
+`../web-terminal-engine/go.mod` directly so Go doesn't try to fetch the
+placeholder version pinned in `go.mod`.
 
 > **Pre-publish note.** Until the engine and UI packages are published, the
 > committed `go.mod` pins placeholder versions and `go.sum` lacks the engine

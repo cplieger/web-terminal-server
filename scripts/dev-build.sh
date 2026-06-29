@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Local dev build of web-terminal-server against the LOCAL working-tree engine
-# (../vterm) and UI (../web-terminal-ui), before either package is published.
+# (../web-terminal-engine) and UI (../web-terminal-ui), before either package is published.
 #
 # It overlays both TS packages into a build node_modules so tsgo can resolve
 # the bare specifiers, compiles each to static/vendor/ (tsgo preserves bare +
@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ENGINE_DIR="${ENGINE_DIR:-../vterm}"
+ENGINE_DIR="${ENGINE_DIR:-../web-terminal-engine}"
 UI_DIR="${UI_DIR:-../web-terminal-ui}"
 NM="build/node_modules/@cplieger" # overlay root (gitignored)
 
