@@ -116,34 +116,11 @@ func main() {
 
 	var ready atomic.Bool
 
-	mux := http.NewServeMux()
-	// Mount only the WebSocket endpoint (not the engine's /debug/* routes,
-	// which dump raw PTY output and screen state — inappropriate to expose on
-	// a network service). The UI connects here by default (wsPath "/ws").
-	mux.Handle("/ws", term)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if !ready.Load() {
-			http.Error(w, "starting up or shutting down", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("ok\n"))
-	})
-
-	sub, err := fs.Sub(staticFS, "static")
+	handler, err := newHandler(&cfg, term, &ready)
 	if err != nil {
 		slog.Error("static assets unavailable", "error", err)
 		os.Exit(1)
 	}
-	mux.Handle("/", http.FileServer(http.FS(sub)))
-
-	// Middleware, outermost first: access log -> basic auth (if configured)
-	// -> cross-origin protection -> routes.
-	handler := http.NewCrossOriginProtection().Handler(mux)
-	if cfg.password != "" {
-		handler = basicAuth(handler, cfg.username, cfg.password)
-	}
-	handler = accessLog(handler)
 
 	srv := &http.Server{
 		Addr:              cfg.addr,
@@ -183,6 +160,43 @@ func main() {
 		slog.Warn("server shutdown returned error", "error", err)
 	}
 	term.Shutdown()
+}
+
+// newHandler assembles the HTTP handler: the route mux (WebSocket, health,
+// static files) wrapped in the middleware chain. Middleware, outermost first:
+// access log -> basic auth (if configured) -> cross-origin protection ->
+// routes. The terminal handler is passed in (rather than constructed here) so
+// tests can exercise the routing and middleware without a real PTY. ready
+// gates /healthz so load balancers see the server as unavailable during
+// startup and graceful shutdown. It returns an error only if the embedded
+// static assets can't be opened.
+func newHandler(cfg *config, term http.Handler, ready *atomic.Bool) (http.Handler, error) {
+	mux := http.NewServeMux()
+	// Mount only the WebSocket endpoint (not the engine's /debug/* routes,
+	// which dump raw PTY output and screen state — inappropriate to expose on
+	// a network service). The UI connects here by default (wsPath "/ws").
+	mux.Handle("/ws", term)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if !ready.Load() {
+			http.Error(w, "starting up or shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+	})
+
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("/", http.FileServer(http.FS(sub)))
+
+	handler := http.NewCrossOriginProtection().Handler(mux)
+	if cfg.password != "" {
+		handler = basicAuth(handler, cfg.username, cfg.password)
+	}
+	handler = accessLog(handler)
+	return handler, nil
 }
 
 // warnIfExposed logs a prominent warning when the server is reachable beyond
