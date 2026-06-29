@@ -14,6 +14,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -50,45 +51,68 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+// config holds the resolved server settings parsed from the WT_* environment.
+type config struct {
+	addr       string
+	workDir    string
+	username   string
+	password   string
+	command    []string
+	scrollback int
+}
 
-	addr := envOr("WT_ADDR", defaultAddr)
-	command := strings.Fields(envOr("WT_CMD", defaultCmd))
-	if len(command) == 0 {
-		slog.Error("WT_CMD is empty")
-		os.Exit(1)
+// loadConfig parses and validates the WT_* environment into a config. It
+// returns an error rather than exiting so the caller owns the exit path (no
+// os.Exit while a defer is pending).
+func loadConfig() (config, error) {
+	c := config{
+		addr:       envOr("WT_ADDR", defaultAddr),
+		command:    strings.Fields(envOr("WT_CMD", defaultCmd)),
+		workDir:    os.Getenv("WT_WORKDIR"),
+		scrollback: defaultScrollback,
+		username:   envOr("WT_USERNAME", "admin"),
+		password:   os.Getenv("WT_PASSWORD"),
 	}
-	workDir := os.Getenv("WT_WORKDIR")
-	scrollback := defaultScrollback
+	if len(c.command) == 0 {
+		return config{}, errors.New("WT_CMD is empty")
+	}
 	if v := os.Getenv("WT_SCROLLBACK"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			slog.Error("WT_SCROLLBACK must be a non-negative integer", "value", v)
-			os.Exit(1)
+			return config{}, fmt.Errorf("WT_SCROLLBACK must be a non-negative integer, got %q", v)
 		}
-		scrollback = n
+		c.scrollback = n
 	}
-	username := envOr("WT_USERNAME", "admin")
-	password := os.Getenv("WT_PASSWORD")
-
-	if workDir != "" {
-		if _, err := os.Stat(workDir); err != nil {
-			slog.Error("WT_WORKDIR missing", "work_dir", workDir, "error", err)
-			os.Exit(1)
+	if c.workDir != "" {
+		// WT_WORKDIR is operator-supplied configuration (the directory the
+		// operator wants the shell to run in), not untrusted request input, so
+		// an arbitrary absolute path is expected and correct here.
+		if _, err := os.Stat(c.workDir); err != nil { // #nosec G703 -- operator-controlled config path, not user input
+			return config{}, fmt.Errorf("WT_WORKDIR missing: %w", err)
 		}
 	}
+	return c, nil
+}
 
-	warnIfExposed(addr, password)
+func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	cfg, err := loadConfig()
+	if err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
+
+	warnIfExposed(cfg.addr, cfg.password)
 
 	opts := []terminal.Option{
-		terminal.WithScrollbackCapacity(scrollback),
+		terminal.WithScrollbackCapacity(cfg.scrollback),
 		terminal.WithLogger(slog.Default()),
 	}
-	if workDir != "" {
-		opts = append(opts, terminal.WithWorkDir(workDir))
+	if cfg.workDir != "" {
+		opts = append(opts, terminal.WithWorkDir(cfg.workDir))
 	}
-	term := terminal.NewHandler(command, opts...)
+	term := terminal.NewHandler(cfg.command, opts...)
 
 	var ready atomic.Bool
 
@@ -115,14 +139,14 @@ func main() {
 
 	// Middleware, outermost first: access log -> basic auth (if configured)
 	// -> cross-origin protection -> routes.
-	var handler http.Handler = http.NewCrossOriginProtection().Handler(mux)
-	if password != "" {
-		handler = basicAuth(handler, username, password)
+	handler := http.NewCrossOriginProtection().Handler(mux)
+	if cfg.password != "" {
+		handler = basicAuth(handler, cfg.username, cfg.password)
 	}
 	handler = accessLog(handler)
 
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              cfg.addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -131,18 +155,18 @@ func main() {
 	defer stop()
 
 	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", addr)
+	ln, err := lc.Listen(ctx, "tcp", cfg.addr)
 	if err != nil {
-		slog.Error("listen failed", "addr", addr, "error", err)
+		slog.Error("listen failed", "addr", cfg.addr, "error", err)
 		stop()
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic // stop() called explicitly above; defer is a no-op safety net
 	}
 
 	go func() {
 		slog.Info("web-terminal-server listening",
-			"addr", addr, "cmd", strings.Join(command, " "),
-			"work_dir", workDir, "scrollback", scrollback,
-			"auth", password != "")
+			"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
+			"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
+			"auth", cfg.password != "")
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server exited", "error", err)
 			stop()
