@@ -1,5 +1,15 @@
 # web-terminal-server
 
+[![Image Size](https://ghcr-badge.egpl.dev/cplieger/web-terminal-server/size)](https://github.com/cplieger/web-terminal-server/pkgs/container/web-terminal-server)
+![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
+![base: Debian](https://img.shields.io/badge/base-Debian-A81D33?logo=debian)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/web-terminal-server)](https://goreportcard.com/report/github.com/cplieger/web-terminal-server)
+[![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/web-terminal-server/badges/coverage.json)](https://github.com/cplieger/web-terminal-server/actions/workflows/coverage.yml)
+[![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/web-terminal-server/badges/mutation.json)](https://github.com/cplieger/web-terminal-server/issues?q=label%3Agremlins-tracker)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13432/badge)](https://www.bestpractices.dev/projects/13432)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/web-terminal-server/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/web-terminal-server)
+[![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/web-terminal-server/releases)
+
 A small, generic web terminal: it runs a configured command in a PTY and serves
 the [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui)
 front end over HTTP + WebSocket, built on the
@@ -75,6 +85,20 @@ github.com/cplieger/web-terminal-engine   (Go engine: PTY + VT screen + wire pro
 The server is deliberately thin: env parsing, `terminal.NewHandler`, static
 file serving, optional Basic auth, and graceful shutdown. All terminal
 behavior lives in the engine and UI packages.
+
+## Related projects
+
+The web-terminal family:
+
+- [`web-terminal-engine`](https://github.com/cplieger/web-terminal-engine) — the
+  Go session engine + TypeScript browser renderer this server embeds.
+- [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui) —
+  the touch-first browser UI this server ships to the client.
+
+Apps built on the same engine:
+
+- [`vibekit`](https://github.com/cplieger/vibekit)
+- [`vibecli`](https://github.com/cplieger/vibecli)
 
 ## License
 
