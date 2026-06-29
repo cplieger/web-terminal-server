@@ -34,28 +34,28 @@ COPY . ./
 # Fetch the engine + UI TypeScript from the npm registry (both publish TS
 # source only, like @cplieger/reactive). Extracted side by side under one
 # node_modules/@cplieger so tsgo's bundler resolution finds the engine when
-# compiling the UI's `@cplieger/web-terminal` import.
-# renovate: datasource=npm depName=@cplieger/web-terminal
-ARG CPLIEGER_WEB_TERMINAL_VERSION=0.1.0
+# compiling the UI's `@cplieger/web-terminal-engine` import.
+# renovate: datasource=npm depName=@cplieger/web-terminal-engine
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=0.1.0
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
 ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=0.1.0
-RUN mkdir -p node_modules/@cplieger/web-terminal node_modules/@cplieger/web-terminal-ui && \
-    curl -fsSL "https://registry.npmjs.org/@cplieger/web-terminal/-/web-terminal-${CPLIEGER_WEB_TERMINAL_VERSION}.tgz" \
-      | tar -xz -C node_modules/@cplieger/web-terminal --strip-components=1 && \
+RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
+    curl -fsSL "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" \
+      | tar -xz -C node_modules/@cplieger/web-terminal-engine --strip-components=1 && \
     curl -fsSL "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" \
       | tar -xz -C node_modules/@cplieger/web-terminal-ui --strip-components=1
 
 # Compile both packages to static/vendor/. tsgo is a compiler, not a bundler:
-# it preserves the UI's bare `@cplieger/web-terminal` import and its relative
+# it preserves the UI's bare `@cplieger/web-terminal-engine` import and its relative
 # `./*.js` imports, which the served importmap and vendored dirs resolve at
 # runtime. The committed static/index.html supplies the scaffold + importmap +
 # the inline mount() call, so no app entry needs compiling.
 RUN /tmp/package/lib/tsgo \
         --module ESNext --target ESNext --moduleResolution bundler \
-        --outDir static/vendor/cplieger-web-terminal \
-        --rootDir node_modules/@cplieger/web-terminal/src \
+        --outDir static/vendor/cplieger-web-terminal-engine \
+        --rootDir node_modules/@cplieger/web-terminal-engine/src \
         --skipLibCheck --strict \
-        node_modules/@cplieger/web-terminal/src/*.ts && \
+        node_modules/@cplieger/web-terminal-engine/src/*.ts && \
     /tmp/package/lib/tsgo \
         --module ESNext --target ESNext --moduleResolution bundler \
         --outDir static/vendor/cplieger-web-terminal-ui \

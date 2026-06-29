@@ -24,11 +24,11 @@ fi
 
 echo "[1/5] overlay engine + UI TS into $NM"
 rm -rf build static/vendor
-mkdir -p "$NM/web-terminal/src" "$NM/web-terminal-ui/src"
-cp "$ENGINE_DIR/web/package.json" "$NM/web-terminal/package.json"
+mkdir -p "$NM/web-terminal-engine/src" "$NM/web-terminal-ui/src"
+cp "$ENGINE_DIR/web/package.json" "$NM/web-terminal-engine/package.json"
 for f in "$ENGINE_DIR"/web/src/*.ts; do
   case "$f" in *.test.ts | *fuzz* | *fc-strict-setup*) continue ;; esac
-  cp "$f" "$NM/web-terminal/src/"
+  cp "$f" "$NM/web-terminal-engine/src/"
 done
 cp "$UI_DIR/package.json" "$NM/web-terminal-ui/package.json"
 for f in "$UI_DIR"/src/*.ts; do
@@ -36,15 +36,15 @@ for f in "$UI_DIR"/src/*.ts; do
   cp "$f" "$NM/web-terminal-ui/src/"
 done
 
-echo "[2/5] compile engine -> static/vendor/cplieger-web-terminal"
+echo "[2/5] compile engine -> static/vendor/cplieger-web-terminal-engine"
 tsgo --module ESNext --target ESNext --moduleResolution bundler \
-  --outDir static/vendor/cplieger-web-terminal \
-  --rootDir "$NM/web-terminal/src" --skipLibCheck --strict \
-  "$NM/web-terminal/src"/*.ts
+  --outDir static/vendor/cplieger-web-terminal-engine \
+  --rootDir "$NM/web-terminal-engine/src" --skipLibCheck --strict \
+  "$NM/web-terminal-engine/src"/*.ts
 
 echo "[3/5] compile UI -> static/vendor/cplieger-web-terminal-ui"
 # The UI files sit in the overlay node_modules, so tsgo's bundler resolution
-# walks up and finds the sibling @cplieger/web-terminal package for the bare
+# walks up and finds the sibling @cplieger/web-terminal-engine package for the bare
 # import; the emitted JS keeps that specifier for the runtime importmap.
 tsgo --module ESNext --target ESNext --moduleResolution bundler \
   --outDir static/vendor/cplieger-web-terminal-ui \

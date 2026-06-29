@@ -3,11 +3,11 @@
 A small, generic web terminal: it runs a configured command in a PTY and serves
 the [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui)
 front end over HTTP + WebSocket, built on the
-[`github.com/cplieger/web-terminal`](https://github.com/cplieger/web-terminal)
+[`github.com/cplieger/web-terminal-engine`](https://github.com/cplieger/web-terminal-engine)
 engine. A native-touch terminal in the browser for any command — phone and
 desktop alike.
 
-Published as a container image: `ghcr.io/cplieger/web-terminal`.
+Published as a container image: `ghcr.io/cplieger/web-terminal-server`.
 
 ## ⚠️ Security: this is a remote shell
 
@@ -40,7 +40,7 @@ and a scoped work directory as your threat model requires.
 docker run --rm -p 127.0.0.1:7681:7681 \
   -e WT_PASSWORD=changeme \
   -v "$PWD":/work -e WT_WORKDIR=/work \
-  ghcr.io/cplieger/web-terminal
+  ghcr.io/cplieger/web-terminal-server
 ```
 
 Open <http://127.0.0.1:7681>. The example binds the published port to loopback
@@ -64,11 +64,11 @@ Endpoints: `/` (UI), `/ws` (terminal WebSocket), `/healthz` (readiness).
 ## How it fits together
 
 ```
-github.com/cplieger/web-terminal   (Go engine: PTY + VT screen + wire protocol)
+github.com/cplieger/web-terminal-engine   (Go engine: PTY + VT screen + wire protocol)
         │
         ├── terminal.Handler ──────────────►  this server (main.go)
         │
-@cplieger/web-terminal  +  @cplieger/web-terminal-ui   (TS engine + UI)
+@cplieger/web-terminal-engine  +  @cplieger/web-terminal-ui   (TS engine + UI)
         └── compiled to static/vendor/ at image build, served to the browser
 ```
 

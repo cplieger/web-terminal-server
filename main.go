@@ -1,6 +1,6 @@
 // Command web-terminal-server is a thin, generic web terminal: it runs a
 // configured command in a PTY and serves the @cplieger/web-terminal-ui front
-// end over HTTP + WebSocket, using the github.com/cplieger/web-terminal engine.
+// end over HTTP + WebSocket, using the github.com/cplieger/web-terminal-engine engine.
 //
 // SECURITY: this is a remote shell. Anyone who can reach the listen address
 // and pass auth (if any) gets an interactive process running WT_CMD with this
@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/web-terminal/terminal"
+	"github.com/cplieger/web-terminal-engine/terminal"
 )
 
 // staticFS holds the bundled front end (the @cplieger/web-terminal-ui scaffold

@@ -1,7 +1,7 @@
 # Contributing to web-terminal-server
 
 `web-terminal-server` is a thin generic server that mounts the
-[`github.com/cplieger/web-terminal`](https://github.com/cplieger/web-terminal)
+[`github.com/cplieger/web-terminal-engine`](https://github.com/cplieger/web-terminal-engine)
 engine and serves the
 [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui) front
 end. Org-wide defaults are inherited from
@@ -46,7 +46,7 @@ resolves the unpublished engine:
 ```
 go 1.26.4
 use .
-replace github.com/cplieger/web-terminal => ../vterm
+replace github.com/cplieger/web-terminal-engine => ../vterm
 ```
 
 `go.work` is gitignored (local-dev only). The `replace` reads `../vterm/go.mod`
