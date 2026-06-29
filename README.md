@@ -50,14 +50,14 @@ and sets a password; adjust for your environment.
 
 All configuration is via environment variables:
 
-| Variable        | Default (binary / image)        | Purpose                                                        |
-| --------------- | ------------------------------- | -------------------------------------------------------------- |
-| `WT_ADDR`       | `127.0.0.1:7681` / `:7681`      | Listen address. The binary defaults to loopback; the image must listen on all interfaces. |
-| `WT_CMD`        | `/bin/bash`                     | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). |
-| `WT_WORKDIR`    | _(process default)_             | Working directory for the command. Must exist if set.          |
-| `WT_SCROLLBACK` | `5000`                          | Lines of scrollback the server retains for reconnect replay.   |
-| `WT_USERNAME`   | `admin`                         | Basic-auth username (only used when `WT_PASSWORD` is set).      |
-| `WT_PASSWORD`   | _(unset → no auth)_             | Basic-auth password. When set, every route (including `/ws`) requires it. |
+| Variable | Default (binary / image) | Purpose |
+| --- | --- | --- |
+| `WT_ADDR` | `127.0.0.1:7681` / `:7681` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. |
+| `WT_CMD` | `/bin/bash` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). |
+| `WT_WORKDIR` | _(process default)_ | Working directory for the command. Must exist if set. |
+| `WT_SCROLLBACK` | `5000` | Lines of scrollback the server retains for reconnect replay. |
+| `WT_USERNAME` | `admin` | Basic-auth username (only used when `WT_PASSWORD` is set). |
+| `WT_PASSWORD` | _(unset → no auth)_ | Basic-auth password. When set, every route (including `/ws`) requires it. |
 
 Endpoints: `/` (UI), `/ws` (terminal WebSocket), `/healthz` (readiness).
 
