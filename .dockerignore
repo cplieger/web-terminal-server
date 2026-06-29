@@ -1,0 +1,16 @@
+# Keep the build context minimal and deterministic. The Dockerfile regenerates
+# all browser assets from the published packages, so local/generated copies and
+# the local-dev workspace file must not leak into the image build.
+.git
+.github
+.gitignore
+.dockerignore
+*.md
+build/
+node_modules/
+web-terminal-server-bin
+go.work
+go.work.sum
+static/vendor/
+static/style.css
+scripts/

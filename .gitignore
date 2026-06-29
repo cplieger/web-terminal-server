@@ -1,0 +1,20 @@
+# Local dev build artifacts
+web-terminal-server-bin
+/web-terminal-server
+build/
+node_modules/
+
+# Generated browser assets (the dev-build script / Dockerfile produce these;
+# only static/index.html is committed so go:embed has content).
+static/vendor/
+static/style.css
+
+# Local-dev workspace file (resolves the unpublished engine from ../vterm)
+go.work
+go.work.sum
+
+# Kiro skill artifacts (code-review, refactor, steering-maintenance, judgement)
+**/.code-review/
+**/.judgement/
+**/.refactor/
+**/.steering-maintenance/
