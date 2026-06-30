@@ -10,6 +10,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -18,10 +20,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -89,8 +93,15 @@ func loadConfig() (config, error) {
 		// WT_WORKDIR is operator-supplied configuration (the directory the
 		// operator wants the shell to run in), not untrusted request input, so
 		// an arbitrary absolute path is expected and correct here.
-		if _, err := os.Stat(c.workDir); err != nil { // #nosec G703 -- operator-controlled config path, not user input
+		fi, err := os.Stat(c.workDir) // #nosec G703 -- operator-controlled config path, not user input
+		if err != nil {
 			return config{}, fmt.Errorf("WT_WORKDIR missing: %w", err)
+		}
+		// Reject a non-directory up front: the engine sets cmd.Dir to this
+		// path, so a regular file would pass startup and only fail when the
+		// PTY child can't spawn on the first client connect.
+		if !fi.IsDir() {
+			return config{}, fmt.Errorf("WT_WORKDIR is not a directory: %q", c.workDir)
 		}
 	}
 	return c, nil
@@ -168,6 +179,7 @@ func main() {
 		slog.Warn("server shutdown returned error", "error", err)
 	}
 	term.Shutdown()
+	slog.Info("web-terminal-server stopped")
 }
 
 // newHandler assembles the HTTP handler: the route mux (WebSocket, health,
@@ -198,7 +210,11 @@ func newHandler(cfg *config, term http.Handler, ready *atomic.Bool) (http.Handle
 	if err != nil {
 		return nil, err
 	}
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	staticSrv, err := staticHandler(sub)
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("/", staticSrv)
 
 	handler := http.NewCrossOriginProtection().Handler(mux)
 	if cfg.password != "" {
@@ -207,6 +223,173 @@ func newHandler(cfg *config, term http.Handler, ready *atomic.Bool) (http.Handle
 	handler = securityHeaders(handler)
 	handler = accessLog(handler)
 	return handler, nil
+}
+
+// gzAsset is a precomputed gzip representation of an embedded text asset.
+type gzAsset struct {
+	contentType string
+	body        []byte
+}
+
+// staticHandler serves the embedded front end with a per-file content-hash
+// ETag, Cache-Control: no-cache, and precomputed gzip bodies for compressible
+// assets. embed.FS reports a zero ModTime, so http.FileServer emits neither
+// Last-Modified nor ETag on its own, leaving the browser no way to
+// revalidate: every full page load (refresh, reconnect-by-reload, iOS Safari
+// resuming from background) re-downloads the whole vendored JS bundle, CSS,
+// and terminal font. The embedded bytes are fixed at build time, so hashing
+// each file once at startup yields a stable ETag that lets http.ServeContent
+// answer If-None-Match with 304 Not Modified. "no-cache" forces revalidation
+// on every load rather than relying on a TTL: the vendored asset paths are
+// stable (not content-hashed), so a long max-age would serve stale JS after
+// an engine/UI version bump.
+//
+// The vendored JS+CSS is large and otherwise ships uncompressed over plain
+// HTTP/1.1 in the WT_PASSWORD-only (no reverse proxy) deployment the README
+// supports, lengthening time-to-interactive on the touch-first-over-cellular
+// target. Each asset is therefore gzip-compressed once at startup (mirroring
+// the ETag precompute) and served with Content-Encoding: gzip + Vary:
+// Accept-Encoding when the client offers gzip on a non-Range GET/HEAD.
+// Compression is gzip-only to stay on the standard library (no brotli
+// dependency); front with a reverse proxy to layer brotli/HTTP-2 on top.
+func staticHandler(sub fs.FS) (http.Handler, error) {
+	etags, gzipped, err := buildAssetMaps(sub)
+	if err != nil {
+		return nil, err
+	}
+	fileServer := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if name == "" {
+			name = "index.html"
+		}
+		etag, known := etags[name]
+		if known {
+			h := w.Header()
+			h.Set("ETag", etag)
+			h.Set("Cache-Control", "no-cache")
+			// Asset bodies vary by Accept-Encoding (some carry a gzip
+			// representation), so shared caches must key on it on every path.
+			h.Add("Vary", "Accept-Encoding")
+		}
+		if gz, ok := gzipped[name]; ok && serveGzip(w, r, etag, gz) {
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	}), nil
+}
+
+// buildAssetMaps walks the embedded static tree once, computing a content-hash
+// ETag for every file and a gzip body for each asset that compresses smaller.
+func buildAssetMaps(sub fs.FS) (etags map[string]string, gzipped map[string]gzAsset, err error) {
+	etags = make(map[string]string)
+	gzipped = make(map[string]gzAsset)
+	err = fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, readErr := fs.ReadFile(sub, p)
+		if readErr != nil {
+			return readErr
+		}
+		sum := sha256.Sum256(b)
+		etags[p] = fmt.Sprintf(`"%x"`, sum[:])
+		if gz, ok := gzipAsset(b, p); ok {
+			gzipped[p] = gz
+		}
+		return nil
+	})
+	return etags, gzipped, err
+}
+
+// gzipAsset returns the gzip representation of b, or ok=false when gzip does
+// not shrink it: already-compressed assets (woff2, which embeds Brotli) and
+// small files whose gzip framing outweighs the savings. Plain otf/ttf outline
+// fonts are NOT pre-compressed and do shrink (~30%), so the bundled .otf fonts
+// ARE stored and served gzipped.
+func gzipAsset(b []byte, name string) (gzAsset, bool) {
+	var buf bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression) // level is constant-valid
+	if _, err := zw.Write(b); err != nil {
+		return gzAsset{}, false
+	}
+	if err := zw.Close(); err != nil {
+		return gzAsset{}, false
+	}
+	if buf.Len() >= len(b) {
+		return gzAsset{}, false
+	}
+	ct := mime.TypeByExtension(path.Ext(name))
+	if ct == "" {
+		ct = http.DetectContentType(b)
+	}
+	return gzAsset{contentType: ct, body: bytes.Clone(buf.Bytes())}, true
+}
+
+// serveGzip writes the precompressed representation of an asset and reports
+// true when it handled the response. It returns false — leaving the caller to
+// fall back to the identity http.FileServer — for Range requests, non-GET/HEAD
+// methods, or clients that do not offer gzip.
+func serveGzip(w http.ResponseWriter, r *http.Request, etag string, gz gzAsset) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.Header.Get("Range") != "" || !acceptsGzip(r) {
+		return false
+	}
+	h := w.Header()
+	// A gzip body is a distinct representation, so it carries its own ETag;
+	// Vary: Accept-Encoding (set by the caller) keeps caches from crossing it
+	// with the identity body.
+	gzEtag := `"` + strings.Trim(etag, `"`) + `-gz"`
+	h.Set("ETag", gzEtag)
+	if ifNoneMatchContains(r.Header.Get("If-None-Match"), gzEtag) {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	h.Set("Content-Encoding", "gzip")
+	h.Set("Content-Type", gz.contentType)
+	h.Set("Content-Length", strconv.Itoa(len(gz.body)))
+	if r.Method == http.MethodHead {
+		return true
+	}
+	_, _ = w.Write(gz.body)
+	return true
+}
+
+// acceptsGzip reports whether the request's Accept-Encoding header offers gzip
+// with a non-zero quality value.
+func acceptsGzip(r *http.Request) bool {
+	for part := range strings.SplitSeq(r.Header.Get("Accept-Encoding"), ",") {
+		token, qual := part, "1"
+		if i := strings.IndexByte(part, ';'); i >= 0 {
+			token = part[:i]
+			if j := strings.Index(part[i:], "q="); j >= 0 {
+				qual = part[i+j+2:]
+			}
+		}
+		if !strings.EqualFold(strings.TrimSpace(token), "gzip") {
+			continue
+		}
+		q, err := strconv.ParseFloat(strings.TrimSpace(qual), 64)
+		return err != nil || q != 0
+	}
+	return false
+}
+
+// ifNoneMatchContains reports whether an If-None-Match header value matches the
+// given ETag (or the "*" wildcard).
+func ifNoneMatchContains(header, etag string) bool {
+	for tok := range strings.SplitSeq(header, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "*" || tok == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // warnIfExposed logs a prominent warning when the server is reachable beyond
@@ -296,7 +479,14 @@ func accessLog(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		slog.Info("request",
+		// The Docker HEALTHCHECK polls /healthz every 30s; logging each probe
+		// at Info would dominate the Loki log stream. Log /healthz at Debug so
+		// routine probes stay quiet while all other traffic stays at Info.
+		level := slog.LevelInfo
+		if r.URL.Path == "/healthz" {
+			level = slog.LevelDebug
+		}
+		slog.Log(context.Background(), level, "request",
 			"method", r.Method, "path", r.URL.Path, "status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr)
 	})

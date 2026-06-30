@@ -58,22 +58,33 @@ while IFS= read -r line || [ -n "$line" ]; do
   cat "$UI_DIR/css/${line}" >>static/style.css
 done <"$UI_DIR/css/MANIFEST"
 
-FONT_CACHE="${HOME}/.cache/web-terminal-fonts"
 FONT_VER="$(sed -n 's/^ARG NERDFONT_VERSION=//p' Dockerfile)"
 [ -n "$FONT_VER" ] || {
   echo "error: could not read NERDFONT_VERSION from Dockerfile" >&2
   exit 1
 }
+# Cache per font version so a NERDFONT_VERSION bump forces a fresh
+# download instead of copying a stale cached .otf into the build.
+FONT_CACHE="${HOME}/.cache/web-terminal-fonts/${FONT_VER}"
+fonts=(
+  MonaspiceNeNerdFontMono-Regular.otf
+  MonaspiceNeNerdFontMono-Bold.otf
+  MonaspiceNeNerdFontMono-Italic.otf
+  MonaspiceNeNerdFontMono-BoldItalic.otf
+)
 mkdir -p "$FONT_CACHE" static/vendor/fonts
-if [ ! -f "$FONT_CACHE/MonaspiceNeNerdFontMono-Regular.otf" ]; then
+# Re-download if ANY of the four .otf files is missing so a partial cache left
+# by an interrupted fetch self-heals instead of embedding an incomplete font.
+need_fonts=
+for font in "${fonts[@]}"; do
+  [ -f "$FONT_CACHE/$font" ] || need_fonts=1
+done
+if [ -n "$need_fonts" ]; then
   echo "  downloading Monaspace ${FONT_VER}..."
   curl -fsSL --connect-timeout 10 --max-time 60 --retry 2 \
     "https://github.com/ryanoasis/nerd-fonts/releases/download/${FONT_VER}/Monaspace.tar.xz" \
-    | tar -xJ -C "$FONT_CACHE" \
-      MonaspiceNeNerdFontMono-Regular.otf \
-      MonaspiceNeNerdFontMono-Bold.otf \
-      MonaspiceNeNerdFontMono-Italic.otf \
-      MonaspiceNeNerdFontMono-BoldItalic.otf || echo "  WARN: font fetch failed (display will use a fallback font)"
+    | tar -xJ -C "$FONT_CACHE" "${fonts[@]}" \
+    || echo "  WARN: font fetch failed (display will use a fallback font)"
 fi
 cp "$FONT_CACHE"/MonaspiceNeNerdFontMono-*.otf static/vendor/fonts/ 2>/dev/null || true
 

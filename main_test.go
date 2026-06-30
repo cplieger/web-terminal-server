@@ -3,11 +3,16 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -94,6 +99,22 @@ func TestLoadConfigWorkDirAccepted(t *testing.T) {
 	}
 	if cfg.workDir != dir {
 		t.Errorf("workDir = %q, want %q", cfg.workDir, dir)
+	}
+}
+
+func TestLoadConfigWorkDirNotDirectory(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "notadir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	setWTEnv(t, map[string]string{"WT_WORKDIR": file})
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatal("loadConfig() = nil error, want error when WT_WORKDIR is a regular file")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("loadConfig() error = %q, want it to mention %q", err, "not a directory")
 	}
 }
 
@@ -388,6 +409,39 @@ func TestRouteStaticServesIndex(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerETagAndRevalidation(t *testing.T) {
+	var ready atomic.Bool
+	ready.Store(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", rec.Code)
+	}
+	etag := rec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("static response has no ETag; the browser cannot revalidate the embedded bundle and re-downloads it every load")
+	}
+	if !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) {
+		t.Errorf("ETag = %q, want a quoted opaque validator", etag)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache")
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2.Header.Set("If-None-Match", etag)
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("conditional GET / with matching If-None-Match = %d, want 304", rec2.Code)
+	}
+	if rec2.Body.Len() != 0 {
+		t.Errorf("304 response body = %q, want empty", rec2.Body.String())
+	}
+}
+
 func TestHandlerAuthGatesAllRoutes(t *testing.T) {
 	var ready atomic.Bool
 	ready.Store(true)
@@ -411,4 +465,270 @@ func TestHandlerAuthGatesAllRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("authenticated /healthz = %d, want 200", rec.Code)
 	}
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"plain gzip", "gzip", true},
+		{"gzip with q=1", "gzip;q=1.0", true},
+		{"gzip explicitly disabled q=0", "gzip;q=0", false},
+		{"gzip disabled q=0.0", "gzip;q=0.0", false},
+		{"gzip with fractional q", "gzip;q=0.5", true},
+		{"gzip with space before params", "gzip ; q=0", false},
+		{"second token offers gzip", "deflate, gzip", true},
+		{"second token gzip disabled", "deflate, gzip;q=0", false},
+		{"no gzip offered", "br, deflate", false},
+		{"identity only", "identity", false},
+		{"empty header", "", false},
+		{"wildcard not treated as gzip", "*", false},
+		{"malformed q is permissive", "gzip;q=bogus", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.header != "" {
+				req.Header.Set("Accept-Encoding", tc.header)
+			}
+			if got := acceptsGzip(req); got != tc.want {
+				t.Errorf("acceptsGzip(Accept-Encoding=%q) = %v, want %v", tc.header, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIfNoneMatchContains(t *testing.T) {
+	const etag = `"abc-gz"`
+	cases := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"empty header", "", false},
+		{"exact match", `"abc-gz"`, true},
+		{"wildcard", "*", true},
+		{"present in comma list", `"x", "abc-gz", "y"`, true},
+		{"absent from list", `"x", "y"`, false},
+		{"whitespace trimmed around match", `  "abc-gz"  `, true},
+		{"identity etag does not match gz etag", `"abc"`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ifNoneMatchContains(tc.header, etag); got != tc.want {
+				t.Errorf("ifNoneMatchContains(%q, %q) = %v, want %v", tc.header, etag, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGzipAsset(t *testing.T) {
+	t.Run("compressible asset round-trips and carries extension content type", func(t *testing.T) {
+		raw := []byte(strings.Repeat("body{color:#b48eff}\n", 500))
+		gz, ok := gzipAsset(raw, "style.css")
+		if !ok {
+			t.Fatal("gzipAsset() ok = false for a highly compressible asset, want true")
+		}
+		if len(gz.body) >= len(raw) {
+			t.Errorf("gzip body len = %d, want < raw len %d", len(gz.body), len(raw))
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(gz.body))
+		if err != nil {
+			t.Fatalf("gzip.NewReader: %v", err)
+		}
+		got, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("read gzip body: %v", err)
+		}
+		if !bytes.Equal(got, raw) {
+			t.Error("gzip body did not round-trip to the original asset bytes")
+		}
+		if !strings.HasPrefix(gz.contentType, "text/css") {
+			t.Errorf("contentType = %q, want it to start with %q", gz.contentType, "text/css")
+		}
+	})
+
+	t.Run("incompressible tiny asset is not gzipped", func(t *testing.T) {
+		if _, ok := gzipAsset([]byte("x"), "tiny.txt"); ok {
+			t.Error("gzipAsset() ok = true for a 1-byte asset gzip cannot shrink, want false")
+		}
+	})
+}
+
+func TestServeGzip(t *testing.T) {
+	raw := []byte(strings.Repeat("hello world\n", 300))
+	gz, ok := gzipAsset(raw, "x.txt")
+	if !ok {
+		t.Fatal("setup: gzipAsset() ok = false, want true")
+	}
+	const etag = `"deadbeef"`
+	const gzEtag = `"deadbeef-gz"`
+
+	t.Run("GET offering gzip serves the compressed body", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x.txt", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		if !serveGzip(rec, req, etag, gz) {
+			t.Fatal("serveGzip() = false, want true (it should have handled the gzip response)")
+		}
+		if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+			t.Errorf("Content-Encoding = %q, want %q", got, "gzip")
+		}
+		if got := rec.Header().Get("ETag"); got != gzEtag {
+			t.Errorf("ETag = %q, want %q", got, gzEtag)
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
+		if err != nil {
+			t.Fatalf("gzip.NewReader: %v", err)
+		}
+		got, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("read gzip body: %v", err)
+		}
+		if !bytes.Equal(got, raw) {
+			t.Error("served gzip body did not decode to the original bytes")
+		}
+	})
+
+	t.Run("HEAD offering gzip sets headers but writes no body", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodHead, "/x.txt", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		if !serveGzip(rec, req, etag, gz) {
+			t.Fatal("serveGzip() = false, want true")
+		}
+		if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+			t.Errorf("Content-Encoding = %q, want %q", got, "gzip")
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("HEAD body len = %d, want 0", rec.Body.Len())
+		}
+	})
+
+	t.Run("conditional GET with matching gz ETag yields 304", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x.txt", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		req.Header.Set("If-None-Match", gzEtag)
+		if !serveGzip(rec, req, etag, gz) {
+			t.Fatal("serveGzip() = false, want true")
+		}
+		if rec.Code != http.StatusNotModified {
+			t.Errorf("status = %d, want 304", rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("304 body len = %d, want 0", rec.Body.Len())
+		}
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Errorf("304 Content-Encoding = %q, want empty", got)
+		}
+	})
+
+	t.Run("falls through (returns false) and writes nothing", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			method string
+			accept string
+			rangeH string
+		}{
+			{"non GET/HEAD method", http.MethodPost, "gzip", ""},
+			{"client does not offer gzip", http.MethodGet, "identity", ""},
+			{"gzip explicitly disabled", http.MethodGet, "gzip;q=0", ""},
+			{"range request", http.MethodGet, "gzip", "bytes=0-10"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(tc.method, "/x.txt", nil)
+				req.Header.Set("Accept-Encoding", tc.accept)
+				if tc.rangeH != "" {
+					req.Header.Set("Range", tc.rangeH)
+				}
+				if serveGzip(rec, req, etag, gz) {
+					t.Errorf("serveGzip() = true, want false (should fall back to the identity file server)")
+				}
+				if got := rec.Header().Get("Content-Encoding"); got != "" {
+					t.Errorf("Content-Encoding = %q, want empty on the fall-through path", got)
+				}
+			})
+		}
+	})
+}
+
+func TestStaticHandlerGzipNegotiation(t *testing.T) {
+	var ready atomic.Bool
+	ready.Store(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+
+	t.Run("offering gzip yields a compressed body that decodes to the identity bytes", func(t *testing.T) {
+		idRec := httptest.NewRecorder()
+		h.ServeHTTP(idRec, httptest.NewRequest(http.MethodGet, "/", nil))
+		identity := bytes.Clone(idRec.Body.Bytes())
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET / (gzip) = %d, want 200", rec.Code)
+		}
+		if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+			t.Errorf("Content-Encoding = %q, want %q", got, "gzip")
+		}
+		if got := rec.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
+			t.Errorf("Vary = %q, want it to contain %q", got, "Accept-Encoding")
+		}
+		if etag := rec.Header().Get("ETag"); !strings.HasSuffix(etag, `-gz"`) {
+			t.Errorf("gzip ETag = %q, want a distinct tag ending in -gz\"", etag)
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
+		if err != nil {
+			t.Fatalf("response body is not valid gzip: %v", err)
+		}
+		decoded, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("read gzip body: %v", err)
+		}
+		if !bytes.Equal(decoded, identity) {
+			t.Error("gzip response body did not decode to the identity (uncompressed) response bytes")
+		}
+	})
+
+	t.Run("without Accept-Encoding the identity path serves uncompressed bytes", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET / = %d, want 200", rec.Code)
+		}
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Errorf("Content-Encoding = %q, want empty on the identity path", got)
+		}
+		if etag := rec.Header().Get("ETag"); strings.HasSuffix(etag, `-gz"`) {
+			t.Errorf("identity ETag = %q, must not carry the -gz suffix", etag)
+		}
+	})
+
+	t.Run("conditional gzip GET with the gz ETag yields 304", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		h.ServeHTTP(rec, req)
+		gzEtag := rec.Header().Get("ETag")
+		if gzEtag == "" {
+			t.Fatal("first gzip GET returned no ETag")
+		}
+
+		rec2 := httptest.NewRecorder()
+		req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+		req2.Header.Set("Accept-Encoding", "gzip")
+		req2.Header.Set("If-None-Match", gzEtag)
+		h.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusNotModified {
+			t.Fatalf("conditional gzip GET with the gz ETag = %d, want 304", rec2.Code)
+		}
+		if rec2.Body.Len() != 0 {
+			t.Errorf("304 body len = %d, want 0", rec2.Body.Len())
+		}
+	})
 }
