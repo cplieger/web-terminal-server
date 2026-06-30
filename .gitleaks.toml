@@ -1,0 +1,14 @@
+# Extend gitleaks' default ruleset and allowlist one known false positive.
+#
+# The container HEALTHCHECK probes /healthz with basic auth:
+#   curl -sf -u "${WT_USERNAME:-admin}:${WT_PASSWORD:-}" http://127.0.0.1:7681/healthz
+# gitleaks' curl-auth-user rule flags the -u argument, but it is shell
+# parameter expansion (the WT_USERNAME/WT_PASSWORD env vars resolved at
+# runtime), not an embedded credential. Allowlist that exact reference.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Dockerfile healthcheck curl -u references WT_USERNAME/WT_PASSWORD env vars, not a real secret"
+regexTarget = "line"
+regexes = ['''\$\{WT_USERNAME:-admin\}:\$\{WT_PASSWORD:-\}''']
