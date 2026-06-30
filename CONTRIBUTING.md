@@ -15,8 +15,10 @@ workflows, or `LICENSE`.
 - `main.go` is the whole server: env parsing (`WT_*`), `terminal.NewHandler`,
   a `ServeMux` mounting `/ws` (the engine, via `ServeHTTP` — the engine's
   `/debug/*` routes are intentionally **not** exposed), `/healthz`, and the
-  embedded static front end at `/`. Middleware: an slog access log, optional
-  HTTP Basic auth, and `http.CrossOriginProtection`. The `statusWriter`
+  embedded static front end at `/`. Middleware (outermost first): an slog
+  access log, security headers (`X-Content-Type-Options: nosniff` + a
+  Content-Security-Policy), optional HTTP Basic auth, and
+  `http.CrossOriginProtection`. The `statusWriter`
   implements `Unwrap()` so the WebSocket hijack reaches the real
   `ResponseWriter` through the access-log wrapper.
 - The browser bundle is **not** authored here. It is the engine + UI packages
@@ -29,19 +31,26 @@ package, not here.
 
 ## Local development
 
-The engine and UI are not published yet, so local builds resolve them from
-sibling working-tree checkouts (`../web-terminal-engine` and `../web-terminal-ui`).
+The engine and UI are published, so a plain checkout builds against the
+released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine`
+(`go.sum` carries its checksums), and `scripts/dev-build.sh` and the Dockerfile
+pull the published `@cplieger/web-terminal-*` npm tarballs.
 
 ```sh
-go build ./...          # server only (needs the go.work below)
+go build ./...              # server only, against the published engine
 bash scripts/dev-build.sh   # full build: compile engine+UI -> static/vendor,
                             # bundle CSS, fetch font, embed, -> ./web-terminal-server-bin
 ./web-terminal-server-bin   # runs on 127.0.0.1:7681
 ```
 
-`scripts/dev-build.sh` creates the browser bundle from the sibling checkouts
-(override with `ENGINE_DIR=` / `UI_DIR=`). The Go build needs a `go.work` that
-resolves the unpublished engine:
+`scripts/dev-build.sh` builds the browser bundle from sibling working-tree
+checkouts (`../web-terminal-engine` and `../web-terminal-ui`; override with
+`ENGINE_DIR=` / `UI_DIR=`), so you can iterate on unreleased engine or UI
+changes before they ship.
+
+To build the **Go server** against an unreleased local engine instead of the
+pinned published one, add a `go.work` that redirects the module to your sibling
+checkout:
 
 ```
 go 1.26.4
@@ -49,17 +58,12 @@ use .
 replace github.com/cplieger/web-terminal-engine => ../web-terminal-engine
 ```
 
-`go.work` is gitignored (local-dev only). The `replace` reads
-`../web-terminal-engine/go.mod` directly so Go doesn't try to fetch the
-placeholder version pinned in `go.mod`.
-
-> **Pre-publish note.** Until the engine and UI packages are published, the
-> committed `go.mod` pins placeholder versions and `go.sum` lacks the engine
-> entry, so CI (which builds without `go.work` and from the published
-> registries) cannot go green. The engine and UI must publish first; then
-> `go.mod` is pinned to the real versions, `go mod tidy` records the engine in
-> `go.sum`, and the Dockerfile `ARG` versions are bumped (Renovate tracks the
-> `# renovate:` comments thereafter).
+`go.work` is gitignored and dockerignored (local-dev only); the `replace` reads
+`../web-terminal-engine/go.mod` directly so the build uses your working-tree
+engine instead of the version pinned in `go.mod`. Delete it to go back to the
+published engine. The Dockerfile must never see a `go.work`: it does
+`COPY . ./`, and a `replace` pointing at a path absent from the build context
+would break the in-container build, which is why `.dockerignore` excludes it.
 
 ## Conventions
 

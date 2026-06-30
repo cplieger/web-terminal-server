@@ -90,6 +90,20 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/")
 echo "$body" | grep -qiE 'term|<!doctype html|<html' || fail "/ body does not look like the UI scaffold"
 echo "[smoke] PASS  / (authenticated) = 200, serves scaffold"
 
+# 2b. The scaffold references importmap JS + CSS + font assets the build
+#     assembles into static/vendor/ and static/style.css. A scaffold-only
+#     check passes even when those 404, leaving the user on a permanent
+#     "Loading..." overlay (mount() throws on the failed module import).
+for asset in \
+  /style.css \
+  /vendor/cplieger-web-terminal-ui/index.js \
+  /vendor/cplieger-web-terminal-engine/index.js \
+  /vendor/fonts/MonaspiceNeNerdFontMono-Regular.otf; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}${asset}")
+  [ "$code" = "200" ] || fail "bundle asset ${asset} = $code, want 200 (UI bundle incomplete)"
+done
+echo "[smoke] PASS  importmap-referenced bundle assets served (CSS, engine+UI JS, font)"
+
 # 3. /ws authenticated but WITHOUT upgrade headers -> not a 200/101. The engine
 #    handler must reject a non-WebSocket request (typically 400/426), proving
 #    the handler is mounted rather than falling through to the file server.
