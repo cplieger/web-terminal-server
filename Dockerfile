@@ -7,7 +7,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV GOTOOLCHAIN=auto
 
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates curl xz-utils && rm -rf /var/lib/apt/lists/*
 
 # Go toolchain for the server binary.
@@ -110,6 +110,6 @@ ENV WT_CMD=/bin/bash
 EXPOSE 7681
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
-    CMD curl -sf http://127.0.0.1:7681/healthz || exit 1
+    CMD curl -sf -u "${WT_USERNAME:-admin}:${WT_PASSWORD:-}" http://127.0.0.1:7681/healthz || exit 1
 
 ENTRYPOINT ["/usr/local/bin/web-terminal-server"]

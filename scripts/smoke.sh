@@ -3,7 +3,10 @@
 # serves traffic — not just that it compiles (the CI `validate` gate already
 # checks build-ability). Asserts the runtime contract:
 #
-#   1. /healthz returns 200 once the container is ready (the HEALTHCHECK target)
+#   1. /healthz returns 200 once the container is ready (the HEALTHCHECK
+#      target), and the image's own shipped HEALTHCHECK probe -- run via
+#      `docker exec` -- passes under auth, proving the embedded probe sends
+#      credentials
 #   2. /          returns 200 and serves the UI scaffold (embedded static FS)
 #   3. /ws        speaks WebSocket (a plain GET without upgrade headers is
 #                 rejected, proving the engine handler is mounted)
@@ -66,7 +69,16 @@ for _ in $(seq 1 30); do
   fi
   sleep 1
 done
-[ -n "$ready" ] || { docker logs "$CONTAINER" >&2 || true; fail "/healthz never returned 200"; }
+[ -n "$ready" ] || {
+  docker logs "$CONTAINER" >&2 || true
+  fail "/healthz never returned 200"
+}
+
+echo "[smoke] verifying the shipped HEALTHCHECK passes under auth"
+hc=$(docker inspect --format '{{join .Config.Healthcheck.Test " "}}' "$IMAGE")
+docker exec "$CONTAINER" sh -c "${hc#CMD-SHELL }" \
+  || fail "shipped HEALTHCHECK probe failed under auth (does it send credentials?)"
+echo "[smoke] PASS  shipped HEALTHCHECK succeeds under auth"
 
 # 1. /healthz authenticated -> 200 (covered by the readiness loop above).
 echo "[smoke] PASS  /healthz (authenticated) = 200"
