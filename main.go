@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"errors"
@@ -42,6 +43,7 @@ const (
 	defaultAddr       = "127.0.0.1:7681"
 	defaultCmd        = "/bin/bash"
 	defaultScrollback = 5000
+	defaultUsername   = "admin"
 )
 
 func envOr(key, fallback string) string {
@@ -70,7 +72,7 @@ func loadConfig() (config, error) {
 		command:    strings.Fields(envOr("WT_CMD", defaultCmd)),
 		workDir:    os.Getenv("WT_WORKDIR"),
 		scrollback: defaultScrollback,
-		username:   envOr("WT_USERNAME", "admin"),
+		username:   envOr("WT_USERNAME", defaultUsername),
 		password:   os.Getenv("WT_PASSWORD"),
 	}
 	if len(c.command) == 0 {
@@ -126,6 +128,12 @@ func main() {
 		Addr:              cfg.addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
+		// ReadTimeout/WriteTimeout are intentionally unset: either would cap
+		// the lifetime of the hijacked /ws WebSocket stream. IdleTimeout only
+		// bounds idle keep-alive connections between requests (it does not
+		// apply to a hijacked conn), so it is safe and bounds resource use.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -164,9 +172,10 @@ func main() {
 
 // newHandler assembles the HTTP handler: the route mux (WebSocket, health,
 // static files) wrapped in the middleware chain. Middleware, outermost first:
-// access log -> basic auth (if configured) -> cross-origin protection ->
-// routes. The terminal handler is passed in (rather than constructed here) so
-// tests can exercise the routing and middleware without a real PTY. ready
+// access log -> security headers -> basic auth (if configured) ->
+// cross-origin protection -> routes. The terminal handler is passed in
+// (rather than constructed here) so tests can exercise the routing and
+// middleware without a real PTY. ready
 // gates /healthz so load balancers see the server as unavailable during
 // startup and graceful shutdown. It returns an error only if the embedded
 // static assets can't be opened.
@@ -195,6 +204,7 @@ func newHandler(cfg *config, term http.Handler, ready *atomic.Bool) (http.Handle
 	if cfg.password != "" {
 		handler = basicAuth(handler, cfg.username, cfg.password)
 	}
+	handler = securityHeaders(handler)
 	handler = accessLog(handler)
 	return handler, nil
 }
@@ -241,17 +251,40 @@ func isLoopbackHost(host string) bool {
 // The browser caches the credentials after the page load and replays them on
 // the same-origin WebSocket handshake, so the terminal works behind it.
 func basicAuth(next http.Handler, username, password string) http.Handler {
-	userHash := []byte(username)
-	passHash := []byte(password)
+	userHash := sha256.Sum256([]byte(username))
+	passHash := sha256.Sum256([]byte(password))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
-		userOK := subtle.ConstantTimeCompare([]byte(u), userHash) == 1
-		passOK := subtle.ConstantTimeCompare([]byte(p), passHash) == 1
+		gotUser := sha256.Sum256([]byte(u))
+		gotPass := sha256.Sum256([]byte(p))
+		userOK := subtle.ConstantTimeCompare(gotUser[:], userHash[:]) == 1
+		passOK := subtle.ConstantTimeCompare(gotPass[:], passHash[:]) == 1
 		if !ok || !userOK || !passOK {
 			w.Header().Set("WWW-Authenticate", `Basic realm="web-terminal", charset="UTF-8"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// securityHeaders sets defense-in-depth response headers on every
+// response: nosniff stops MIME-confusion, the CSP scopes assets to the
+// same origin (with 'unsafe-inline' for the importmap + inline mount() in
+// static/index.html and the renderer's inline cell styles), connect-src
+// 'self' covers the same-origin /ws WebSocket, and frame-ancestors 'none'
+// blocks clickjacking of the interactive terminal.
+func securityHeaders(next http.Handler) http.Handler {
+	const csp = "default-src 'self'; " +
+		"script-src 'self' 'unsafe-inline'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+		"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; " +
+		"form-action 'none'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Content-Security-Policy", csp)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -270,8 +303,9 @@ func accessLog(next http.Handler) http.Handler {
 }
 
 // statusWriter captures the response status code for the access log. It
-// implements http.Hijacker so the WebSocket upgrade (which hijacks the
-// connection) continues to work through the middleware.
+// implements Unwrap (not http.Hijacker) so http.ResponseController - used
+// by coder/websocket's Accept - can reach the underlying ResponseWriter
+// and hijack the /ws connection through the access-log middleware.
 type statusWriter struct {
 	http.ResponseWriter
 	status      int
