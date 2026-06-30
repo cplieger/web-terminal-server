@@ -27,7 +27,7 @@ rm -rf build static/vendor
 mkdir -p "$NM/web-terminal-engine/src" "$NM/web-terminal-ui/src"
 cp "$ENGINE_DIR/web/package.json" "$NM/web-terminal-engine/package.json"
 for f in "$ENGINE_DIR"/web/src/*.ts; do
-  case "$f" in *.test.ts | *fuzz* | *fc-strict-setup*) continue ;; esac
+  case "$f" in *.test.ts | *fc-strict-setup*) continue ;; esac
   cp "$f" "$NM/web-terminal-engine/src/"
 done
 cp "$UI_DIR/package.json" "$NM/web-terminal-ui/package.json"
@@ -59,7 +59,11 @@ while IFS= read -r line || [ -n "$line" ]; do
 done <"$UI_DIR/css/MANIFEST"
 
 FONT_CACHE="${HOME}/.cache/web-terminal-fonts"
-FONT_VER="v3.4.0"
+FONT_VER="$(sed -n 's/^ARG NERDFONT_VERSION=//p' Dockerfile)"
+[ -n "$FONT_VER" ] || {
+  echo "error: could not read NERDFONT_VERSION from Dockerfile" >&2
+  exit 1
+}
 mkdir -p "$FONT_CACHE" static/vendor/fonts
 if [ ! -f "$FONT_CACHE/MonaspiceNeNerdFontMono-Regular.otf" ]; then
   echo "  downloading Monaspace ${FONT_VER}..."
