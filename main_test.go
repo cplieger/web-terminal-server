@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"errors"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -103,24 +108,43 @@ func TestLoadConfigScrollbackZeroAllowed(t *testing.T) {
 	}
 }
 
-// TestWarnIfExposed exercises both decision branches (early-return when safe,
-// log-path when exposed). It asserts no panic and that the function honors the
-// same loopback/password logic as isLoopbackHost; the slog output itself is a
-// side effect we don't capture here.
+// TestWarnIfExposed asserts the warn decision (warn vs. stay silent) across
+// every WT_ADDR form by capturing slog.Default() into a buffer: loopback
+// (v4/v6/name) and password-set cases must stay silent, while wildcard,
+// routable, and unparseable hosts without a password must warn. warnIfExposed
+// is the only guardrail against an accidental open shell, so this log-only
+// security contract is pinned here. Cases run serially (no t.Parallel) because
+// they swap the process-global default logger.
 func TestWarnIfExposed(t *testing.T) {
 	cases := []struct {
-		name string
-		addr string
-		pass string
+		name     string
+		addr     string
+		pass     string
+		wantWarn bool
 	}{
-		{"password set, no warn", "0.0.0.0:7681", "pw"},
-		{"loopback, no warn", "127.0.0.1:7681", ""},
-		{"exposed no auth, warns", "0.0.0.0:7681", ""},
-		{"malformed addr, treated as host", "garbage", ""},
+		{"password set on exposed addr", "0.0.0.0:7681", "pw", false},
+		{"loopback ipv4", "127.0.0.1:7681", "", false},
+		{"loopback name", "localhost:7681", "", false},
+		{"loopback ipv6", "[::1]:7681", "", false},
+		{"wildcard ipv4 no auth", "0.0.0.0:7681", "", true},
+		{"wildcard ipv6 no auth", "[::]:7681", "", true},
+		{"routable ip no auth", "192.168.1.10:7681", "", true},
+		{"unparseable addr no auth", "garbage", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			warnIfExposed(tc.addr, tc.pass) // must not panic
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			warnIfExposed(tc.addr, tc.pass)
+
+			gotWarn := buf.Len() > 0
+			if gotWarn != tc.wantWarn {
+				t.Errorf("warnIfExposed(addr=%q, passwordSet=%t) warned=%v, want %v (log=%q)",
+					tc.addr, tc.pass != "", gotWarn, tc.wantWarn, buf.String())
+			}
 		})
 	}
 }
@@ -204,6 +228,26 @@ func TestBasicAuth(t *testing.T) {
 	})
 }
 
+func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
+	const wantCSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; " +
+		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+		"font-src 'self'; connect-src 'self'; frame-ancestors 'none'; " +
+		"base-uri 'none'; object-src 'none'; form-action 'none'"
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	rec := httptest.NewRecorder()
+	securityHeaders(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
+	}
+}
+
 func TestStatusWriterCapturesCode(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sw := &statusWriter{ResponseWriter: rec, status: http.StatusOK}
@@ -233,6 +277,41 @@ func TestStatusWriterUnwrap(t *testing.T) {
 	sw := &statusWriter{ResponseWriter: rec, status: http.StatusOK}
 	if sw.Unwrap() != rec {
 		t.Error("Unwrap() did not return the wrapped ResponseWriter (WebSocket hijack would break)")
+	}
+}
+
+// fakeHijacker is a ResponseWriter that implements http.Hijacker so a test can
+// assert the hijack call reaches the underlying writer through accessLog's
+// statusWriter wrapper (the path the /ws WebSocket upgrade depends on).
+type fakeHijacker struct {
+	http.ResponseWriter
+	hijacked bool
+}
+
+func (f *fakeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	f.hijacked = true
+	return nil, nil, errors.New("test hijacker: no real connection")
+}
+
+// TestAccessLogPreservesWebSocketHijack drives a request through accessLog with
+// an underlying ResponseWriter that implements http.Hijacker and asserts the
+// hijack is actually reached via http.ResponseController, exercising the real
+// upgrade walk that TestStatusWriterUnwrap's one-level check cannot.
+func TestAccessLogPreservesWebSocketHijack(t *testing.T) {
+	var reached bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		_, _, _ = http.NewResponseController(w).Hijack()
+	})
+
+	fh := &fakeHijacker{ResponseWriter: httptest.NewRecorder()}
+	accessLog(next).ServeHTTP(fh, httptest.NewRequest(http.MethodGet, "/ws", nil))
+
+	if !reached {
+		t.Fatal("handler never ran")
+	}
+	if !fh.hijacked {
+		t.Error("Hijack did not reach the underlying ResponseWriter through accessLog's statusWriter; the /ws WebSocket upgrade would break")
 	}
 }
 
