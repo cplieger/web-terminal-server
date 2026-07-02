@@ -56,8 +56,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const expr = `(async () => {
     const rafFired = await new Promise((res) => { let f=false; requestAnimationFrame(()=>{f=true;}); setTimeout(()=>res(f),250); });
-    const out = document.getElementById('term-output');
-    const term = document.getElementById('term');
+    const out = document.querySelector('.term-output, #term-output');
+    const term = document.querySelector('.term, #term');
     const rows = out ? Array.from(out.children) : [];
     const text = rows.map(r => (r.textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+$/,'')).filter(t => t.length);
     let maxRunDup=1,cur=1; for(let i=1;i<text.length;i++){ if(text[i]===text[i-1]&&text[i]!==''){cur++;maxRunDup=Math.max(maxRunDup,cur);}else cur=1; }

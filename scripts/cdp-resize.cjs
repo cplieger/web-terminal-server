@@ -35,7 +35,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Absolute-index integrity of #term-output: order, contiguity, uniqueness.
 const SNAPSHOT = `(() => {
-  const out = document.getElementById('term-output');
+  const out = document.querySelector('.term-output, #term-output');
   const rows = out ? Array.from(out.children) : [];
   const abs = rows.map(r => Number(r.getAttribute('data-abs'))).filter(n => Number.isFinite(n));
   const sorted = [...abs].sort((a,b)=>a-b);

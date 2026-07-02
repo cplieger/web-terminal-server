@@ -51,7 +51,7 @@ const INSTRUMENT = `(() => {
   };
 })()`;
 
-const SNAP_TERM = `(() => { const t = document.getElementById('term');
+const SNAP_TERM = `(() => { const t = document.querySelector('.term, #term');
   return JSON.stringify({ termCH: t ? t.clientHeight : 0, vvH: window.visualViewport ? Math.round(window.visualViewport.height) : null, innerH: window.innerHeight }); })()`;
 
 const OPEN_KB = `(() => { const vv = window.visualViewport; if (!vv) return 'no-vv'; const h=${KB};
