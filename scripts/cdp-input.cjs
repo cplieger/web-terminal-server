@@ -95,16 +95,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // --- structural facts + the context-menu clamp (one synchronous probe) ---
   const structural = JSON.parse(
     await evaluate(`(() => {
-      const out = document.getElementById('term-output');
-      const term = document.getElementById('term');
-      const input = document.getElementById('term-input');
+      const out = document.querySelector('.term-output, #term-output');
+      const term = document.querySelector('.term, #term');
+      const input = document.querySelector('.term-input, #term-input');
       const active = document.activeElement;
       // Open the context menu hard against the bottom-right corner.
       term.dispatchEvent(new MouseEvent('contextmenu', {
         bubbles: true, cancelable: true,
         clientX: window.innerWidth - 2, clientY: window.innerHeight - 2,
       }));
-      const menu = document.getElementById('ctx-menu');
+      const menu = document.querySelector('.ctx-menu, #ctx-menu');
       const r = menu.getBoundingClientRect();
       const clampedIn = r.left >= 0 && r.top >= 0 &&
         r.right <= window.innerWidth && r.bottom <= window.innerHeight && r.width > 0;
@@ -124,7 +124,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // --- selection survival across streaming frames ---
   const selBefore = await evaluate(`(() => {
-    const out = document.getElementById('term-output');
+    const out = document.querySelector('.term-output, #term-output');
     const rows = Array.from(out.children).filter(r => (r.textContent||'').trim().length > 5);
     if (rows.length < 3) return '';
     const row = rows[1]; // an early (committed/frozen) row

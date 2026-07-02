@@ -76,7 +76,7 @@ const INSTRUMENT = `(() => {
 // Snapshot of the absolute-index integrity of #term-output: every row carries
 // data-abs; we read them all and check ordering, contiguity, and uniqueness.
 const SNAPSHOT = `(() => {
-  const out = document.getElementById('term-output');
+  const out = document.querySelector('.term-output, #term-output');
   const rows = out ? Array.from(out.children) : [];
   const abs = rows.map(r => Number(r.getAttribute('data-abs'))).filter(n => Number.isFinite(n));
   const sorted = [...abs].sort((a,b)=>a-b);
