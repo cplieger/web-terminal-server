@@ -48,6 +48,39 @@ checkouts (`../web-terminal-engine` and `../web-terminal-ui`; override with
 `ENGINE_DIR=` / `UI_DIR=`), so you can iterate on unreleased engine or UI
 changes before they ship.
 
+### Real-browser verification (CDP)
+
+`scripts/cdp-*.cjs` are zero-dependency (Node 22) live-verify harnesses. Most
+drive the server in a headless Chromium over the DevTools Protocol and assert
+the rendered DOM — the display half the Go tests can't reach; one
+(`cdp-scrollback`) is a wire-level check against the raw WebSocket (see its note
+below). Each one asserts and exits 0 (pass) or non-zero (fail); none needs a
+human to read the output. They exercise the engine + UI stack (nothing
+server-specific), so this generic server is the family's baseline testing
+ground for them.
+
+Run the whole suite with one command. It provisions everything locally — a
+headless Chromium (a real one on `PATH`, or the Playwright-cached build) plus a
+loopback server on the fixtures — runs every harness, and returns non-zero if
+any fail:
+
+```sh
+bash scripts/run-cdp.sh
+```
+
+The harnesses, runnable individually against an existing `CDP_URL=` /
+`WT_URL=` (e.g. the shared Chromium sidecar for interactive debugging):
+
+- `cdp-render.cjs` — the stream renders: content present, renderer live (rAF fires), no duplicate rows, sane scroll geometry, no console errors.
+- `cdp-resume.cjs` — sever the socket mid-stream; reconnect must replay the missed lines by absolute index (contiguous, no duplicates).
+- `cdp-input.cjs` — input/keyboard/selection separation: output not contenteditable, textarea focused, context-menu clamped in the viewport, selection survives streaming frames.
+- `cdp-viewport.cjs` — a shrinking visual viewport (soft keyboard) reflows the content area and sends a `resize` control-frame with fewer rows.
+- `cdp-resize.cjs` — repeated rotations keep the absolute-index model intact: no duplicate or gapped rows, row count stays bounded.
+- `cdp-scrollback.cjs` — an app-issued ED3 propagates the scrollbackCleared signal end to end. Wire-level (raw WebSocket, no browser) and client-triggered: it lets the burst settle, then sends the newline the fixture is blocked reading, so the ED3 fires under its control with no timer race. Needs the server on `emit-ed3.sh`, which `run-cdp.sh` wires up. The client-side drop is unit-tested in the engine's `store.test.ts`; this pins the server's ED3->wire propagation through a live PTY.
+
+Fixtures: `emit-fixture.sh` (continuous numbered lines) and `emit-ed3.sh`
+(bursts scrollback, then blocks on stdin until the client triggers an ED3).
+
 To build the **Go server** against an unreleased local engine instead of the
 pinned published one, add a `go.work` that redirects the module to your sibling
 checkout:
