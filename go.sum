@@ -1,6 +1,6 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
-github.com/cplieger/web-terminal-engine v1.3.2 h1:oeDOYLjoxK0vXpypelFMoFbCiAjS/hgy63orzzQ5hIk=
-github.com/cplieger/web-terminal-engine v1.3.2/go.mod h1:OWrnAxF9d5oB4pY21G8HVr15mGgmN79eGsEXHBPVyWE=
+github.com/cplieger/web-terminal-engine v1.4.0 h1:rU81sQEoClku5VptF4W9foQDjCTVihN9eyO0MF+S42o=
+github.com/cplieger/web-terminal-engine v1.4.0/go.mod h1:OWrnAxF9d5oB4pY21G8HVr15mGgmN79eGsEXHBPVyWE=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
