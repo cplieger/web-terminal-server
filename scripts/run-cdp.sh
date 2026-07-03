@@ -10,7 +10,7 @@
 #
 # Overrides:
 #   CDP_URL   use an existing DevTools endpoint instead of spawning Chromium
-#             (e.g. the shared sidecar: CDP_URL=http://192.168.1.77:9222). When
+#             (e.g. a shared sidecar: CDP_URL=http://192.0.2.77:9222). When
 #             set, the server must be reachable from THAT browser, so WT_URL
 #             must also be set and this runner will not manage the server.
 #   WT_BIN    path to a built server binary (default ./web-terminal-server-bin,

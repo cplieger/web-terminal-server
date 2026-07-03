@@ -585,7 +585,7 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 // accessLog emits one structured slog line per request (slog-only
-// observability, matching the cplieger fleet — no Prometheus endpoint).
+// observability, matching the cplieger Go apps — no Prometheus endpoint).
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
