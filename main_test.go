@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,6 +16,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/cplieger/web-terminal-engine/terminal"
 )
 
 // setWTEnv clears every WT_* variable then applies the given overrides, so each
@@ -490,6 +494,56 @@ func TestRouteEventsReachesSSE(t *testing.T) {
 	if restHit.Load() {
 		t.Error("/api/sessions/events wrongly reached the REST handler")
 	}
+}
+
+// TestEventsRouteStreamsThroughMiddleware is the server-side regression guard
+// for the SSE status stream. It drives the REAL engine EventsHandler through the
+// full newHandler middleware chain (access log -> security headers ->
+// cross-origin -> mux) over a real socket, and asserts the stream opens and
+// flushes an event. accessLog wraps the ResponseWriter in statusWriter (which
+// implements Unwrap but not Flush), so a naive flusher assertion would 500 here;
+// this pins that the stream still flushes through the wrapper.
+func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
+	factory := func(string) *terminal.Handler {
+		return terminal.NewHandler([]string{"/bin/cat"}, terminal.WithLogger(nil))
+	}
+	mgr := terminal.NewSessionManager(factory, terminal.WithManagerLogger(nil))
+	t.Cleanup(mgr.Shutdown)
+	id, err := mgr.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var ready atomic.Bool
+	ready.Store(true)
+	h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, mgr.EventsHandler(), &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/sessions/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/sessions/events: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (SSE must flush through statusWriter, not 500)", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		if line := sc.Text(); strings.HasPrefix(line, "data:") && strings.Contains(line, id) {
+			return // an event flushed through the middleware chain
+		}
+	}
+	t.Fatalf("SSE stream delivered no data through the middleware (scan err: %v)", sc.Err())
 }
 
 func TestCreateRateLimit(t *testing.T) {
