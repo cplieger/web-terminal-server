@@ -50,7 +50,8 @@ RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/w
 # `./*.js` imports, which the served importmap and vendored dirs resolve at
 # runtime. The committed static/index.html supplies the scaffold + importmap +
 # the inline mount() call, so no app entry needs compiling.
-RUN /tmp/package/lib/tsgo \
+RUN mapfile -t ui_ts < <(find node_modules/@cplieger/web-terminal-ui/src -name '*.ts') && \
+    /tmp/package/lib/tsgo \
         --module ESNext --target ESNext --moduleResolution bundler \
         --outDir static/vendor/cplieger-web-terminal-engine \
         --rootDir node_modules/@cplieger/web-terminal-engine/src \
@@ -61,7 +62,7 @@ RUN /tmp/package/lib/tsgo \
         --outDir static/vendor/cplieger-web-terminal-ui \
         --rootDir node_modules/@cplieger/web-terminal-ui/src \
         --skipLibCheck --strict \
-        $(find node_modules/@cplieger/web-terminal-ui/src -name '*.ts')
+        "${ui_ts[@]}"
 
 # Concatenate the UI's CSS splits into the served bundle.
 RUN set -eu; \

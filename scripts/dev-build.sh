@@ -51,10 +51,11 @@ echo "[3/5] compile UI -> static/vendor/cplieger-web-terminal-ui"
 # import; the emitted JS keeps that specifier for the runtime importmap.
 # Compile the whole nested src tree (index.ts + presets.ts + kernel/ + features/);
 # find collects every non-test .ts (the overlay already excluded tests).
+mapfile -t ui_ts < <(find "$NM/web-terminal-ui/src" -name '*.ts')
 tsgo --module ESNext --target ESNext --moduleResolution bundler \
   --outDir static/vendor/cplieger-web-terminal-ui \
   --rootDir "$NM/web-terminal-ui/src" --skipLibCheck --strict \
-  $(find "$NM/web-terminal-ui/src" -name '*.ts')
+  "${ui_ts[@]}"
 
 echo "[4/5] CSS bundle + font"
 : >static/style.css
