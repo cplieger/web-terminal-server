@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/terminal"
+	"github.com/cplieger/web-terminal-engine/v2/terminal"
 )
 
 // setWTEnv clears every WT_* variable then applies the given overrides, so each
