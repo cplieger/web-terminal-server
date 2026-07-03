@@ -53,8 +53,8 @@ changes before they ship.
 `scripts/cdp-*.cjs` are zero-dependency (Node 22) live-verify harnesses. Most
 drive the server in a headless Chromium over the DevTools Protocol and assert
 the rendered DOM — the display half the Go tests can't reach; one
-(`cdp-scrollback`) is a wire-level check against the raw WebSocket (see its note
-below). Each one asserts and exits 0 (pass) or non-zero (fail); none needs a
+(`cdp-scrollback`) is a wire-level check against the raw WebSocket. Each one
+asserts and exits 0 (pass) or non-zero (fail); none needs a
 human to read the output. They exercise the engine + UI stack (nothing
 server-specific), so this generic server is the family's baseline testing
 ground for them.
@@ -68,15 +68,9 @@ any fail:
 bash scripts/run-cdp.sh
 ```
 
-The harnesses, runnable individually against an existing `CDP_URL=` /
-`WT_URL=` (e.g. the shared Chromium sidecar for interactive debugging):
-
-- `cdp-render.cjs` — the stream renders: content present, renderer live (rAF fires), no duplicate rows, sane scroll geometry, no console errors.
-- `cdp-resume.cjs` — sever the socket mid-stream; reconnect must replay the missed lines by absolute index (contiguous, no duplicates).
-- `cdp-input.cjs` — input/keyboard/selection separation: output not contenteditable, textarea focused, context-menu clamped in the viewport, selection survives streaming frames.
-- `cdp-viewport.cjs` — a shrinking visual viewport (soft keyboard) reflows the content area and sends a `resize` control-frame with fewer rows.
-- `cdp-resize.cjs` — repeated rotations keep the absolute-index model intact: no duplicate or gapped rows, row count stays bounded.
-- `cdp-scrollback.cjs` — an app-issued ED3 propagates the scrollbackCleared signal end to end. Wire-level (raw WebSocket, no browser) and client-triggered: it lets the burst settle, then sends the newline the fixture is blocked reading, so the ED3 fires under its control with no timer race. Needs the server on `emit-ed3.sh`, which `run-cdp.sh` wires up. The client-side drop is unit-tested in the engine's `store.test.ts`; this pins the server's ED3->wire propagation through a live PTY.
+Individual harnesses run against an existing `CDP_URL=` / `WT_URL=` (e.g. a
+shared Chromium sidecar for interactive debugging); see the `cdp-*.cjs` sources
+for what each one asserts.
 
 Fixtures: `emit-fixture.sh` (continuous numbered lines) and `emit-ed3.sh`
 (bursts scrollback, then blocks on stdin until the client triggers an ED3).
@@ -105,7 +99,7 @@ would break the in-container build, which is why `.dockerignore` excludes it.
   `.golangci.yaml`); run `gofmt`/`golangci-lint fmt` before committing.
 - slog-only observability (one structured line per request); no Prometheus
   endpoint.
-- Dockerfile follows the fleet conventions: `# check=error=true`, native
+- Dockerfile follows the shared `cplieger/ci` conventions: `# check=error=true`, native
   per-arch builds (no QEMU/xx), `GOTOOLCHAIN=auto`, layer-cached `go mod
   download`. The `# renovate:` ARGs track tool and package versions.
 
