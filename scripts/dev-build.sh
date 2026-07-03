@@ -31,10 +31,13 @@ for f in "$ENGINE_DIR"/web/src/*.ts; do
   cp "$f" "$NM/web-terminal-engine/src/"
 done
 cp "$UI_DIR/package.json" "$NM/web-terminal-ui/package.json"
-for f in "$UI_DIR"/src/*.ts; do
-  case "$f" in *.test.ts | *fc-strict-setup*) continue ;; esac
-  cp "$f" "$NM/web-terminal-ui/src/"
-done
+# The UI ships a nested src tree (src/kernel/, src/features/) since v3, so copy
+# recursively, preserving subdirectories and excluding tests.
+(cd "$UI_DIR/src" && find . -name '*.ts' ! -name '*.test.ts' ! -name 'fc-strict-setup.ts' -print0) |
+  while IFS= read -r -d '' f; do
+    mkdir -p "$NM/web-terminal-ui/src/$(dirname "$f")"
+    cp "$UI_DIR/src/$f" "$NM/web-terminal-ui/src/$f"
+  done
 
 echo "[2/5] compile engine -> static/vendor/cplieger-web-terminal-engine"
 tsgo --module ESNext --target ESNext --moduleResolution bundler \
@@ -46,10 +49,12 @@ echo "[3/5] compile UI -> static/vendor/cplieger-web-terminal-ui"
 # The UI files sit in the overlay node_modules, so tsgo's bundler resolution
 # walks up and finds the sibling @cplieger/web-terminal-engine package for the bare
 # import; the emitted JS keeps that specifier for the runtime importmap.
+# Compile the whole nested src tree (index.ts + presets.ts + kernel/ + features/);
+# find collects every non-test .ts (the overlay already excluded tests).
 tsgo --module ESNext --target ESNext --moduleResolution bundler \
   --outDir static/vendor/cplieger-web-terminal-ui \
   --rootDir "$NM/web-terminal-ui/src" --skipLibCheck --strict \
-  "$NM/web-terminal-ui/src"/*.ts
+  $(find "$NM/web-terminal-ui/src" -name '*.ts')
 
 echo "[4/5] CSS bundle + font"
 : >static/style.css

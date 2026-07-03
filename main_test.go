@@ -22,7 +22,10 @@ import (
 // shell or test ordering. t.Setenv restores the prior values at test end.
 func setWTEnv(t *testing.T, over map[string]string) {
 	t.Helper()
-	for _, k := range []string{"WT_ADDR", "WT_CMD", "WT_WORKDIR", "WT_SCROLLBACK", "WT_USERNAME", "WT_PASSWORD"} {
+	for _, k := range []string{
+		"WT_ADDR", "WT_CMD", "WT_WORKDIR", "WT_SCROLLBACK",
+		"WT_USERNAME", "WT_PASSWORD", "WT_MAX_SESSIONS", "WT_IDLE_REAPER",
+	} {
 		t.Setenv(k, "")
 	}
 	for k, v := range over {
@@ -348,11 +351,13 @@ func (s stubHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ws-stub"))
 }
 
-// newTestHandler builds the real handler with a stub terminal. It fails the
-// test if the embedded static assets can't be opened.
+// newTestHandler builds the real handler with stub session handlers. It fails
+// the test if the embedded static assets can't be opened. Only the WS hit flag
+// is wired here (the routes most tests care about); the session-route tests
+// below call newHandler directly with their own hit-tracking stubs.
 func newTestHandler(t *testing.T, cfg config, ready, wsHit *atomic.Bool) http.Handler {
 	t.Helper()
-	h, err := newHandler(&cfg, stubHandler{hit: wsHit}, ready)
+	h, err := newHandler(&cfg, stubHandler{hit: wsHit}, stubHandler{}, stubHandler{}, ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -394,6 +399,130 @@ func TestRouteWSReachesTerminal(t *testing.T) {
 	}
 	if rec.Body.String() != "ws-stub" {
 		t.Errorf("/ws body = %q, want %q", rec.Body.String(), "ws-stub")
+	}
+}
+
+func TestLoadConfigMaxSessions(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		setWTEnv(t, nil)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if cfg.maxSessions != defaultMaxSessions {
+			t.Errorf("maxSessions = %d, want %d", cfg.maxSessions, defaultMaxSessions)
+		}
+	})
+	t.Run("parsed", func(t *testing.T) {
+		setWTEnv(t, map[string]string{"WT_MAX_SESSIONS": "3"})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if cfg.maxSessions != 3 {
+			t.Errorf("maxSessions = %d, want 3", cfg.maxSessions)
+		}
+	})
+	t.Run("rejects zero and non-int", func(t *testing.T) {
+		for _, v := range []string{"0", "-1", "lots"} {
+			setWTEnv(t, map[string]string{"WT_MAX_SESSIONS": v})
+			if _, err := loadConfig(); err == nil {
+				t.Errorf("loadConfig() with WT_MAX_SESSIONS=%q = nil error, want error", v)
+			}
+		}
+	})
+	t.Run("idle reaper duration parsed and validated", func(t *testing.T) {
+		setWTEnv(t, map[string]string{"WT_IDLE_REAPER": "30m"})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if cfg.idleReaper != 30*60*1e9 {
+			t.Errorf("idleReaper = %v, want 30m", cfg.idleReaper)
+		}
+		setWTEnv(t, map[string]string{"WT_IDLE_REAPER": "nonsense"})
+		if _, err := loadConfig(); err == nil {
+			t.Error("loadConfig() with WT_IDLE_REAPER=nonsense = nil error, want error")
+		}
+	})
+}
+
+func TestRouteSessionsReachesREST(t *testing.T) {
+	var ready, wsHit, restHit, eventsHit atomic.Bool
+	ready.Store(true)
+	h, err := newHandler(&config{}, stubHandler{hit: &wsHit}, stubHandler{hit: &restHit}, stubHandler{hit: &eventsHit}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+	// GET /api/sessions (list) and DELETE /api/sessions/{id} (close) both reach
+	// the REST handler; neither reaches the SSE handler.
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/sessions"},
+		{http.MethodDelete, "/api/sessions/abc123"},
+	} {
+		restHit.Store(false)
+		eventsHit.Store(false)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if !restHit.Load() {
+			t.Errorf("%s %s did not reach the REST handler", tc.method, tc.path)
+		}
+		if eventsHit.Load() {
+			t.Errorf("%s %s wrongly reached the SSE handler", tc.method, tc.path)
+		}
+	}
+}
+
+func TestRouteEventsReachesSSE(t *testing.T) {
+	var ready, wsHit, restHit, eventsHit atomic.Bool
+	ready.Store(true)
+	h, err := newHandler(&config{}, stubHandler{hit: &wsHit}, stubHandler{hit: &restHit}, stubHandler{hit: &eventsHit}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/events", nil))
+	// The status SSE path must route to the events handler, NOT the REST subtree
+	// (a precedence check: /api/sessions/events is more specific than /api/sessions/).
+	if !eventsHit.Load() {
+		t.Error("/api/sessions/events did not reach the SSE handler")
+	}
+	if restHit.Load() {
+		t.Error("/api/sessions/events wrongly reached the REST handler")
+	}
+}
+
+func TestCreateRateLimit(t *testing.T) {
+	var ready, restHit atomic.Bool
+	ready.Store(true)
+	h, err := newHandler(&config{}, stubHandler{}, stubHandler{hit: &restHit}, stubHandler{}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+	post := func() int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions", nil))
+		return rec.Code
+	}
+	// The burst (createBurst) creates are allowed; the next is throttled 429.
+	allowed := 0
+	for range int(createBurst) {
+		if post() == http.StatusOK {
+			allowed++
+		}
+	}
+	if allowed != int(createBurst) {
+		t.Errorf("allowed %d creates in the burst, want %d", allowed, int(createBurst))
+	}
+	if code := post(); code != http.StatusTooManyRequests {
+		t.Errorf("create past the burst = %d, want 429", code)
+	}
+	// GET (list) is never rate-limited even after the create burst is exhausted.
+	restHit.Store(false)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions", nil))
+	if !restHit.Load() {
+		t.Error("GET /api/sessions was blocked by the create rate limiter")
 	}
 }
 

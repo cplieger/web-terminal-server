@@ -16,25 +16,31 @@
 </style>
 </head>
 <body>
-<!-- mount() builds the entire terminal UI inside this root element; the
-     loading overlay is a sibling so mount never clears it (it fades it on the
+<!-- createTerminal() builds the entire terminal UI inside this root element;
+     the loading overlay is a sibling so it is never cleared (it fades on the
      first frame). -->
 <div id="terminal"></div>
 <div id="loading"><div class="spin"></div>Loading…</div>
 <!-- The importmap resolves the bare package specifiers to the JS the server
      compiles into /vendor/ at build time; the engine specifier is resolved
-     transitively from the UI package's emitted imports. -->
+     transitively from the UI package's emitted imports, and the UI's ./presets
+     subpath maps to its compiled presets.js. -->
 <script type="importmap">
 {
   "imports": {
     "@cplieger/web-terminal-engine": "/vendor/cplieger-web-terminal-engine/index.js",
-    "@cplieger/web-terminal-ui": "/vendor/cplieger-web-terminal-ui/index.js"
+    "@cplieger/web-terminal-ui": "/vendor/cplieger-web-terminal-ui/index.js",
+    "@cplieger/web-terminal-ui/presets": "/vendor/cplieger-web-terminal-ui/presets.js"
   }
 }
 </script>
 <script type="module">
-  import { mount } from "@cplieger/web-terminal-ui";
-  mount(document.getElementById("terminal"), { loading: document.getElementById("loading") });
+  import { createTerminal } from "@cplieger/web-terminal-ui";
+  import { presetTabbed } from "@cplieger/web-terminal-ui/presets";
+  createTerminal(document.getElementById("terminal"), {
+    features: presetTabbed(),
+    loading: document.getElementById("loading"),
+  });
 </script>
 </body>
 </html>

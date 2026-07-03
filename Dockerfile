@@ -61,7 +61,7 @@ RUN /tmp/package/lib/tsgo \
         --outDir static/vendor/cplieger-web-terminal-ui \
         --rootDir node_modules/@cplieger/web-terminal-ui/src \
         --skipLibCheck --strict \
-        node_modules/@cplieger/web-terminal-ui/src/*.ts
+        $(find node_modules/@cplieger/web-terminal-ui/src -name '*.ts')
 
 # Concatenate the UI's CSS splits into the served bundle.
 RUN set -eu; \
