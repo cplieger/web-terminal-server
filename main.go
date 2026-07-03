@@ -33,7 +33,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/terminal"
+	"github.com/cplieger/web-terminal-engine/v2/terminal"
 )
 
 // staticFS holds the bundled front end (the @cplieger/web-terminal-ui scaffold
