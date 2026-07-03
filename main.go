@@ -28,6 +28,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -44,10 +45,11 @@ import (
 var staticFS embed.FS
 
 const (
-	defaultAddr       = "127.0.0.1:7681"
-	defaultCmd        = "/bin/bash"
-	defaultScrollback = 5000
-	defaultUsername   = "admin"
+	defaultAddr        = "127.0.0.1:7681"
+	defaultCmd         = "/bin/bash"
+	defaultScrollback  = 5000
+	defaultUsername    = "admin"
+	defaultMaxSessions = 10
 )
 
 func envOr(key, fallback string) string {
@@ -57,14 +59,46 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// applyIntEnv parses an integer env var into *dst, leaving it unchanged when the
+// var is unset. It rejects a value below min or a non-integer.
+func applyIntEnv(key string, minVal int, dst *int) error {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < minVal {
+		return fmt.Errorf("%s must be an integer >= %d, got %q", key, minVal, v)
+	}
+	*dst = n
+	return nil
+}
+
+// applyDurationEnv parses a Go duration env var into *dst, leaving it unchanged
+// when unset. It rejects a negative or unparseable duration.
+func applyDurationEnv(key string, dst *time.Duration) error {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, v)
+	}
+	*dst = d
+	return nil
+}
+
 // config holds the resolved server settings parsed from the WT_* environment.
 type config struct {
-	addr       string
-	workDir    string
-	username   string
-	password   string
-	command    []string
-	scrollback int
+	addr        string
+	workDir     string
+	username    string
+	password    string
+	command     []string
+	idleReaper  time.Duration
+	scrollback  int
+	maxSessions int
 }
 
 // loadConfig parses and validates the WT_* environment into a config. It
@@ -72,22 +106,25 @@ type config struct {
 // os.Exit while a defer is pending).
 func loadConfig() (config, error) {
 	c := config{
-		addr:       envOr("WT_ADDR", defaultAddr),
-		command:    strings.Fields(envOr("WT_CMD", defaultCmd)),
-		workDir:    os.Getenv("WT_WORKDIR"),
-		scrollback: defaultScrollback,
-		username:   envOr("WT_USERNAME", defaultUsername),
-		password:   os.Getenv("WT_PASSWORD"),
+		addr:        envOr("WT_ADDR", defaultAddr),
+		command:     strings.Fields(envOr("WT_CMD", defaultCmd)),
+		workDir:     os.Getenv("WT_WORKDIR"),
+		scrollback:  defaultScrollback,
+		username:    envOr("WT_USERNAME", defaultUsername),
+		password:    os.Getenv("WT_PASSWORD"),
+		maxSessions: defaultMaxSessions,
 	}
 	if len(c.command) == 0 {
 		return config{}, errors.New("WT_CMD is empty")
 	}
-	if v := os.Getenv("WT_SCROLLBACK"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return config{}, fmt.Errorf("WT_SCROLLBACK must be a non-negative integer, got %q", v)
-		}
-		c.scrollback = n
+	if err := applyIntEnv("WT_SCROLLBACK", 0, &c.scrollback); err != nil {
+		return config{}, err
+	}
+	if err := applyIntEnv("WT_MAX_SESSIONS", 1, &c.maxSessions); err != nil {
+		return config{}, err
+	}
+	if err := applyDurationEnv("WT_IDLE_REAPER", &c.idleReaper); err != nil {
+		return config{}, err
 	}
 	if c.workDir != "" {
 		// WT_WORKDIR is operator-supplied configuration (the directory the
@@ -118,18 +155,30 @@ func main() {
 
 	warnIfExposed(cfg.addr, cfg.password)
 
-	opts := []terminal.Option{
-		terminal.WithScrollbackCapacity(cfg.scrollback),
-		terminal.WithLogger(slog.Default()),
+	// Each session gets its own PTY-backed handler; the factory scopes the
+	// handler's logger to the session id for per-session log correlation.
+	factory := func(id string) *terminal.Handler {
+		opts := []terminal.Option{
+			terminal.WithScrollbackCapacity(cfg.scrollback),
+			terminal.WithLogger(slog.Default().With("session", id)),
+		}
+		if cfg.workDir != "" {
+			opts = append(opts, terminal.WithWorkDir(cfg.workDir))
+		}
+		return terminal.NewHandler(cfg.command, opts...)
 	}
-	if cfg.workDir != "" {
-		opts = append(opts, terminal.WithWorkDir(cfg.workDir))
+	mgrOpts := []terminal.ManagerOption{
+		terminal.WithManagerLogger(slog.Default()),
+		terminal.WithMaxSessions(cfg.maxSessions),
 	}
-	term := terminal.NewHandler(cfg.command, opts...)
+	if cfg.idleReaper > 0 {
+		mgrOpts = append(mgrOpts, terminal.WithIdleReaper(cfg.idleReaper))
+	}
+	mgr := terminal.NewSessionManager(factory, mgrOpts...)
 
 	var ready atomic.Bool
 
-	handler, err := newHandler(&cfg, term, &ready)
+	handler, err := newHandler(&cfg, mgr.WebSocketHandler(), mgr.RESTHandler(), mgr.EventsHandler(), &ready)
 	if err != nil {
 		slog.Error("static assets unavailable", "error", err)
 		os.Exit(1)
@@ -162,7 +211,7 @@ func main() {
 		slog.Info("web-terminal-server listening",
 			"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 			"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
-			"auth", cfg.password != "")
+			"max_sessions", cfg.maxSessions, "auth", cfg.password != "")
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server exited", "error", err)
 			stop()
@@ -178,25 +227,36 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("server shutdown returned error", "error", err)
 	}
-	term.Shutdown()
+	mgr.Shutdown()
 	slog.Info("web-terminal-server stopped")
 }
 
-// newHandler assembles the HTTP handler: the route mux (WebSocket, health,
-// static files) wrapped in the middleware chain. Middleware, outermost first:
-// access log -> security headers -> basic auth (if configured) ->
-// cross-origin protection -> routes. The terminal handler is passed in
-// (rather than constructed here) so tests can exercise the routing and
-// middleware without a real PTY. ready
-// gates /healthz so load balancers see the server as unavailable during
-// startup and graceful shutdown. It returns an error only if the embedded
-// static assets can't be opened.
-func newHandler(cfg *config, term http.Handler, ready *atomic.Bool) (http.Handler, error) {
+// newHandler assembles the HTTP handler: the route mux (terminal WebSocket,
+// session REST API, status SSE, health, static files) wrapped in the middleware
+// chain. Middleware, outermost first: access log -> security headers -> basic
+// auth (if configured) -> cross-origin protection -> routes. The session
+// handlers are passed in (rather than a manager constructed here) so tests can
+// exercise the routing and middleware with stubs, without a real PTY. ready
+// gates /healthz so load balancers see the server as unavailable during startup
+// and graceful shutdown. It returns an error only if the embedded static assets
+// can't be opened.
+func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) (http.Handler, error) {
 	mux := http.NewServeMux()
-	// Mount only the WebSocket endpoint (not the engine's /debug/* routes,
-	// which dump raw PTY output and screen state — inappropriate to expose on
-	// a network service). The UI connects here by default (wsPath "/ws").
-	mux.Handle("/ws", term)
+	// Mount only the session WebSocket endpoint (not the engine's /debug/*
+	// routes, which dump raw PTY output and screen state — inappropriate to
+	// expose on a network service). The UI connects here with ?session=<id>.
+	mux.Handle("/ws", ws)
+	// Session REST API. The create rate limit gates POST /api/sessions so a
+	// bare (possibly unauthenticated) caller cannot fork PTY processes without
+	// bound: WithMaxSessions caps concurrency, the limiter bounds churn. GET
+	// (list) and DELETE (close) pass through. Mounted at both the exact path and
+	// the subtree so /api/sessions and /api/sessions/{id} reach the REST mux.
+	limitedRest := createRateLimit(rest)
+	mux.Handle("/api/sessions", limitedRest)
+	mux.Handle("/api/sessions/", limitedRest)
+	// The status SSE is a distinct, more-specific path than the REST subtree, so
+	// ServeMux routes it here rather than to the REST DELETE /{id} pattern.
+	mux.Handle("/api/sessions/events", events)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if !ready.Load() {
 			http.Error(w, "starting up or shutting down", http.StatusServiceUnavailable)
@@ -223,6 +283,58 @@ func newHandler(cfg *config, term http.Handler, ready *atomic.Bool) (http.Handle
 	handler = securityHeaders(handler)
 	handler = accessLog(handler)
 	return handler, nil
+}
+
+// Create-rate-limit tuning: a token bucket with a small burst (open several
+// tabs at once) refilling at a steady rate, so sustained create churn is
+// throttled while normal use is unaffected.
+const (
+	createBurst        = 6.0
+	createRefillPerSec = 1.0
+)
+
+// tokenBucket is a minimal mutex-guarded token bucket (no external dependency).
+type tokenBucket struct {
+	last   time.Time
+	tokens float64
+	mu     sync.Mutex
+}
+
+// allow refills the bucket for the elapsed time and consumes one token,
+// returning false when none is available.
+func (b *tokenBucket) allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	if b.last.IsZero() {
+		b.tokens = createBurst
+	} else {
+		b.tokens += now.Sub(b.last).Seconds() * createRefillPerSec
+		if b.tokens > createBurst {
+			b.tokens = createBurst
+		}
+	}
+	b.last = now
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
+}
+
+// createRateLimit wraps the session REST handler, gating POST /api/sessions
+// (session creation) behind a token bucket so a caller cannot fork PTY
+// processes without bound. List (GET) and close (DELETE) pass through
+// unthrottled.
+func createRateLimit(next http.Handler) http.Handler {
+	bucket := &tokenBucket{}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/sessions" && !bucket.allow() {
+			http.Error(w, "session creation rate exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // gzAsset is a precomputed gzip representation of an embedded text asset.
