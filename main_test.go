@@ -28,7 +28,7 @@ func setWTEnv(t *testing.T, over map[string]string) {
 	t.Helper()
 	for _, k := range []string{
 		"WT_ADDR", "WT_CMD", "WT_WORKDIR", "WT_SCROLLBACK",
-		"WT_USERNAME", "WT_PASSWORD", "WT_MAX_SESSIONS", "WT_IDLE_REAPER",
+		"WT_USERNAME", "WT_PASSWORD", "WT_IDLE_REAPER",
 	} {
 		t.Setenv(k, "")
 	}
@@ -406,35 +406,7 @@ func TestRouteWSReachesTerminal(t *testing.T) {
 	}
 }
 
-func TestLoadConfigMaxSessions(t *testing.T) {
-	t.Run("default", func(t *testing.T) {
-		setWTEnv(t, nil)
-		cfg, err := loadConfig()
-		if err != nil {
-			t.Fatalf("loadConfig() error: %v", err)
-		}
-		if cfg.maxSessions != defaultMaxSessions {
-			t.Errorf("maxSessions = %d, want %d", cfg.maxSessions, defaultMaxSessions)
-		}
-	})
-	t.Run("parsed", func(t *testing.T) {
-		setWTEnv(t, map[string]string{"WT_MAX_SESSIONS": "3"})
-		cfg, err := loadConfig()
-		if err != nil {
-			t.Fatalf("loadConfig() error: %v", err)
-		}
-		if cfg.maxSessions != 3 {
-			t.Errorf("maxSessions = %d, want 3", cfg.maxSessions)
-		}
-	})
-	t.Run("rejects zero and non-int", func(t *testing.T) {
-		for _, v := range []string{"0", "-1", "lots"} {
-			setWTEnv(t, map[string]string{"WT_MAX_SESSIONS": v})
-			if _, err := loadConfig(); err == nil {
-				t.Errorf("loadConfig() with WT_MAX_SESSIONS=%q = nil error, want error", v)
-			}
-		}
-	})
+func TestLoadConfigIdleReaper(t *testing.T) {
 	t.Run("idle reaper duration parsed and validated", func(t *testing.T) {
 		setWTEnv(t, map[string]string{"WT_IDLE_REAPER": "30m"})
 		cfg, err := loadConfig()
