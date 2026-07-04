@@ -45,11 +45,10 @@ import (
 var staticFS embed.FS
 
 const (
-	defaultAddr        = "127.0.0.1:7681"
-	defaultCmd         = "/bin/bash"
-	defaultScrollback  = 5000
-	defaultUsername    = "admin"
-	defaultMaxSessions = 10
+	defaultAddr       = "127.0.0.1:7681"
+	defaultCmd        = "/bin/bash"
+	defaultScrollback = 5000
+	defaultUsername   = "admin"
 )
 
 func envOr(key, fallback string) string {
@@ -91,14 +90,13 @@ func applyDurationEnv(key string, dst *time.Duration) error {
 
 // config holds the resolved server settings parsed from the WT_* environment.
 type config struct {
-	addr        string
-	workDir     string
-	username    string
-	password    string
-	command     []string
-	idleReaper  time.Duration
-	scrollback  int
-	maxSessions int
+	addr       string
+	workDir    string
+	username   string
+	password   string
+	command    []string
+	idleReaper time.Duration
+	scrollback int
 }
 
 // loadConfig parses and validates the WT_* environment into a config. It
@@ -106,21 +104,17 @@ type config struct {
 // os.Exit while a defer is pending).
 func loadConfig() (config, error) {
 	c := config{
-		addr:        envOr("WT_ADDR", defaultAddr),
-		command:     strings.Fields(envOr("WT_CMD", defaultCmd)),
-		workDir:     os.Getenv("WT_WORKDIR"),
-		scrollback:  defaultScrollback,
-		username:    envOr("WT_USERNAME", defaultUsername),
-		password:    os.Getenv("WT_PASSWORD"),
-		maxSessions: defaultMaxSessions,
+		addr:       envOr("WT_ADDR", defaultAddr),
+		command:    strings.Fields(envOr("WT_CMD", defaultCmd)),
+		workDir:    os.Getenv("WT_WORKDIR"),
+		scrollback: defaultScrollback,
+		username:   envOr("WT_USERNAME", defaultUsername),
+		password:   os.Getenv("WT_PASSWORD"),
 	}
 	if len(c.command) == 0 {
 		return config{}, errors.New("WT_CMD is empty")
 	}
 	if err := applyIntEnv("WT_SCROLLBACK", 0, &c.scrollback); err != nil {
-		return config{}, err
-	}
-	if err := applyIntEnv("WT_MAX_SESSIONS", 1, &c.maxSessions); err != nil {
 		return config{}, err
 	}
 	if err := applyDurationEnv("WT_IDLE_REAPER", &c.idleReaper); err != nil {
@@ -169,7 +163,6 @@ func main() {
 	}
 	mgrOpts := []terminal.ManagerOption{
 		terminal.WithManagerLogger(slog.Default()),
-		terminal.WithMaxSessions(cfg.maxSessions),
 	}
 	if cfg.idleReaper > 0 {
 		mgrOpts = append(mgrOpts, terminal.WithIdleReaper(cfg.idleReaper))
@@ -211,7 +204,7 @@ func main() {
 		slog.Info("web-terminal-server listening",
 			"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 			"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
-			"max_sessions", cfg.maxSessions, "auth", cfg.password != "")
+			"auth", cfg.password != "")
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server exited", "error", err)
 			stop()
@@ -248,9 +241,9 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) 
 	mux.Handle("/ws", ws)
 	// Session REST API. The create rate limit gates POST /api/sessions so a
 	// bare (possibly unauthenticated) caller cannot fork PTY processes without
-	// bound: WithMaxSessions caps concurrency, the limiter bounds churn. GET
-	// (list) and DELETE (close) pass through. Mounted at both the exact path and
-	// the subtree so /api/sessions and /api/sessions/{id} reach the REST mux.
+	// bound: the limiter bounds create churn. GET (list) and DELETE (close) pass
+	// through. Mounted at both the exact path and the subtree so /api/sessions
+	// and /api/sessions/{id} reach the REST mux.
 	limitedRest := createRateLimit(rest)
 	mux.Handle("/api/sessions", limitedRest)
 	mux.Handle("/api/sessions/", limitedRest)
