@@ -64,25 +64,27 @@ All configuration is via environment variables:
 | `WT_CMD` | `/bin/bash` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). |
 | `WT_WORKDIR` | _(process default)_ | Working directory for the command. Must be an existing directory if set. |
 | `WT_SCROLLBACK` | `5000` | Lines of scrollback the server retains for reconnect replay. |
+| `WT_IDLE_REAPER` | _(unset → disabled)_ | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. |
 | `WT_USERNAME` | `admin` | Basic-auth username (only used when `WT_PASSWORD` is set). |
 | `WT_PASSWORD` | _(unset → no auth)_ | Basic-auth password. When set, every route (including `/ws`) requires it. |
 
-Endpoints: `/` (UI), `/ws` (terminal WebSocket), `/healthz` (readiness).
+Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/events` (status SSE), `/healthz` (readiness).
 
 ## How it fits together
 
 ```
 github.com/cplieger/web-terminal-engine   (Go engine: PTY + VT screen + wire protocol)
         │
-        ├── terminal.Handler ──────────────►  this server (main.go)
+        ├── terminal.NewSessionManager ─────►  this server (main.go)
         │
 @cplieger/web-terminal-engine  +  @cplieger/web-terminal-ui   (TS engine + UI)
         └── compiled to static/vendor/ at image build, served to the browser
 ```
 
-The server is deliberately thin: env parsing, `terminal.NewHandler`, static
-file serving, optional Basic auth, and graceful shutdown. All terminal
-behavior lives in the engine and UI packages.
+The server is deliberately thin: env parsing, `terminal.NewSessionManager`, the
+session REST API + status SSE, a create rate limit, static file serving, optional
+Basic auth, and graceful shutdown. All terminal behavior lives in the engine and
+UI packages.
 
 ## Related projects
 

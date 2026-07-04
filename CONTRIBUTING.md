@@ -12,10 +12,12 @@ workflows, or `LICENSE`.
 
 ## Architecture
 
-- `main.go` is the whole server: env parsing (`WT_*`), `terminal.NewHandler`,
-  a `ServeMux` mounting `/ws` (the engine, via `ServeHTTP` — the engine's
-  `/debug/*` routes are intentionally **not** exposed), `/healthz`, and the
-  embedded static front end at `/`. Middleware (outermost first): an slog
+- `main.go` is the whole server: env parsing (`WT_*`), `terminal.NewSessionManager`
+  (a per-session `terminal.NewHandler` factory), a `ServeMux` mounting
+  `/ws?session=<id>`, the session REST API `/api/sessions` (+`/`) behind a create
+  rate limit, the status SSE `/api/sessions/events`, `/healthz`, and the embedded
+  static front end at `/` (the engine's `/debug/*` routes are intentionally **not**
+  exposed). Middleware (outermost first): an slog
   access log, security headers (`X-Content-Type-Options: nosniff` + a
   Content-Security-Policy), optional HTTP Basic auth, and
   `http.CrossOriginProtection`. The `statusWriter`
@@ -23,7 +25,7 @@ workflows, or `LICENSE`.
   `ResponseWriter` through the access-log wrapper.
 - The browser bundle is **not** authored here. It is the engine + UI packages
   compiled to `static/vendor/` at build time; only `static/index.html` (the
-  scaffold + importmap + inline `mount()` call) is committed, which is enough
+  scaffold + importmap + inline `createTerminal(root, { features: presetTabbed() })` call) is committed, which is enough
   for `//go:embed static` to have content.
 
 Keep the server thin: terminal behavior belongs in the engine or the UI
@@ -32,7 +34,7 @@ package, not here.
 ## Local development
 
 The engine and UI are published, so a plain checkout builds against the
-released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine`
+released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine/v2`
 (`go.sum` carries its checksums), and `scripts/dev-build.sh` and the Dockerfile
 pull the published `@cplieger/web-terminal-*` npm tarballs.
 
@@ -82,7 +84,7 @@ checkout:
 ```
 go 1.26.4
 use .
-replace github.com/cplieger/web-terminal-engine => ../web-terminal-engine
+replace github.com/cplieger/web-terminal-engine/v2 => ../web-terminal-engine
 ```
 
 `go.work` is gitignored and dockerignored (local-dev only); the `replace` reads
