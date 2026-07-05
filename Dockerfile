@@ -14,7 +14,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # renovate: datasource=golang-version depName=golang
 ARG GO_VERSION=1.26.4
 RUN ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
     | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
@@ -22,7 +22,7 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 # renovate: datasource=npm depName=@typescript/native-preview
 ARG TSGO_VERSION=7.0.0-dev.20260615.1
 RUN TSGO_ARCH=$([ "$(dpkg --print-architecture)" = "arm64" ] && echo "arm64" || echo "x64") && \
-    curl -fsSL \
+    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 \
       "https://registry.npmjs.org/@typescript/native-preview-linux-${TSGO_ARCH}/-/native-preview-linux-${TSGO_ARCH}-${TSGO_VERSION}.tgz" \
     | tar -xz -C /tmp
 
@@ -40,9 +40,9 @@ ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=2.2.0
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
 ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=3.3.0
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
-    curl -fsSL "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" \
+    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" \
       | tar -xz -C node_modules/@cplieger/web-terminal-engine --strip-components=1 && \
-    curl -fsSL "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" \
+    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" \
       | tar -xz -C node_modules/@cplieger/web-terminal-ui --strip-components=1
 
 # Compile both packages to static/vendor/. tsgo is a compiler, not a bundler:
@@ -77,7 +77,7 @@ RUN set -eu; \
 # renovate: datasource=github-releases depName=ryanoasis/nerd-fonts
 ARG NERDFONT_VERSION=v3.4.0
 RUN mkdir -p static/vendor/fonts && \
-    curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERDFONT_VERSION}/Monaspace.tar.xz" \
+    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERDFONT_VERSION}/Monaspace.tar.xz" \
       | tar -xJ -C static/vendor/fonts \
           MonaspiceNeNerdFontMono-Regular.otf \
           MonaspiceNeNerdFontMono-Bold.otf \
@@ -110,7 +110,15 @@ ENV WT_ADDR=:7681
 ENV WT_CMD=/bin/bash
 EXPOSE 7681
 
+# Probe /healthz with credentials via curl's stdin config file (-K -) rather
+# than -u, so the password never lands in the container's process args
+# (ps / docker inspect). The sed escapes \ and " so a password containing
+# either can't break out of the config's quoted value or inject another curl
+# directive. Do NOT simplify to -u: that reintroduces both the argv exposure
+# and the injection vector.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
-    CMD curl -sf -u "${WT_USERNAME:-admin}:${WT_PASSWORD:-}" http://127.0.0.1:7681/healthz || exit 1
+    CMD u=$(printf '%s' "${WT_USERNAME:-admin}" | sed 's/[\\"]/\\&/g'); \
+        p=$(printf '%s' "${WT_PASSWORD:-}" | sed 's/[\\"]/\\&/g'); \
+        printf 'user = "%s:%s"\n' "$u" "$p" | curl -sf -K - http://127.0.0.1:7681/healthz || exit 1
 
 ENTRYPOINT ["/usr/local/bin/web-terminal-server"]

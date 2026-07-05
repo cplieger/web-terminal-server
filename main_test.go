@@ -5,17 +5,24 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
+	"testing/synctest"
 	"time"
 
 	"github.com/cplieger/web-terminal-engine/v2/terminal"
@@ -86,6 +93,7 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"scrollback not an int", map[string]string{"WT_SCROLLBACK": "lots"}},
 		{"scrollback negative", map[string]string{"WT_SCROLLBACK": "-5"}},
 		{"workdir missing", map[string]string{"WT_WORKDIR": "/no/such/dir/web-terminal-test"}},
+		{"idle reaper negative", map[string]string{"WT_IDLE_REAPER": "-5s"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -151,6 +159,7 @@ func TestWarnIfExposed(t *testing.T) {
 		wantWarn bool
 	}{
 		{"password set on exposed addr", "0.0.0.0:7681", "pw", false},
+		{"whitespace-only password on exposed addr", "0.0.0.0:7681", "   ", true},
 		{"loopback ipv4", "127.0.0.1:7681", "", false},
 		{"loopback name", "localhost:7681", "", false},
 		{"loopback ipv6", "[::1]:7681", "", false},
@@ -256,23 +265,222 @@ func TestBasicAuth(t *testing.T) {
 	})
 }
 
-func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
-	const wantCSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; " +
-		"style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
-		"font-src 'self'; connect-src 'self'; frame-ancestors 'none'; " +
-		"base-uri 'none'; object-src 'none'; form-action 'none'"
+// cspDirective returns the single CSP directive named `name` (e.g.
+// "script-src") from a policy string, failing the test if it is absent.
+func cspDirective(t *testing.T, csp, name string) string {
+	t.Helper()
+	for d := range strings.SplitSeq(csp, ";") {
+		d = strings.TrimSpace(d)
+		if d == name || strings.HasPrefix(d, name+" ") {
+			return d
+		}
+	}
+	t.Fatalf("CSP %q has no %q directive", csp, name)
+	return ""
+}
 
+// hashToken computes the CSP 'sha256-<std-base64>' source token for content,
+// mirroring what a browser hashes for an inline script. It derives the value
+// from the input (never a hardcoded literal) so the tests track index.html.
+func hashToken(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
+
+func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	policy, err := buildCSPPolicy(sub)
+	if err != nil {
+		t.Fatalf("buildCSPPolicy: %v", err)
+	}
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	rec := httptest.NewRecorder()
-	securityHeaders(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	securityHeaders(policy, next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
 	}
-	if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
-		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
+	csp := rec.Header().Get("Content-Security-Policy")
+
+	// script-src is hardened: 'self' plus at least one pinned sha256 hash, and
+	// NO 'unsafe-inline'.
+	scriptSrc := cspDirective(t, csp, "script-src")
+	if !strings.Contains(scriptSrc, "'self'") {
+		t.Errorf("script-src = %q, want it to contain 'self'", scriptSrc)
+	}
+	if !strings.Contains(scriptSrc, "'sha256-") {
+		t.Errorf("script-src = %q, want it to pin at least one 'sha256-...' hash", scriptSrc)
+	}
+	if strings.Contains(scriptSrc, "'unsafe-inline'") {
+		t.Errorf("script-src = %q, want 'unsafe-inline' dropped", scriptSrc)
+	}
+
+	// style-src keeps 'unsafe-inline' (the renderer's dynamic per-cell inline
+	// styles depend on it).
+	styleSrc := cspDirective(t, csp, "style-src")
+	if !strings.Contains(styleSrc, "'unsafe-inline'") {
+		t.Errorf("style-src = %q, want it to keep 'unsafe-inline'", styleSrc)
+	}
+
+	// Every other directive is unchanged.
+	for _, want := range []string{
+		"default-src 'self'", "img-src 'self' data:", "font-src 'self'",
+		"connect-src 'self'", "frame-ancestors 'none'", "base-uri 'none'",
+		"object-src 'none'", "form-action 'none'",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP = %q, want it to contain %q", csp, want)
+		}
+	}
+}
+
+func TestInlineScriptHashes(t *testing.T) {
+	cases := []struct {
+		name string
+		html string
+		want []string
+	}{
+		{"no scripts", `<html><body>hi</body></html>`, nil},
+		{"single inline", `<head><script>let a=1;</script></head>`, []string{hashToken("let a=1;")}},
+		{"external skipped", `<script src="/vendor/x.js"></script>`, nil},
+		{"external with type skipped", `<script type="module" src="/x.js"></script>`, nil},
+		{"mixed inline and external", `<script src="/x.js"></script><script>b=2</script>`, []string{hashToken("b=2")}},
+		{
+			"two inline preserve order",
+			`<script type="importmap">{"i":1}</script><script type="module">go()</script>`,
+			[]string{hashToken(`{"i":1}`), hashToken("go()")},
+		},
+		{"case-insensitive tag", `<SCRIPT>x=3</SCRIPT>`, []string{hashToken("x=3")}},
+		{"data-src is not a src attribute", `<script data-src="x">y=4</script>`, []string{hashToken("y=4")}},
+		{"newlines hashed verbatim", "<script>\n  z=5\n</script>", []string{hashToken("\n  z=5\n")}},
+		{"scriptfoo is not a script tag", `<scriptfoo>nope</scriptfoo>`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inlineScriptHashes([]byte(tc.html))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("inlineScriptHashes(%q) = %v, want %v", tc.html, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCSPHashTokenFormat pins that cspHash emits a CSP-grammar source token: a
+// standard-base64 encoding of a 32-byte sha256 digest wrapped as 'sha256-...'.
+// It validates the encoding/format without hardcoding any expected hash value.
+func TestCSPHashTokenFormat(t *testing.T) {
+	tok := cspHash([]byte("console.log(1)"))
+	if !strings.HasPrefix(tok, "'sha256-") || !strings.HasSuffix(tok, "'") {
+		t.Fatalf("token = %q, want the 'sha256-<base64>' form", tok)
+	}
+	b64 := strings.TrimSuffix(strings.TrimPrefix(tok, "'sha256-"), "'")
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("hash %q is not valid standard base64: %v", b64, err)
+	}
+	if len(raw) != sha256.Size {
+		t.Errorf("decoded hash = %d bytes, want %d (sha256)", len(raw), sha256.Size)
+	}
+}
+
+// TestCSPScriptHashesMatchEmbeddedInlineScripts is the anti-drift guard for the
+// script-src hardening. It independently re-extracts every inline <script> in
+// the embedded index.html with a regexp (a different implementation from the
+// production byte scanner, so agreement is a genuine cross-check) and asserts
+// the sha256 hash of each appears in the CSP the server actually sends. The
+// header can therefore never silently stop matching the scripts the page runs.
+// Hashes are computed from the embed, never hardcoded, so the test tracks
+// index.html automatically.
+func TestCSPScriptHashesMatchEmbeddedInlineScripts(t *testing.T) {
+	indexHTML, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read embedded static/index.html: %v", err)
+	}
+
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	policy, err := buildCSPPolicy(sub)
+	if err != nil {
+		t.Fatalf("buildCSPPolicy: %v", err)
+	}
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	rec := httptest.NewRecorder()
+	securityHeaders(policy, next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	csp := rec.Header().Get("Content-Security-Policy")
+
+	// Independent oracle: a regexp extractor, structurally different from the
+	// production scanner. `(?is)` makes `.` span newlines and matching
+	// case-insensitive; `.*?` stops at the first closing tag.
+	scriptRE := regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script\s*>`)
+	srcRE := regexp.MustCompile(`(?i)(^|[\s/])src\s*=`)
+
+	found := 0
+	for _, m := range scriptRE.FindAllSubmatch(indexHTML, -1) {
+		if srcRE.Match(m[1]) {
+			continue // external script, allowed by 'self'
+		}
+		found++
+		token := hashToken(string(m[2]))
+		if !strings.Contains(csp, token) {
+			t.Errorf("CSP is missing the hash for an inline script.\ncontent=%q\nwant token %s\nCSP: %s",
+				m[2], token, csp)
+		}
+	}
+	if found < 2 {
+		t.Fatalf("oracle found %d inline scripts in index.html, want >= 2 (importmap + module bootstrap); the regexp or the file changed", found)
+	}
+}
+
+// TestFallbackCSPPolicy exercises the test-only escape hatch: fallbackCSPPolicy
+// relaxes script-src to 'unsafe-inline' (no pinned hashes) while keeping the
+// other directives, including style-src's 'unsafe-inline'. Production never
+// takes this path — newHandler always builds the hash-pinned policy from the
+// embedded index.html via buildCSPPolicy — so this both documents the contract
+// and keeps the helper exercised.
+func TestFallbackCSPPolicy(t *testing.T) {
+	policy := fallbackCSPPolicy()
+	scriptSrc := cspDirective(t, policy, "script-src")
+	if !strings.Contains(scriptSrc, "'unsafe-inline'") {
+		t.Errorf("fallback script-src = %q, want it to contain 'unsafe-inline' (test-only relaxation)", scriptSrc)
+	}
+	if strings.Contains(scriptSrc, "'sha256-") {
+		t.Errorf("fallback script-src = %q, want no pinned sha256 hash", scriptSrc)
+	}
+	if styleSrc := cspDirective(t, policy, "style-src"); !strings.Contains(styleSrc, "'unsafe-inline'") {
+		t.Errorf("fallback style-src = %q, want it to keep 'unsafe-inline'", styleSrc)
+	}
+}
+
+// TestBuildCSPPolicyFailsLoud pins the fail-loud contract: buildCSPPolicy
+// returns an error (never a silent 'unsafe-inline' degrade) when the static FS
+// is nil, index.html is missing, or index.html holds no inline <script>. A
+// production build always embeds index.html with its two inline scripts, so any
+// of these means a malformed build that must abort startup, not serve a policy
+// that drops the script-src hardening.
+func TestBuildCSPPolicyFailsLoud(t *testing.T) {
+	cases := []struct {
+		name string
+		fsys fs.FS
+	}{
+		{"nil FS", nil},
+		{"missing index.html", fstest.MapFS{}},
+		{"only external scripts", fstest.MapFS{
+			"index.html": &fstest.MapFile{Data: []byte(`<html><body><script src="/vendor/x.js"></script></body></html>`)},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := buildCSPPolicy(tc.fsys); err == nil {
+				t.Errorf("buildCSPPolicy(%s) = nil error, want a fail-loud error", tc.name)
+			}
+		})
 	}
 }
 
@@ -295,8 +503,12 @@ func TestStatusWriterWriteImpliesOK(t *testing.T) {
 	if _, err := sw.Write([]byte("hi")); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	if !sw.wroteHeader {
-		t.Error("wroteHeader = false after Write, want true")
+	// A bare Write with no explicit WriteHeader must leave the captured status at 200, and a
+	// WriteHeader after the first Write must be ignored, so the access log records the
+	// implicit 200 the client actually saw.
+	sw.WriteHeader(http.StatusInternalServerError)
+	if sw.status != http.StatusOK {
+		t.Errorf("status after Write then WriteHeader = %d, want %d (implicit 200 must not be overwritten)", sw.status, http.StatusOK)
 	}
 }
 
@@ -413,7 +625,7 @@ func TestLoadConfigIdleReaper(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
 		}
-		if cfg.idleReaper != 30*60*1e9 {
+		if cfg.idleReaper != 30*time.Minute {
 			t.Errorf("idleReaper = %v, want 30m", cfg.idleReaper)
 		}
 		setWTEnv(t, map[string]string{"WT_IDLE_REAPER": "nonsense"})
@@ -550,6 +762,52 @@ func TestCreateRateLimit(t *testing.T) {
 	if !restHit.Load() {
 		t.Error("GET /api/sessions was blocked by the create rate limiter")
 	}
+}
+
+// TestCreateRateLimitRefillsOverTime pins token-bucket recovery: after the burst is
+// exhausted, idle time refills tokens so creation is permitted again.
+func TestCreateRateLimitRefillsOverTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var ready atomic.Bool
+		ready.Store(true)
+		h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, stubHandler{}, &ready)
+		if err != nil {
+			t.Fatalf("newHandler() error: %v", err)
+		}
+		post := func() int {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions", nil))
+			return rec.Code
+		}
+		for range int(createBurst) {
+			post()
+		}
+		if code := post(); code != http.StatusTooManyRequests {
+			t.Fatalf("post immediately after exhausting the burst = %d, want 429", code)
+		}
+		time.Sleep(2 * time.Second) // virtual clock: refills ~2 tokens
+		if code := post(); code != http.StatusOK {
+			t.Errorf("post after a 2s refill = %d, want 200 (bucket must recover)", code)
+		}
+	})
+}
+
+// TestTokenBucketCapsRefillAtBurst pins that refill clamps at createBurst.
+func TestTokenBucketCapsRefillAtBurst(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := &tokenBucket{}
+		if !b.allow() {
+			t.Fatal("first allow() = false, want true")
+		}
+		time.Sleep(time.Hour) // virtual clock: would refill thousands if uncapped
+		allowed := 0
+		for b.allow() {
+			allowed++
+		}
+		if allowed != int(createBurst) {
+			t.Errorf("allowed %d after a long idle, want %d (refill must cap at burst)", allowed, int(createBurst))
+		}
+	})
 }
 
 func TestRouteStaticServesIndex(t *testing.T) {
@@ -710,6 +968,22 @@ func TestGzipAsset(t *testing.T) {
 			t.Error("gzipAsset() ok = true for a 1-byte asset gzip cannot shrink, want false")
 		}
 	})
+}
+
+// TestGzipAssetContentTypeFallback pins the mime-miss branch: a compressible asset whose
+// extension mime.TypeByExtension cannot resolve must fall back to http.DetectContentType.
+func TestGzipAssetContentTypeFallback(t *testing.T) {
+	raw := []byte(strings.Repeat("plain text body line\n", 500))
+	gz, ok := gzipAsset(raw, "asset.unknownext")
+	if !ok {
+		t.Fatal("gzipAsset() ok = false for a highly compressible asset, want true")
+	}
+	if gz.contentType == "" {
+		t.Fatal("contentType is empty; the mime-miss fallback did not run")
+	}
+	if !strings.HasPrefix(gz.contentType, "text/plain") {
+		t.Errorf("contentType = %q, want text/plain prefix (DetectContentType on text bytes)", gz.contentType)
+	}
 }
 
 func TestServeGzip(t *testing.T) {
