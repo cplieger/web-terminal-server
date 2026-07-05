@@ -18,7 +18,7 @@
 #   already-built/pulled image ref to skip the build (CI builds once, then
 #   reuses the loaded image).
 #
-# Requires docker + curl. Exits non-zero on the first failed assertion and
+# Requires docker, curl, and jq. Exits non-zero on the first failed assertion and
 # always removes the container it started.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -38,6 +38,10 @@ cleanup() {
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+
+for tool in docker curl jq; do
+  command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
+done
 
 # Build only when the caller didn't hand us a prebuilt image to reuse.
 if [ "$IMAGE" = "web-terminal-server:smoke" ]; then
@@ -97,6 +101,7 @@ echo "[smoke] PASS  / (authenticated) = 200, serves scaffold"
 for asset in \
   /style.css \
   /vendor/cplieger-web-terminal-ui/index.js \
+  /vendor/cplieger-web-terminal-ui/presets.js \
   /vendor/cplieger-web-terminal-engine/index.js \
   /vendor/fonts/MonaspiceNeNerdFontMono-Regular.otf; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}${asset}")
@@ -110,7 +115,7 @@ echo "[smoke] PASS  importmap-referenced bundle assets served (CSS, engine+UI JS
 #    session" from "handler not mounted." Create a real session via the REST
 #    API first so the request reaches the WebSocket handler itself, which must
 #    then reject the non-upgrade request (typically 400/426).
-session_id=$(curl -s -u "admin:${PASSWORD}" -X POST "${BASE}/api/sessions" | jq -r '.id')
+session_id=$(curl -s -u "admin:${PASSWORD}" -X POST "${BASE}/api/sessions" | jq -r '.id // empty')
 [ -n "$session_id" ] || fail "POST /api/sessions did not return a session id"
 code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/ws?session=${session_id}")
 case "$code" in

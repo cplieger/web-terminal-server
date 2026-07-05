@@ -39,6 +39,11 @@ cp "$UI_DIR/package.json" "$NM/web-terminal-ui/package.json"
     cp "$UI_DIR/src/$f" "$NM/web-terminal-ui/src/$f"
   done
 
+TSGO_VER="$(sed -n 's/^ARG TSGO_VERSION=//p' Dockerfile)"
+if [ -n "$TSGO_VER" ] && ! tsgo --version 2>/dev/null | grep -qF "$TSGO_VER"; then
+  echo "  WARN: local tsgo != Dockerfile pin ($TSGO_VER); CDP harnesses may validate a bundle the shipped image will not reproduce" >&2
+fi
+
 echo "[2/5] compile engine -> static/vendor/cplieger-web-terminal-engine"
 tsgo --module ESNext --target ESNext --moduleResolution bundler \
   --outDir static/vendor/cplieger-web-terminal-engine \
