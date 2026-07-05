@@ -62,19 +62,18 @@ wait_for() { # url label
 }
 
 start_chromium() {
-  local bin base flag
+  local bin base
+  local -a flag=()
   bin="$(find_chromium)" || { echo "no Chromium found; install one or set CHROMIUM= or CDP_URL=" >&2; exit 3; }
   base="$(basename "$bin")"
   # chrome-headless-shell is always headless; full chrome needs --headless=new.
   case "$base" in
-    *headless*) flag="" ;;
-    *) flag="--headless=new" ;;
+    *headless*) flag=() ;;
+    *) flag=(--headless=new) ;;
   esac
   CHROME_PROFILE="$(mktemp -d)"
   echo "launching $bin on :$CDP_PORT"
-  # $flag is intentionally word-split (it may be empty for headless-shell).
-  # shellcheck disable=SC2086
-  "$bin" $flag --disable-gpu --no-first-run --no-default-browser-check \
+  "$bin" "${flag[@]}" --disable-gpu --no-first-run --no-default-browser-check \
     --remote-debugging-port="$CDP_PORT" --remote-allow-origins='*' \
     --user-data-dir="$CHROME_PROFILE" about:blank >/dev/null 2>&1 &
   CHROME_PID=$!
@@ -110,7 +109,13 @@ run() { # label script
   fi
 }
 
+# Group 1: harnesses that run against the continuous-emitter fixture.
+# Listed once so a new harness can't be silently dropped from either branch.
+GROUP1=(render resume input viewport resize)
+run_group1() { for h in "${GROUP1[@]}"; do run "$h" "cdp-$h.cjs"; done; }
+
 # --- provision the DevTools endpoint ---
+command -v node >/dev/null 2>&1 || { echo "node (v22+) is required to run the CDP harnesses" >&2; exit 3; }
 if [ -n "${CDP_URL:-}" ]; then
   if [ -z "${WT_URL:-}" ]; then
     echo "CDP_URL is set but WT_URL is not: with an external browser this runner cannot" >&2
@@ -120,11 +125,7 @@ if [ -n "${CDP_URL:-}" ]; then
   fi
   echo "using external DevTools endpoint $CDP_URL and server $WT_URL (not managing either)"
   export CDP_URL WT_URL
-  run "render"     cdp-render.cjs
-  run "resume"     cdp-resume.cjs
-  run "input"      cdp-input.cjs
-  run "viewport"   cdp-viewport.cjs
-  run "resize"     cdp-resize.cjs
+  run_group1
   echo "NOTE: skipping the scrollback test (needs the server on emit-ed3.sh; start it and" >&2
   echo "      run: WT_URL=... node scripts/cdp-scrollback.cjs)" >&2
 else
@@ -135,11 +136,7 @@ else
 
   # Group 1: the continuous emitter.
   start_server "sh $DIR/emit-fixture.sh"
-  run "render"   cdp-render.cjs
-  run "resume"   cdp-resume.cjs
-  run "input"    cdp-input.cjs
-  run "viewport" cdp-viewport.cjs
-  run "resize"   cdp-resize.cjs
+  run_group1
   stop_server
 
   # Group 2: the ED3 fixture.
