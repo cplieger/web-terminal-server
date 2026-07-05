@@ -19,7 +19,9 @@ workflows, or `LICENSE`.
   static front end at `/` (the engine's `/debug/*` routes are intentionally **not**
   exposed). Middleware (outermost first): an slog
   access log, security headers (`X-Content-Type-Options: nosniff` + a
-  Content-Security-Policy), optional HTTP Basic auth, and
+  Content-Security-Policy whose `script-src` pins a sha256 of each inline
+  `<script>` in the embedded `index.html` — computed at construction and
+  fail-loud on a malformed embed), optional HTTP Basic auth, and
   `http.CrossOriginProtection`. The `statusWriter`
   implements `Unwrap()` so the WebSocket hijack reaches the real
   `ResponseWriter` through the access-log wrapper.

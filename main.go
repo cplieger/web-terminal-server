@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -124,7 +125,7 @@ func loadConfig() (config, error) {
 		// WT_WORKDIR is operator-supplied configuration (the directory the
 		// operator wants the shell to run in), not untrusted request input, so
 		// an arbitrary absolute path is expected and correct here.
-		fi, err := os.Stat(c.workDir) // #nosec G703 -- operator-controlled config path, not user input
+		fi, err := os.Stat(c.workDir) //nolint:gosec // G703 -- operator-controlled config path, not user input
 		if err != nil {
 			return config{}, fmt.Errorf("WT_WORKDIR missing: %w", err)
 		}
@@ -204,7 +205,7 @@ func main() {
 		slog.Info("web-terminal-server listening",
 			"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 			"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
-			"auth", cfg.password != "")
+			"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server exited", "error", err)
 			stop()
@@ -231,8 +232,8 @@ func main() {
 // handlers are passed in (rather than a manager constructed here) so tests can
 // exercise the routing and middleware with stubs, without a real PTY. ready
 // gates /healthz so load balancers see the server as unavailable during startup
-// and graceful shutdown. It returns an error only if the embedded static assets
-// can't be opened.
+// and graceful shutdown. It returns an error if the embedded static assets
+// can't be opened or the CSP can't be built from index.html.
 func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// Mount only the session WebSocket endpoint (not the engine's /debug/*
@@ -269,11 +270,21 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) 
 	}
 	mux.Handle("/", staticSrv)
 
+	// Build the CSP once from the embedded index.html so the sha256 tokens
+	// pinned in script-src always match the inline scripts the browser runs
+	// (no hand-maintained hash constant). FAIL LOUD: a malformed build —
+	// missing/unreadable index.html or zero inline scripts — aborts startup
+	// here rather than silently dropping the script-src hardening.
+	cspPolicy, err := buildCSPPolicy(sub)
+	if err != nil {
+		return nil, fmt.Errorf("build CSP: %w", err)
+	}
+
 	handler := http.NewCrossOriginProtection().Handler(mux)
 	if cfg.password != "" {
 		handler = basicAuth(handler, cfg.username, cfg.password)
 	}
-	handler = securityHeaders(handler)
+	handler = securityHeaders(cspPolicy, handler)
 	handler = accessLog(handler)
 	return handler, nil
 }
@@ -317,7 +328,8 @@ func (b *tokenBucket) allow() bool {
 
 // createRateLimit wraps the session REST handler, gating POST /api/sessions
 // (session creation) behind a token bucket so a caller cannot fork PTY
-// processes without bound. List (GET) and close (DELETE) pass through
+// processes at an unbounded RATE: the limiter bounds create churn, not the
+// total live PTY population. List (GET) and close (DELETE) pass through
 // unthrottled.
 func createRateLimit(next http.Handler) http.Handler {
 	bucket := &tokenBucket{}
@@ -502,9 +514,6 @@ func ifNoneMatchContains(header, etag string) bool {
 // remote shell. Bind loopback (the default) or set WT_PASSWORD, or front it
 // with an authenticating reverse proxy.
 func warnIfExposed(addr, password string) {
-	if password != "" {
-		return
-	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr
@@ -512,10 +521,18 @@ func warnIfExposed(addr, password string) {
 	if isLoopbackHost(host) {
 		return
 	}
-	slog.Warn("listening on a non-loopback address WITHOUT authentication",
-		"addr", addr,
-		"risk", "anyone who can reach this address gets an interactive shell",
-		"fix", "set WT_PASSWORD, bind 127.0.0.1, or front with an authenticating reverse proxy")
+	switch {
+	case password == "":
+		slog.Warn("listening on a non-loopback address WITHOUT authentication",
+			"addr", addr,
+			"risk", "anyone who can reach this address gets an interactive shell",
+			"fix", "set WT_PASSWORD, bind 127.0.0.1, or front with an authenticating reverse proxy")
+	case strings.TrimSpace(password) == "":
+		slog.Warn("listening on a non-loopback address with a whitespace-only WT_PASSWORD",
+			"addr", addr,
+			"risk", "a blank/whitespace password provides negligible protection for a remote shell",
+			"fix", "set a strong WT_PASSWORD or front with an authenticating reverse proxy")
+	}
 }
 
 // isLoopbackHost reports whether host names the loopback interface. An empty
@@ -556,23 +573,241 @@ func basicAuth(next http.Handler, username, password string) http.Handler {
 	})
 }
 
-// securityHeaders sets defense-in-depth response headers on every
-// response: nosniff stops MIME-confusion, the CSP scopes assets to the
-// same origin (with 'unsafe-inline' for the importmap + inline mount() in
-// static/index.html and the renderer's inline cell styles), connect-src
-// 'self' covers the same-origin /ws WebSocket, and frame-ancestors 'none'
-// blocks clickjacking of the interactive terminal.
-func securityHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; " +
-		"script-src 'self' 'unsafe-inline'; " +
-		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
-		"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; " +
-		"form-action 'none'"
+// cspTemplate is the Content-Security-Policy applied to every response, with a
+// single %s placeholder for the script-src hash tokens. The tokens are computed
+// once at server construction from the embedded index.html (see
+// buildCSPPolicy), so an index.html edit — including a pure-whitespace prettier
+// reformat of an inline script — is tracked automatically without hand-editing
+// a constant. Directives other than script-src are fixed:
+//
+//	style-src 'unsafe-inline'  the terminal renderer sets dynamic per-cell
+//	                           inline style attributes and would break without it
+//	img-src 'self' data:        favicon/icon data URIs
+//	connect-src 'self'          same-origin HTTP + the /ws WebSocket PTY
+//	frame-ancestors 'none'      blocks clickjacking of the interactive terminal
+const cspTemplate = "default-src 'self'; " +
+	"script-src 'self' %s; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+	"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; " +
+	"form-action 'none'"
+
+// buildCSPPolicy reads index.html from sub, hashes every inline <script>
+// in it, and assembles the full CSP string. Called once at server construction
+// (newHandler). It FAILS LOUD — returning an error rather than degrading to
+// 'unsafe-inline' — when sub is nil, index.html can't be read, or the file
+// holds no inline scripts: a valid build always embeds index.html with its two
+// inline scripts (the importmap and the module bootstrap), so a failure here
+// means a malformed build, which should abort startup with a clear message
+// rather than silently drop the script-src hardening or serve a hash set that
+// would block the browser's import-map and break ES module loading.
+func buildCSPPolicy(sub fs.FS) (string, error) {
+	if sub == nil {
+		return "", errors.New("buildCSPPolicy: nil static FS")
+	}
+	html, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		return "", fmt.Errorf("buildCSPPolicy: read index.html: %w", err)
+	}
+	hashes := inlineScriptHashes(html)
+	if len(hashes) == 0 {
+		return "", errors.New("buildCSPPolicy: no inline <script> blocks in index.html")
+	}
+	return fmt.Sprintf(cspTemplate, strings.Join(hashes, " ")), nil
+}
+
+// fallbackCSPPolicy assembles the CSP with script-src relaxed to
+// 'unsafe-inline' instead of pinned hashes. It is used ONLY by tests that do
+// not exercise the inline scripts; production always goes through
+// buildCSPPolicy against the real embedded index.html and never relaxes
+// script-src.
+func fallbackCSPPolicy() string {
+	return fmt.Sprintf(cspTemplate, "'unsafe-inline'")
+}
+
+// inlineScriptHashes scans HTML for inline <script> elements (those WITHOUT a
+// src attribute) and returns a CSP source token 'sha256-<b64>' for each,
+// hashing the exact bytes between the element's '>' and its '</script>' —
+// precisely the content a browser hashes for a CSP script-src hash. External
+// (src=) scripts are skipped; 'self' already covers them. It is byte-precise
+// and dependency-free, and returns an empty slice on script-less or malformed
+// input; buildCSPPolicy treats that empty result as a fatal build error.
+func inlineScriptHashes(html []byte) []string {
+	var out []string
+	for i := 0; i < len(html); {
+		open := findScriptOpen(html, i)
+		if open < 0 {
+			break
+		}
+		gt := openTagEnd(html, open+len("<script"))
+		if gt < 0 {
+			break
+		}
+		closeIdx := findScriptClose(html, gt+1)
+		if closeIdx < 0 {
+			break
+		}
+		if !hasSrcAttr(html[open+len("<script") : gt]) {
+			out = append(out, cspHash(html[gt+1:closeIdx]))
+		}
+		i = closeIdx + len("</script")
+	}
+	return out
+}
+
+// cspHash returns the CSP source token 'sha256-<std-base64>' for content.
+func cspHash(content []byte) string {
+	sum := sha256.Sum256(content)
+	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
+
+// findScriptOpen returns the index at or after `from` of the next "<script"
+// tag start — case-insensitive, and only where "<script" is followed by a tag
+// boundary so "<scriptfoo" does not match — or -1.
+func findScriptOpen(html []byte, from int) int {
+	for i := from; ; {
+		s := indexFoldASCII(html, i, "<script")
+		if s < 0 {
+			return -1
+		}
+		after := s + len("<script")
+		if after >= len(html) || isTagNameBoundary(html[after]) {
+			return s
+		}
+		i = after
+	}
+}
+
+// findScriptClose returns the index at or after `from` of the next "</script"
+// (case-insensitive), or -1.
+func findScriptClose(html []byte, from int) int {
+	return indexFoldASCII(html, from, "</script")
+}
+
+// openTagEnd returns the index of the '>' that closes an opening tag starting
+// at `from`, skipping any '>' inside a quoted attribute value, or -1.
+func openTagEnd(html []byte, from int) int {
+	var quote byte
+	for i := from; i < len(html); i++ {
+		switch c := html[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '>':
+			return i
+		}
+	}
+	return -1
+}
+
+// hasSrcAttr reports whether the opening-tag attribute bytes of a <script>
+// element (the bytes between "<script" and its closing '>') declare a src
+// attribute. It matches `src` only at an attribute-name position and skips
+// quoted values, so "srcset", "data-src", and a "src=" inside a value are not
+// mistaken for it.
+func hasSrcAttr(attrs []byte) bool {
+	var quote byte
+	atName := true
+	for i := range attrs {
+		switch c := attrs[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote, atName = c, false
+		case isASCIISpace(c):
+			atName = true
+		case atName && matchesSrcHere(attrs, i):
+			return true
+		default:
+			atName = false
+		}
+	}
+	return false
+}
+
+// matchesSrcHere reports whether attrs at index i begins the attribute name
+// "src" (case-insensitive) followed, after optional whitespace, by '=' — a real
+// src attribute rather than a longer name such as "srcset".
+func matchesSrcHere(attrs []byte, i int) bool {
+	if !hasFoldPrefix(attrs[i:], "src") {
+		return false
+	}
+	j := i + len("src")
+	for j < len(attrs) && isASCIISpace(attrs[j]) {
+		j++
+	}
+	return j < len(attrs) && attrs[j] == '='
+}
+
+// indexFoldASCII returns the index at or after `from` of the first
+// ASCII-case-insensitive match of the lowercase literal `needle` in b, or -1.
+// It scans b directly (no allocation), so returned indices address the original
+// bytes — required for slicing the exact content a browser hashes.
+func indexFoldASCII(b []byte, from int, needle string) int {
+	for i := from; i <= len(b)-len(needle); i++ {
+		if hasFoldPrefix(b[i:], needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+// hasFoldPrefix reports whether b begins with the lowercase ASCII literal
+// `lowerNeedle`, comparing ASCII letters case-insensitively.
+func hasFoldPrefix(b []byte, lowerNeedle string) bool {
+	if len(b) < len(lowerNeedle) {
+		return false
+	}
+	for i := range len(lowerNeedle) {
+		if lowerASCII(b[i]) != lowerNeedle[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// lowerASCII returns c lowercased if it is an ASCII uppercase letter, else c.
+func lowerASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// isTagNameBoundary reports whether c ends an HTML tag name ('>', '/', or ASCII
+// whitespace).
+func isTagNameBoundary(c byte) bool {
+	return c == '>' || c == '/' || isASCIISpace(c)
+}
+
+// isASCIISpace reports whether c is an HTML ASCII whitespace byte.
+func isASCIISpace(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\f':
+		return true
+	default:
+		return false
+	}
+}
+
+// securityHeaders sets defense-in-depth response headers on every response:
+// nosniff stops MIME-confusion, and the Content-Security-Policy (built once at
+// construction by buildCSPPolicy and passed in here) scopes assets to the same
+// origin, with script-src pinning a sha256 hash of each inline <script> in
+// index.html (so 'unsafe-inline' is dropped from script-src) while style-src
+// keeps 'unsafe-inline' for the renderer's dynamic per-cell inline styles,
+// connect-src 'self' covers the same-origin /ws WebSocket, and frame-ancestors
+// 'none' blocks clickjacking of the interactive terminal.
+func securityHeaders(cspPolicy string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Content-Security-Policy", csp)
+		h.Set("Content-Security-Policy", cspPolicy)
 		next.ServeHTTP(w, r)
 	})
 }
