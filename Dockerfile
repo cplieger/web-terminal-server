@@ -38,7 +38,7 @@ COPY . ./
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
 ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=2.2.1
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
-ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=3.3.1
+ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=3.4.0
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
     curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" \
       | tar -xz -C node_modules/@cplieger/web-terminal-engine --strip-components=1 && \
