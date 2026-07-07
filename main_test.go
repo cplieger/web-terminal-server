@@ -481,8 +481,9 @@ func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 }
 
 // fakeHijacker is a ResponseWriter that implements http.Hijacker so a test can
-// assert the hijack call reaches the underlying writer through accessLog's
-// webhttp.StatusRecorder wrapper (the path the /ws WebSocket upgrade depends on).
+// assert the hijack call reaches the underlying writer through the middleware
+// chain's webhttp.Logging StatusRecorder wrapper (the path the /ws WebSocket
+// upgrade depends on).
 type fakeHijacker struct {
 	http.ResponseWriter
 	hijacked bool
@@ -493,25 +494,34 @@ func (f *fakeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, errors.New("test hijacker: no real connection")
 }
 
-// TestAccessLogPreservesWebSocketHijack drives a request through accessLog with
-// an underlying ResponseWriter that implements http.Hijacker and asserts the
-// hijack is actually reached via http.ResponseController through the access-log
-// recorder (webhttp.StatusRecorder), the path the /ws WebSocket upgrade needs.
-func TestAccessLogPreservesWebSocketHijack(t *testing.T) {
+// TestWebSocketHijackReachesThroughChain drives GET /ws through the fully
+// assembled newHandler middleware chain (webhttp.Logging -> Recoverer ->
+// SecurityHeaders -> CrossOriginProtection -> mux) with an underlying
+// ResponseWriter that implements http.Hijacker, and asserts the hijack is
+// actually reached via http.ResponseController. webhttp.Logging wraps the writer
+// in a StatusRecorder, so this pins that the recorder stays transparent to the
+// hijack the /ws WebSocket upgrade needs, through the real production chain.
+func TestWebSocketHijackReachesThroughChain(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
 	var reached bool
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
 		_, _, _ = http.NewResponseController(w).Hijack()
 	})
+	h, err := newHandler(&config{}, ws, stubHandler{}, stubHandler{}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
 
 	fh := &fakeHijacker{ResponseWriter: httptest.NewRecorder()}
-	accessLog(next).ServeHTTP(fh, httptest.NewRequest(http.MethodGet, "/ws", nil))
+	h.ServeHTTP(fh, httptest.NewRequest(http.MethodGet, "/ws", nil))
 
 	if !reached {
 		t.Fatal("handler never ran")
 	}
 	if !fh.hijacked {
-		t.Error("Hijack did not reach the underlying ResponseWriter through the access-log recorder; the /ws WebSocket upgrade would break")
+		t.Error("Hijack did not reach the underlying ResponseWriter through the middleware chain; the /ws WebSocket upgrade would break")
 	}
 }
 
@@ -645,10 +655,11 @@ func TestRouteEventsReachesSSE(t *testing.T) {
 
 // TestEventsRouteStreamsThroughMiddleware is the server-side regression guard
 // for the SSE status stream. It drives the REAL engine EventsHandler through the
-// full newHandler middleware chain (access log -> security headers ->
-// cross-origin -> mux) over a real socket, and asserts the stream opens and
-// flushes an event. accessLog wraps the ResponseWriter in webhttp.StatusRecorder,
-// so this pins that the SSE stream still flushes through the access-log wrapper.
+// full newHandler middleware chain (webhttp.Logging -> Recoverer -> security
+// headers -> cross-origin -> mux) over a real socket, and asserts the stream
+// opens and flushes an event. webhttp.Logging wraps the ResponseWriter in a
+// StatusRecorder (the /api/sessions/events path is not skipped), so this pins
+// that the SSE stream still flushes through the logging wrapper.
 func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	factory := func(string) *terminal.Handler {
 		return terminal.NewHandler([]string{"/bin/cat"}, terminal.WithLogger(nil))

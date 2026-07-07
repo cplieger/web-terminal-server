@@ -231,11 +231,12 @@ func main() {
 
 // newHandler assembles the HTTP handler: the route mux (terminal WebSocket,
 // session REST API, status SSE, health, static files) wrapped in the middleware
-// chain via webhttp.Chain. Middleware, outermost first: access log -> panic
-// recovery -> security headers -> basic auth (if configured) -> cross-origin
-// protection -> routes. The session handlers are passed in (rather than a
-// manager constructed here) so tests can exercise the routing and middleware
-// with stubs, without a real PTY. ready gates /healthz so load balancers see
+// chain via webhttp.Chain. Middleware, outermost first: request logging
+// (webhttp.Logging) -> panic recovery -> security headers -> basic auth (if
+// configured) -> cross-origin protection -> routes. The session handlers are
+// passed in (rather than a manager constructed here) so tests can exercise the
+// routing and middleware with stubs, without a real PTY. ready gates /healthz
+// so load balancers see
 // the server as unavailable during startup and graceful shutdown. It returns an
 // error if the embedded static assets can't be opened or the CSP can't be built
 // from index.html.
@@ -300,18 +301,32 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// than hand-nesting. Order matches the fleet canonical Logging -> Recoverer
 	// -> SecurityHeaders, with the app's basic-auth and cross-origin layers
 	// innermost:
-	//   - accessLog (the app-side logger, see its comment) sits outermost so it
-	//     records the final status, including a Recoverer-written 500.
+	//   - webhttp.Logging sits outermost so its access line records the final
+	//     status, including a Recoverer-written 500. WithClientIP adds the
+	//     spoof-proof "client_ip" attribute; with no trusted ranges it is the
+	//     socket peer host (the direct client on loopback, or the fronting
+	//     proxy) — this app binds loopback by default and has no trusted-CIDR
+	//     config, so no-args is correct (front it with a proxy to log the real
+	//     client, then pass that proxy's CIDR here). WithSkipPaths("/healthz")
+	//     drops the routine Docker-probe access line entirely.
+	//     requires webhttp >= v1.2.0 (WithClientIP); local build via go.work replace until released.
+	//     RELEASE-GATED: CI/Docker stay red until webhttp v1.2.0 ships WithClientIP,
+	//     go.mod bumps the require to it, and the go.work replace is dropped.
 	//   - webhttp.Recoverer turns a downstream panic into a logged 500; inside
-	//     accessLog so the recovered request logs its 500, not the default 200.
+	//     Logging so the recovered request logs its 500, not the default 200.
 	//   - webhttp.SecurityHeaders applies nosniff + the app's hash-pinned CSP
 	//     (preserved byte-for-byte via WithCSP) plus the library baseline
 	//     X-Frame-Options: DENY and Referrer-Policy (consistent with the CSP's
 	//     frame-ancestors 'none' — this UI is never framed).
 	//   - basicAuth (when configured) then http.CrossOriginProtection guard the
 	//     routes.
+	//
+	// /healthz logging change: the former app-side accessLog logged /healthz at
+	// Debug to keep the every-30s HEALTHCHECK probe quiet; WithSkipPaths now
+	// omits its access line entirely. Quieter still (the routine-probe-noise
+	// goal is preserved), but there is no longer a Debug-level /healthz line.
 	handler := webhttp.Chain(mux,
-		accessLog,
+		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP()),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
 		authMW,
@@ -824,37 +839,4 @@ func isASCIISpace(c byte) bool {
 	default:
 		return false
 	}
-}
-
-// accessLog emits one structured slog line per request (slog-only
-// observability, matching the cplieger Go apps — no Prometheus endpoint).
-//
-// This is a THIN app-side logger deliberately kept instead of webhttp.Logging.
-// webhttp v1.1.1's access line is method/path/status/duration_ms/request_id and
-// emits no client-address field, whereas this line carries a "remote" field
-// (r.RemoteAddr, the raw TCP peer — the spoof-safe choice, as the app trusts no
-// X-Forwarded-For). It also logs /healthz at Debug rather than skipping it,
-// which webhttp.Logging (skip-only via WithSkipPaths) cannot express. It is
-// still built on the webhttp primitive (NewStatusRecorder). If webhttp gains a
-// client-IP option for its logger (a WithClientIP on Logging), this collapses
-// into webhttp.Logging + that option.
-func accessLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		// webhttp.StatusRecorder captures the status and stays transparent to
-		// streaming (Unwrap + direct Flush/Hijack), so the /ws hijack and the
-		// SSE flush both reach the underlying writer through this wrapper.
-		sw := webhttp.NewStatusRecorder(w)
-		next.ServeHTTP(sw, r)
-		// The Docker HEALTHCHECK polls /healthz every 30s; logging each probe
-		// at Info would dominate the Loki log stream. Log /healthz at Debug so
-		// routine probes stay quiet while all other traffic stays at Info.
-		level := slog.LevelInfo
-		if r.URL.Path == "/healthz" {
-			level = slog.LevelDebug
-		}
-		slog.Log(context.Background(), level, "request",
-			"method", r.Method, "path", r.URL.Path, "status", sw.Status(),
-			"duration_ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr)
-	})
 }
