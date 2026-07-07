@@ -67,9 +67,13 @@ All configuration is via environment variables:
 | `WT_IDLE_REAPER` | _(unset → disabled)_ | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. |
 | `WT_USERNAME` | `admin` | Basic-auth username (only used when `WT_PASSWORD` is set). |
 | `WT_PASSWORD` | _(unset → no auth)_ | Basic-auth password. When set, every route (including `/ws`) requires it. |
-| `WT_TRUSTED_PROXIES` | _(unset → socket peer)_ | Comma-separated reverse-proxy CIDRs or bare IPs (e.g. `10.0.0.0/8,192.168.1.5`). Behind a reverse proxy, set it to the proxy's address range(s) so the access log's `client_ip` resolves the real client from a trusted `X-Forwarded-For`. Leave unset when the server is directly exposed: the log then records the immediate socket peer, which cannot be spoofed. Malformed entries are logged and skipped. |
+| `WT_TRUSTED_PROXIES` | _(unset → socket peer)_ | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). |
 
 Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/events` (status SSE), `/healthz` (readiness).
+
+### Client IP logging
+
+The access log records a `client_ip` per request. By default (`WT_TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `WT_TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `WT_TRUSTED_PROXIES=10.0.0.0/8,192.168.1.5`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup.
 
 ## How it fits together
 
