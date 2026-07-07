@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/cplieger/web-terminal-engine/v2/terminal"
+	"github.com/cplieger/webhttp"
 )
 
 // staticFS holds the bundled front end (the @cplieger/web-terminal-ui scaffold
@@ -178,17 +179,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
-		// ReadTimeout/WriteTimeout are intentionally unset: either would cap
-		// the lifetime of the hijacked /ws WebSocket stream. IdleTimeout only
-		// bounds idle keep-alive connections between requests (it does not
-		// apply to a hijacked conn), so it is safe and bounds resource use.
-		IdleTimeout: 120 * time.Second,
-	}
+	// webhttp.NewServer supplies the streaming-safe defaults: ReadHeaderTimeout
+	// 10s, IdleTimeout 120s, MaxHeaderBytes 1 MiB, and ReadTimeout/WriteTimeout
+	// left unset. Leaving Read/WriteTimeout unset is required, not incidental:
+	// either would cap the lifetime of the hijacked /ws WebSocket stream.
+	srv := webhttp.NewServer(handler,
+		webhttp.WithErrorLog(slog.NewLogLogger(slog.Default().Handler(), slog.LevelError)),
+	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -201,27 +198,31 @@ func main() {
 		os.Exit(1) //nolint:gocritic // stop() called explicitly above; defer is a no-op safety net
 	}
 
+	// Flip readiness false the moment shutdown is signalled, before webhttp.Run
+	// drains, so /healthz reports 503 during the drain window (Run's teardown
+	// callback runs only after the drain completes).
 	go func() {
-		slog.Info("web-terminal-server listening",
-			"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
-			"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
-			"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("http server exited", "error", err)
-			stop()
-		}
+		<-ctx.Done()
+		ready.Store(false)
+		slog.Info("shutting down", "cause", context.Cause(ctx))
 	}()
+
+	slog.Info("web-terminal-server listening",
+		"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
+		"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
+		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
 	ready.Store(true)
 
-	<-ctx.Done()
-	ready.Store(false)
-	slog.Info("shutting down", "cause", context.Cause(ctx))
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Warn("server shutdown returned error", "error", err)
+	// webhttp.Run serves on the pre-bound listener and, on ctx cancellation,
+	// drains within the grace window then runs the teardown (session manager
+	// shutdown). A runtime serve failure returns a non-nil error.
+	if err := webhttp.Run(ctx, srv, ln, func(context.Context) { mgr.Shutdown() },
+		webhttp.WithShutdownGrace(5*time.Second)); err != nil {
+		slog.Error("http server exited", "error", err)
+		mgr.Shutdown()
+		stop()
+		os.Exit(1)
 	}
-	mgr.Shutdown()
 	slog.Info("web-terminal-server stopped")
 }
 
@@ -251,14 +252,11 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) 
 	// The status SSE is a distinct, more-specific path than the REST subtree, so
 	// ServeMux routes it here rather than to the REST DELETE /{id} pattern.
 	mux.Handle("/api/sessions/events", events)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if !ready.Load() {
-			http.Error(w, "starting up or shutting down", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	// Serving-state gate for a load balancer: 200 {"status":"ok"} when ready,
+	// 503 {"status":"unready",...} during startup/shutdown. main owns the flag
+	// lifecycle (set true after bind, false on shutdown); readyChecker adapts it
+	// to the shared webhttp.ReadinessHandler.
+	mux.Handle("/healthz", webhttp.ReadinessHandler(readyChecker{ready}))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -285,9 +283,21 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) 
 		handler = basicAuth(handler, cfg.username, cfg.password)
 	}
 	handler = securityHeaders(cspPolicy, handler)
+	// Recover a downstream panic into a logged 500 (webhttp.Recoverer),
+	// positioned inside accessLog so the recovered request logs its 500 rather
+	// than the recorder's default 200.
+	handler = webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default()))(handler)
 	handler = accessLog(handler)
 	return handler, nil
 }
+
+// readyChecker adapts the main-owned *atomic.Bool readiness flag to the
+// webhttp.ReadinessChecker interface, so /healthz uses the shared readiness
+// handler while main keeps ownership of the flag's lifecycle.
+type readyChecker struct{ flag *atomic.Bool }
+
+// Ready reports whether the server is ready to receive traffic.
+func (r readyChecker) Ready() bool { return r.flag.Load() }
 
 // Create-rate-limit tuning: a token bucket with a small burst (open several
 // tabs at once) refilling at a steady rate, so sustained create churn is
@@ -817,7 +827,10 @@ func securityHeaders(cspPolicy string, next http.Handler) http.Handler {
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		// webhttp.StatusRecorder captures the status and stays transparent to
+		// streaming (Unwrap + direct Flush/Hijack), so the /ws hijack and the
+		// SSE flush both reach the underlying writer through this wrapper.
+		sw := webhttp.NewStatusRecorder(w)
 		next.ServeHTTP(sw, r)
 		// The Docker HEALTHCHECK polls /healthz every 30s; logging each probe
 		// at Info would dominate the Loki log stream. Log /healthz at Debug so
@@ -827,37 +840,7 @@ func accessLog(next http.Handler) http.Handler {
 			level = slog.LevelDebug
 		}
 		slog.Log(context.Background(), level, "request",
-			"method", r.Method, "path", r.URL.Path, "status", sw.status,
+			"method", r.Method, "path", r.URL.Path, "status", sw.Status(),
 			"duration_ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr)
 	})
-}
-
-// statusWriter captures the response status code for the access log. It
-// implements Unwrap (not http.Hijacker) so http.ResponseController - used
-// by coder/websocket's Accept - can reach the underlying ResponseWriter
-// and hijack the /ws connection through the access-log middleware.
-type statusWriter struct {
-	http.ResponseWriter
-	status      int
-	wroteHeader bool
-}
-
-func (s *statusWriter) WriteHeader(code int) {
-	if !s.wroteHeader {
-		s.status = code
-		s.wroteHeader = true
-	}
-	s.ResponseWriter.WriteHeader(code)
-}
-
-func (s *statusWriter) Write(b []byte) (int, error) {
-	s.wroteHeader = true
-	return s.ResponseWriter.Write(b)
-}
-
-// Unwrap lets http.ResponseController (used by coder/websocket's Accept to
-// hijack the connection) reach the underlying ResponseWriter through this
-// wrapper, so the /ws upgrade works behind the access-log middleware.
-func (s *statusWriter) Unwrap() http.ResponseWriter {
-	return s.ResponseWriter
 }

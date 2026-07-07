@@ -484,42 +484,6 @@ func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 	}
 }
 
-func TestStatusWriterCapturesCode(t *testing.T) {
-	rec := httptest.NewRecorder()
-	sw := &statusWriter{ResponseWriter: rec, status: http.StatusOK}
-
-	sw.WriteHeader(http.StatusTeapot)
-	// A second WriteHeader must not overwrite the captured status (matches the
-	// stdlib "superfluous WriteHeader" semantics the access log relies on).
-	sw.WriteHeader(http.StatusInternalServerError)
-	if sw.status != http.StatusTeapot {
-		t.Errorf("status = %d, want %d", sw.status, http.StatusTeapot)
-	}
-}
-
-func TestStatusWriterWriteImpliesOK(t *testing.T) {
-	rec := httptest.NewRecorder()
-	sw := &statusWriter{ResponseWriter: rec, status: http.StatusOK}
-	if _, err := sw.Write([]byte("hi")); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-	// A bare Write with no explicit WriteHeader must leave the captured status at 200, and a
-	// WriteHeader after the first Write must be ignored, so the access log records the
-	// implicit 200 the client actually saw.
-	sw.WriteHeader(http.StatusInternalServerError)
-	if sw.status != http.StatusOK {
-		t.Errorf("status after Write then WriteHeader = %d, want %d (implicit 200 must not be overwritten)", sw.status, http.StatusOK)
-	}
-}
-
-func TestStatusWriterUnwrap(t *testing.T) {
-	rec := httptest.NewRecorder()
-	sw := &statusWriter{ResponseWriter: rec, status: http.StatusOK}
-	if sw.Unwrap() != rec {
-		t.Error("Unwrap() did not return the wrapped ResponseWriter (WebSocket hijack would break)")
-	}
-}
-
 // fakeHijacker is a ResponseWriter that implements http.Hijacker so a test can
 // assert the hijack call reaches the underlying writer through accessLog's
 // statusWriter wrapper (the path the /ws WebSocket upgrade depends on).
@@ -535,8 +499,8 @@ func (f *fakeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // TestAccessLogPreservesWebSocketHijack drives a request through accessLog with
 // an underlying ResponseWriter that implements http.Hijacker and asserts the
-// hijack is actually reached via http.ResponseController, exercising the real
-// upgrade walk that TestStatusWriterUnwrap's one-level check cannot.
+// hijack is actually reached via http.ResponseController through the access-log
+// recorder (webhttp.StatusRecorder), the path the /ws WebSocket upgrade needs.
 func TestAccessLogPreservesWebSocketHijack(t *testing.T) {
 	var reached bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -551,7 +515,7 @@ func TestAccessLogPreservesWebSocketHijack(t *testing.T) {
 		t.Fatal("handler never ran")
 	}
 	if !fh.hijacked {
-		t.Error("Hijack did not reach the underlying ResponseWriter through accessLog's statusWriter; the /ws WebSocket upgrade would break")
+		t.Error("Hijack did not reach the underlying ResponseWriter through the access-log recorder; the /ws WebSocket upgrade would break")
 	}
 }
 
@@ -598,8 +562,8 @@ func TestHealthzReadinessGate(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("ready /healthz = %d, want 200", rec.Code)
 	}
-	if rec.Body.String() != "ok\n" {
-		t.Errorf("ready /healthz body = %q, want %q", rec.Body.String(), "ok\n")
+	if got := rec.Body.String(); !strings.Contains(got, `"status":"ok"`) {
+		t.Errorf("ready /healthz body = %q, want it to contain %q", got, `"status":"ok"`)
 	}
 }
 
@@ -684,9 +648,8 @@ func TestRouteEventsReachesSSE(t *testing.T) {
 // for the SSE status stream. It drives the REAL engine EventsHandler through the
 // full newHandler middleware chain (access log -> security headers ->
 // cross-origin -> mux) over a real socket, and asserts the stream opens and
-// flushes an event. accessLog wraps the ResponseWriter in statusWriter (which
-// implements Unwrap but not Flush), so a naive flusher assertion would 500 here;
-// this pins that the stream still flushes through the wrapper.
+// flushes an event. accessLog wraps the ResponseWriter in webhttp.StatusRecorder,
+// so this pins that the SSE stream still flushes through the access-log wrapper.
 func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	factory := func(string) *terminal.Handler {
 		return terminal.NewHandler([]string{"/bin/cat"}, terminal.WithLogger(nil))
