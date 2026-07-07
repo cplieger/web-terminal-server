@@ -30,7 +30,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -171,7 +170,11 @@ func main() {
 	}
 	mgr := terminal.NewSessionManager(factory, mgrOpts...)
 
-	var ready atomic.Bool
+	// webhttp.Ready is the shared serving-state flag (zero value = not ready);
+	// main owns its lifecycle, flipping it true after bind and false on the
+	// shutdown signal. It is passed straight to webhttp.ReadinessHandler, so no
+	// local adapter is needed.
+	var ready webhttp.Ready
 
 	handler, err := newHandler(&cfg, mgr.WebSocketHandler(), mgr.RESTHandler(), mgr.EventsHandler(), &ready)
 	if err != nil {
@@ -203,7 +206,7 @@ func main() {
 	// callback runs only after the drain completes).
 	go func() {
 		<-ctx.Done()
-		ready.Store(false)
+		ready.Set(false)
 		slog.Info("shutting down", "cause", context.Cause(ctx))
 	}()
 
@@ -211,7 +214,7 @@ func main() {
 		"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 		"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
 		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
-	ready.Store(true)
+	ready.Set(true)
 
 	// webhttp.Run serves on the pre-bound listener and, on ctx cancellation,
 	// drains within the grace window then runs the teardown (session manager
@@ -228,14 +231,15 @@ func main() {
 
 // newHandler assembles the HTTP handler: the route mux (terminal WebSocket,
 // session REST API, status SSE, health, static files) wrapped in the middleware
-// chain. Middleware, outermost first: access log -> security headers -> basic
-// auth (if configured) -> cross-origin protection -> routes. The session
-// handlers are passed in (rather than a manager constructed here) so tests can
-// exercise the routing and middleware with stubs, without a real PTY. ready
-// gates /healthz so load balancers see the server as unavailable during startup
-// and graceful shutdown. It returns an error if the embedded static assets
-// can't be opened or the CSP can't be built from index.html.
-func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) (http.Handler, error) {
+// chain via webhttp.Chain. Middleware, outermost first: access log -> panic
+// recovery -> security headers -> basic auth (if configured) -> cross-origin
+// protection -> routes. The session handlers are passed in (rather than a
+// manager constructed here) so tests can exercise the routing and middleware
+// with stubs, without a real PTY. ready gates /healthz so load balancers see
+// the server as unavailable during startup and graceful shutdown. It returns an
+// error if the embedded static assets can't be opened or the CSP can't be built
+// from index.html.
+func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// Mount only the session WebSocket endpoint (not the engine's /debug/*
 	// routes, which dump raw PTY output and screen state — inappropriate to
@@ -254,9 +258,12 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) 
 	mux.Handle("/api/sessions/events", events)
 	// Serving-state gate for a load balancer: 200 {"status":"ok"} when ready,
 	// 503 {"status":"unready",...} during startup/shutdown. main owns the flag
-	// lifecycle (set true after bind, false on shutdown); readyChecker adapts it
-	// to the shared webhttp.ReadinessHandler.
-	mux.Handle("/healthz", webhttp.ReadinessHandler(readyChecker{ready}))
+	// lifecycle (set true after bind, false on shutdown); *webhttp.Ready
+	// satisfies webhttp.ReadinessChecker directly, so it is passed straight in.
+	// This /healthz readiness gate is deliberately DISTINCT from a process
+	// liveness marker: this app has no health-library file-marker, so /healthz
+	// is its sole health endpoint (also the Docker HEALTHCHECK target).
+	mux.Handle("/healthz", webhttp.ReadinessHandler(ready))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -278,26 +285,40 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *atomic.Bool) 
 		return nil, fmt.Errorf("build CSP: %w", err)
 	}
 
-	handler := http.NewCrossOriginProtection().Handler(mux)
+	// basicAuth is app policy, applied only when a password is configured. As a
+	// webhttp.Middleware it slots into the Chain just inside the security
+	// headers (so a 401 still carries them) and outside cross-origin protection;
+	// a nil entry is skipped by Chain when no password is set.
+	var authMW webhttp.Middleware
 	if cfg.password != "" {
-		handler = basicAuth(handler, cfg.username, cfg.password)
+		authMW = func(next http.Handler) http.Handler {
+			return basicAuth(next, cfg.username, cfg.password)
+		}
 	}
-	handler = securityHeaders(cspPolicy, handler)
-	// Recover a downstream panic into a logged 500 (webhttp.Recoverer),
-	// positioned inside accessLog so the recovered request logs its 500 rather
-	// than the recorder's default 200.
-	handler = webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default()))(handler)
-	handler = accessLog(handler)
+
+	// Assemble the stack with webhttp.Chain (first listed = outermost) rather
+	// than hand-nesting. Order matches the fleet canonical Logging -> Recoverer
+	// -> SecurityHeaders, with the app's basic-auth and cross-origin layers
+	// innermost:
+	//   - accessLog (the app-side logger, see its comment) sits outermost so it
+	//     records the final status, including a Recoverer-written 500.
+	//   - webhttp.Recoverer turns a downstream panic into a logged 500; inside
+	//     accessLog so the recovered request logs its 500, not the default 200.
+	//   - webhttp.SecurityHeaders applies nosniff + the app's hash-pinned CSP
+	//     (preserved byte-for-byte via WithCSP) plus the library baseline
+	//     X-Frame-Options: DENY and Referrer-Policy (consistent with the CSP's
+	//     frame-ancestors 'none' — this UI is never framed).
+	//   - basicAuth (when configured) then http.CrossOriginProtection guard the
+	//     routes.
+	handler := webhttp.Chain(mux,
+		accessLog,
+		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
+		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
+		authMW,
+		http.NewCrossOriginProtection().Handler,
+	)
 	return handler, nil
 }
-
-// readyChecker adapts the main-owned *atomic.Bool readiness flag to the
-// webhttp.ReadinessChecker interface, so /healthz uses the shared readiness
-// handler while main keeps ownership of the flag's lifecycle.
-type readyChecker struct{ flag *atomic.Bool }
-
-// Ready reports whether the server is ready to receive traffic.
-func (r readyChecker) Ready() bool { return r.flag.Load() }
 
 // Create-rate-limit tuning: a token bucket with a small burst (open several
 // tabs at once) refilling at a steady rate, so sustained create churn is
@@ -805,25 +826,18 @@ func isASCIISpace(c byte) bool {
 	}
 }
 
-// securityHeaders sets defense-in-depth response headers on every response:
-// nosniff stops MIME-confusion, and the Content-Security-Policy (built once at
-// construction by buildCSPPolicy and passed in here) scopes assets to the same
-// origin, with script-src pinning a sha256 hash of each inline <script> in
-// index.html (so 'unsafe-inline' is dropped from script-src) while style-src
-// keeps 'unsafe-inline' for the renderer's dynamic per-cell inline styles,
-// connect-src 'self' covers the same-origin /ws WebSocket, and frame-ancestors
-// 'none' blocks clickjacking of the interactive terminal.
-func securityHeaders(cspPolicy string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Content-Security-Policy", cspPolicy)
-		next.ServeHTTP(w, r)
-	})
-}
-
 // accessLog emits one structured slog line per request (slog-only
 // observability, matching the cplieger Go apps — no Prometheus endpoint).
+//
+// This is a THIN app-side logger deliberately kept instead of webhttp.Logging.
+// webhttp v1.1.1's access line is method/path/status/duration_ms/request_id and
+// emits no client-address field, whereas this line carries a "remote" field
+// (r.RemoteAddr, the raw TCP peer — the spoof-safe choice, as the app trusts no
+// X-Forwarded-For). It also logs /healthz at Debug rather than skipping it,
+// which webhttp.Logging (skip-only via WithSkipPaths) cannot express. It is
+// still built on the webhttp primitive (NewStatusRecorder). If webhttp gains a
+// client-IP option for its logger (a WithClientIP on Logging), this collapses
+// into webhttp.Logging + that option.
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

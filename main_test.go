@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/cplieger/web-terminal-engine/v2/terminal"
+	"github.com/cplieger/webhttp"
 )
 
 // setWTEnv clears every WT_* variable then applies the given overrides, so each
@@ -287,20 +288,16 @@ func hashToken(content string) string {
 	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 }
 
+// TestSecurityHeadersSetsCSPAndNosniff drives the fully assembled handler and
+// asserts a response carries nosniff and the hash-pinned CSP — i.e. that
+// webhttp.SecurityHeaders is wired into the Chain with the app's WithCSP policy.
 func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
-	sub, err := fs.Sub(staticFS, "static")
-	if err != nil {
-		t.Fatalf("fs.Sub: %v", err)
-	}
-	policy, err := buildCSPPolicy(sub)
-	if err != nil {
-		t.Fatalf("buildCSPPolicy: %v", err)
-	}
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+	var ready webhttp.Ready
+	ready.Set(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+
 	rec := httptest.NewRecorder()
-	securityHeaders(policy, next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
@@ -406,14 +403,13 @@ func TestCSPScriptHashesMatchEmbeddedInlineScripts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fs.Sub: %v", err)
 	}
-	policy, err := buildCSPPolicy(sub)
+	// The CSP the app actually sends is built by buildCSPPolicy from the embedded
+	// index.html; assert directly against that (the anti-drift subject) rather
+	// than round-tripping it through the security-headers middleware.
+	csp, err := buildCSPPolicy(sub)
 	if err != nil {
 		t.Fatalf("buildCSPPolicy: %v", err)
 	}
-	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
-	rec := httptest.NewRecorder()
-	securityHeaders(policy, next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	csp := rec.Header().Get("Content-Security-Policy")
 
 	// Independent oracle: a regexp extractor, structurally different from the
 	// production scanner. `(?is)` makes `.` span newlines and matching
@@ -486,7 +482,7 @@ func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 
 // fakeHijacker is a ResponseWriter that implements http.Hijacker so a test can
 // assert the hijack call reaches the underlying writer through accessLog's
-// statusWriter wrapper (the path the /ws WebSocket upgrade depends on).
+// webhttp.StatusRecorder wrapper (the path the /ws WebSocket upgrade depends on).
 type fakeHijacker struct {
 	http.ResponseWriter
 	hijacked bool
@@ -535,7 +531,7 @@ func (s stubHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 // the test if the embedded static assets can't be opened. Only the WS hit flag
 // is wired here (the routes most tests care about); the session-route tests
 // below call newHandler directly with their own hit-tracking stubs.
-func newTestHandler(t *testing.T, cfg config, ready, wsHit *atomic.Bool) http.Handler {
+func newTestHandler(t *testing.T, cfg config, ready *webhttp.Ready, wsHit *atomic.Bool) http.Handler {
 	t.Helper()
 	h, err := newHandler(&cfg, stubHandler{hit: wsHit}, stubHandler{}, stubHandler{}, ready)
 	if err != nil {
@@ -545,7 +541,7 @@ func newTestHandler(t *testing.T, cfg config, ready, wsHit *atomic.Bool) http.Ha
 }
 
 func TestHealthzReadinessGate(t *testing.T) {
-	var ready atomic.Bool
+	var ready webhttp.Ready
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -556,7 +552,7 @@ func TestHealthzReadinessGate(t *testing.T) {
 		t.Errorf("not-ready /healthz = %d, want 503", rec.Code)
 	}
 
-	ready.Store(true)
+	ready.Set(true)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -568,8 +564,9 @@ func TestHealthzReadinessGate(t *testing.T) {
 }
 
 func TestRouteWSReachesTerminal(t *testing.T) {
-	var ready, wsHit atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	var wsHit atomic.Bool
+	ready.Set(true)
 	h := newTestHandler(t, config{}, &ready, &wsHit)
 
 	rec := httptest.NewRecorder()
@@ -600,8 +597,9 @@ func TestLoadConfigIdleReaper(t *testing.T) {
 }
 
 func TestRouteSessionsReachesREST(t *testing.T) {
-	var ready, wsHit, restHit, eventsHit atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	var wsHit, restHit, eventsHit atomic.Bool
+	ready.Set(true)
 	h, err := newHandler(&config{}, stubHandler{hit: &wsHit}, stubHandler{hit: &restHit}, stubHandler{hit: &eventsHit}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -626,8 +624,9 @@ func TestRouteSessionsReachesREST(t *testing.T) {
 }
 
 func TestRouteEventsReachesSSE(t *testing.T) {
-	var ready, wsHit, restHit, eventsHit atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	var wsHit, restHit, eventsHit atomic.Bool
+	ready.Set(true)
 	h, err := newHandler(&config{}, stubHandler{hit: &wsHit}, stubHandler{hit: &restHit}, stubHandler{hit: &eventsHit}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -661,8 +660,8 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	var ready atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	ready.Set(true)
 	h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, mgr.EventsHandler(), &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -679,7 +678,7 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (SSE must flush through statusWriter, not 500)", resp.StatusCode)
+		t.Fatalf("status = %d, want 200 (SSE must flush through the access-log recorder, not 500)", resp.StatusCode)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
@@ -694,8 +693,9 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 }
 
 func TestCreateRateLimit(t *testing.T) {
-	var ready, restHit atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	var restHit atomic.Bool
+	ready.Set(true)
 	h, err := newHandler(&config{}, stubHandler{}, stubHandler{hit: &restHit}, stubHandler{}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -731,8 +731,8 @@ func TestCreateRateLimit(t *testing.T) {
 // exhausted, idle time refills tokens so creation is permitted again.
 func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var ready atomic.Bool
-		ready.Store(true)
+		var ready webhttp.Ready
+		ready.Set(true)
 		h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, stubHandler{}, &ready)
 		if err != nil {
 			t.Fatalf("newHandler() error: %v", err)
@@ -774,8 +774,8 @@ func TestTokenBucketCapsRefillAtBurst(t *testing.T) {
 }
 
 func TestRouteStaticServesIndex(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	ready.Set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	rec := httptest.NewRecorder()
@@ -786,8 +786,8 @@ func TestRouteStaticServesIndex(t *testing.T) {
 }
 
 func TestStaticHandlerETagAndRevalidation(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	ready.Set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	rec := httptest.NewRecorder()
@@ -819,8 +819,8 @@ func TestStaticHandlerETagAndRevalidation(t *testing.T) {
 }
 
 func TestHandlerAuthGatesAllRoutes(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	ready.Set(true)
 	cfg := config{username: "admin", password: "pw"}
 	h := newTestHandler(t, cfg, &ready, nil)
 
@@ -1049,8 +1049,8 @@ func TestServeGzip(t *testing.T) {
 }
 
 func TestStaticHandlerGzipNegotiation(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
+	var ready webhttp.Ready
+	ready.Set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	t.Run("offering gzip yields a compressed body that decodes to the identity bytes", func(t *testing.T) {
