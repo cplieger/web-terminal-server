@@ -89,15 +89,40 @@ func applyDurationEnv(key string, dst *time.Duration) error {
 	return nil
 }
 
+// parseTrustedProxies reads a comma-separated list of CIDRs / bare IPs from the
+// named env var into the trusted-proxy set the access log's client-IP resolver
+// consults (webhttp.WithClientIP -> ClientIP). It delegates the CIDR/bare-IP
+// parsing to the shared webhttp.ParseCIDRs helper.
+//
+// It is intentionally LENIENT: a malformed entry is logged (named) at Warn and
+// skipped, and the valid subset is used, rather than aborting startup — one typo
+// in an operator's proxy list should not disable proxy awareness entirely. An
+// unset or empty var yields nil, i.e. "trust nothing", so ClientIP ignores
+// X-Forwarded-For and logs the spoof-proof socket peer.
+func parseTrustedProxies(key string) []*net.IPNet {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	nets, invalid := webhttp.ParseCIDRs(strings.Split(v, ","))
+	if len(invalid) > 0 {
+		slog.Warn("ignoring malformed "+key+" entries",
+			"invalid", invalid,
+			"hint", "each entry must be a CIDR (e.g. 10.0.0.0/8) or a bare IP (e.g. 192.168.1.5)")
+	}
+	return nets
+}
+
 // config holds the resolved server settings parsed from the WT_* environment.
 type config struct {
-	addr       string
-	workDir    string
-	username   string
-	password   string
-	command    []string
-	idleReaper time.Duration
-	scrollback int
+	addr           string
+	workDir        string
+	username       string
+	password       string
+	command        []string
+	trustedProxies []*net.IPNet
+	idleReaper     time.Duration
+	scrollback     int
 }
 
 // loadConfig parses and validates the WT_* environment into a config. It
@@ -105,12 +130,13 @@ type config struct {
 // os.Exit while a defer is pending).
 func loadConfig() (config, error) {
 	c := config{
-		addr:       envOr("WT_ADDR", defaultAddr),
-		command:    strings.Fields(envOr("WT_CMD", defaultCmd)),
-		workDir:    os.Getenv("WT_WORKDIR"),
-		scrollback: defaultScrollback,
-		username:   envOr("WT_USERNAME", defaultUsername),
-		password:   os.Getenv("WT_PASSWORD"),
+		addr:           envOr("WT_ADDR", defaultAddr),
+		command:        strings.Fields(envOr("WT_CMD", defaultCmd)),
+		workDir:        os.Getenv("WT_WORKDIR"),
+		scrollback:     defaultScrollback,
+		username:       envOr("WT_USERNAME", defaultUsername),
+		password:       os.Getenv("WT_PASSWORD"),
+		trustedProxies: parseTrustedProxies("WT_TRUSTED_PROXIES"),
 	}
 	if len(c.command) == 0 {
 		return config{}, errors.New("WT_CMD is empty")
@@ -303,14 +329,16 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// innermost:
 	//   - webhttp.Logging sits outermost so its access line records the final
 	//     status, including a Recoverer-written 500. WithClientIP adds the
-	//     spoof-proof "client_ip" attribute; with no trusted ranges it is the
+	//     spoof-proof "client_ip" attribute, resolved against the operator's
+	//     WT_TRUSTED_PROXIES set (cfg.trustedProxies). With that set empty/unset
+	//     — the default — no X-Forwarded-For is honored and the attribute is the
 	//     socket peer host (the direct client on loopback, or the fronting
-	//     proxy) — this app binds loopback by default and has no trusted-CIDR
-	//     config, so no-args is correct (front it with a proxy to log the real
-	//     client, then pass that proxy's CIDR here). WithSkipPaths("/healthz")
-	//     drops the routine Docker-probe access line entirely.
-	//     requires webhttp >= v1.2.0 (WithClientIP); local build via go.work replace until released.
-	//     RELEASE-GATED: CI/Docker stay red until webhttp v1.2.0 ships WithClientIP,
+	//     proxy), spoof-safe. Behind a reverse proxy, set WT_TRUSTED_PROXIES to
+	//     the proxy's CIDR(s) so the access log shows the real client.
+	//     WithSkipPaths("/healthz") drops the routine Docker-probe access line
+	//     entirely.
+	//     requires webhttp >= v1.2.0 (WithClientIP + ParseCIDRs); local build via go.work replace until released.
+	//     RELEASE-GATED: CI/Docker stay red until webhttp v1.2.0 ships WithClientIP + ParseCIDRs,
 	//     go.mod bumps the require to it, and the go.work replace is dropped.
 	//   - webhttp.Recoverer turns a downstream panic into a logged 500; inside
 	//     Logging so the recovered request logs its 500, not the default 200.
@@ -326,7 +354,7 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// omits its access line entirely. Quieter still (the routine-probe-noise
 	// goal is preserved), but there is no longer a Debug-level /healthz line.
 	handler := webhttp.Chain(mux,
-		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP()),
+		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...)),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
 		authMW,
