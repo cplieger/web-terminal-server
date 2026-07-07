@@ -12,7 +12,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 # Go toolchain for the server binary.
 # renovate: datasource=golang-version depName=golang
-ARG GO_VERSION=1.26.4
+ARG GO_VERSION=1.26.5
 RUN ARCH=$(dpkg --print-architecture) && \
     curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
     | tar -C /usr/local -xz
