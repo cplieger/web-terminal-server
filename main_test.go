@@ -36,7 +36,7 @@ func setWTEnv(t *testing.T, over map[string]string) {
 	t.Helper()
 	for _, k := range []string{
 		"WT_ADDR", "WT_CMD", "WT_WORKDIR", "WT_SCROLLBACK",
-		"WT_USERNAME", "WT_PASSWORD", "WT_IDLE_REAPER",
+		"WT_USERNAME", "WT_PASSWORD", "WT_IDLE_REAPER", "WT_TRUSTED_PROXIES",
 	} {
 		t.Setenv(k, "")
 	}
@@ -602,6 +602,104 @@ func TestLoadConfigIdleReaper(t *testing.T) {
 		setWTEnv(t, map[string]string{"WT_IDLE_REAPER": "nonsense"})
 		if _, err := loadConfig(); err == nil {
 			t.Error("loadConfig() with WT_IDLE_REAPER=nonsense = nil error, want error")
+		}
+	})
+}
+
+// trustedContains reports whether ip is inside any of the parsed trusted nets.
+func trustedContains(nets []*net.IPNet, ip string) bool {
+	parsed := net.ParseIP(ip)
+	for _, n := range nets {
+		if n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLoadConfigTrustedProxies covers WT_TRUSTED_PROXIES parsing via the shared
+// webhttp.ParseCIDRs helper and its threading onto cfg.trustedProxies (consumed
+// by webhttp.WithClientIP in newHandler). Three contracts: unset yields nil (so
+// ClientIP ignores X-Forwarded-For and logs the spoof-proof socket peer), a
+// valid CIDR + bare-IP mix is parsed into containment-correct nets, and a
+// malformed entry is warned (named) and skipped while the valid subset is kept —
+// startup is never aborted. These cases mutate the process-global default logger
+// and WT_* env, so they run serially (no t.Parallel).
+func TestLoadConfigTrustedProxies(t *testing.T) {
+	t.Run("unset yields nil (socket-peer default)", func(t *testing.T) {
+		setWTEnv(t, nil)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if cfg.trustedProxies != nil {
+			t.Errorf("trustedProxies = %v, want nil when WT_TRUSTED_PROXIES is unset", cfg.trustedProxies)
+		}
+	})
+
+	t.Run("empty string yields nil", func(t *testing.T) {
+		setWTEnv(t, map[string]string{"WT_TRUSTED_PROXIES": "   "})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if cfg.trustedProxies != nil {
+			t.Errorf("trustedProxies = %v, want nil for a blank WT_TRUSTED_PROXIES", cfg.trustedProxies)
+		}
+	})
+
+	t.Run("valid CIDR and bare-IP mix parsed", func(t *testing.T) {
+		setWTEnv(t, map[string]string{"WT_TRUSTED_PROXIES": "10.0.0.0/8, 192.168.1.5 , ::1"})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if len(cfg.trustedProxies) != 3 {
+			t.Fatalf("trustedProxies len = %d, want 3 (%v)", len(cfg.trustedProxies), cfg.trustedProxies)
+		}
+		// The CIDR contains its range; the bare IP became a single-host net.
+		for _, c := range []struct {
+			ip   string
+			want bool
+		}{
+			{"10.255.0.1", true},   // inside 10.0.0.0/8
+			{"192.168.1.5", true},  // the bare host itself
+			{"192.168.1.6", false}, // a neighbor of the bare host is NOT trusted
+			{"172.16.0.1", false},  // outside every entry
+		} {
+			if got := trustedContains(cfg.trustedProxies, c.ip); got != c.want {
+				t.Errorf("trustedProxies contains %s = %v, want %v", c.ip, got, c.want)
+			}
+		}
+	})
+
+	t.Run("malformed entries are warned and skipped, valid subset kept", func(t *testing.T) {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+
+		setWTEnv(t, map[string]string{"WT_TRUSTED_PROXIES": "10.0.0.0/8, not-an-ip, 999.999.999.999"})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		// Startup is not aborted; only the one valid CIDR is kept.
+		if len(cfg.trustedProxies) != 1 {
+			t.Fatalf("trustedProxies len = %d, want 1 (only the valid CIDR kept)", len(cfg.trustedProxies))
+		}
+		if !trustedContains(cfg.trustedProxies, "10.1.2.3") {
+			t.Error("kept net does not contain 10.1.2.3; want the 10.0.0.0/8 entry retained")
+		}
+		// A Warn line naming each malformed entry was emitted.
+		log := buf.String()
+		if log == "" {
+			t.Fatal("no slog output; want a Warn naming the malformed entries")
+		}
+		for _, bad := range []string{"not-an-ip", "999.999.999.999"} {
+			if !strings.Contains(log, bad) {
+				t.Errorf("warn log %q does not name malformed entry %q", log, bad)
+			}
 		}
 	})
 }
