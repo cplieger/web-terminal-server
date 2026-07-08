@@ -39,15 +39,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 find_chromium() {
-  if [ -n "${CHROMIUM:-}" ]; then printf '%s\n' "$CHROMIUM"; return 0; fi
+  if [ -n "${CHROMIUM:-}" ]; then
+    printf '%s\n' "$CHROMIUM"
+    return 0
+  fi
   for b in chromium chromium-browser google-chrome google-chrome-stable chrome; do
-    if command -v "$b" >/dev/null 2>&1; then command -v "$b"; return 0; fi
+    if command -v "$b" >/dev/null 2>&1; then
+      command -v "$b"
+      return 0
+    fi
   done
   # Playwright cache (headless shell first, then full chromium).
   for p in \
     "$HOME"/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell \
     "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome; do
-    for f in $p; do [ -x "$f" ] && { printf '%s\n' "$f"; return 0; }; done
+    for f in $p; do [ -x "$f" ] && {
+      printf '%s\n' "$f"
+      return 0
+    }; done
   done
   return 1
 }
@@ -64,7 +73,10 @@ wait_for() { # url label
 start_chromium() {
   local bin base
   local -a flag=()
-  bin="$(find_chromium)" || { echo "no Chromium found; install one or set CHROMIUM= or CDP_URL=" >&2; exit 3; }
+  bin="$(find_chromium)" || {
+    echo "no Chromium found; install one or set CHROMIUM= or CDP_URL=" >&2
+    exit 3
+  }
   base="$(basename "$bin")"
   # chrome-headless-shell is always headless; full chrome needs --headless=new.
   case "$base" in
@@ -84,7 +96,10 @@ start_server() { # wt_cmd
   local bin="${WT_BIN:-$REPO/web-terminal-server-bin}"
   if [ ! -x "$bin" ]; then
     echo "server binary $bin not found; building with dev-build.sh" >&2
-    ( cd "$REPO" && bash scripts/dev-build.sh ) || { echo "dev-build.sh failed" >&2; exit 4; }
+    (cd "$REPO" && bash scripts/dev-build.sh) || {
+      echo "dev-build.sh failed" >&2
+      exit 4
+    }
   fi
   WT_ADDR="$WT_HOST:$WT_PORT" WT_CMD="$1" WT_SCROLLBACK=5000 "$bin" >/dev/null 2>&1 &
   SERVER_PID=$!
@@ -115,7 +130,10 @@ GROUP1=(render resume input viewport resize)
 run_group1() { for h in "${GROUP1[@]}"; do run "$h" "cdp-$h.cjs"; done; }
 
 # --- provision the DevTools endpoint ---
-command -v node >/dev/null 2>&1 || { echo "node (v22+) is required to run the CDP harnesses" >&2; exit 3; }
+command -v node >/dev/null 2>&1 || {
+  echo "node (v22+) is required to run the CDP harnesses" >&2
+  exit 3
+}
 if [ -n "${CDP_URL:-}" ]; then
   if [ -z "${WT_URL:-}" ]; then
     echo "CDP_URL is set but WT_URL is not: with an external browser this runner cannot" >&2
@@ -129,7 +147,10 @@ if [ -n "${CDP_URL:-}" ]; then
   echo "NOTE: skipping the scrollback test (needs the server on emit-ed3.sh; start it and" >&2
   echo "      run: WT_URL=... node scripts/cdp-scrollback.cjs)" >&2
 else
-  command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 3; }
+  command -v curl >/dev/null 2>&1 || {
+    echo "curl is required" >&2
+    exit 3
+  }
   start_chromium
   export CDP_URL="http://$WT_HOST:$CDP_PORT"
   export WT_URL="http://$WT_HOST:$WT_PORT/"
