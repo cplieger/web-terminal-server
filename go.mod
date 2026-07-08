@@ -1,6 +1,6 @@
 module github.com/cplieger/web-terminal-server
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/cplieger/web-terminal-engine/v2 v2.3.0
