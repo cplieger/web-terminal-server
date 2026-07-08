@@ -103,7 +103,7 @@ The web-terminal family:
 Apps built on the same engine:
 
 - [`vibekit`](https://github.com/cplieger/vibekit)
-- [`vibecli`](https://github.com/cplieger/vibecli)
+- [`web-terminal-kiro`](https://github.com/cplieger/web-terminal-kiro)
 
 ## Disclaimer
 
