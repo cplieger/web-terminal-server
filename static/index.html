@@ -13,10 +13,12 @@
 <link rel="stylesheet" href="/style.css">
 <!-- [html-validate-disable-next no-style-tag -- critical CSS for instant loading indicator] -->
 <style>
-#loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;z-index:200;background:#000;font-family:system-ui,-apple-system,sans-serif;color:#b48eff;font-size:18px;transition:opacity .3s ease}
+#loading{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:#000;color:var(--accent,#6ea8ff);transition:opacity .3s ease}
 #loading.fade{opacity:0}
-#loading .spin{width:32px;height:32px;border:3px solid #b48eff;border-right-color:transparent;border-radius:50%;animation:sp .6s linear infinite}
-@keyframes sp{to{transform:rotate(360deg)}}
+#loading .bar{position:relative;inline-size:min(220px,62vw);block-size:5px;overflow:hidden;border-radius:999px;background:color-mix(in oklch,currentColor 16%,transparent)}
+#loading .bar::before{content:"";position:absolute;inset-block:0;inline-size:42%;border-radius:inherit;background:linear-gradient(90deg,transparent,currentColor 28%,color-mix(in oklch,currentColor,#fff 45%) 50%,currentColor 72%,transparent);filter:drop-shadow(0 0 4px color-mix(in oklch,currentColor 55%,transparent));animation:wt-loading-slide 1.5s cubic-bezier(.65,0,.35,1) infinite}
+@keyframes wt-loading-slide{0%{transform:translateX(-110%)}100%{transform:translateX(250%)}}
+@media (prefers-reduced-motion:reduce){#loading .bar::before{animation-duration:3s}}
 </style>
 </head>
 <body>
@@ -24,7 +26,7 @@
      the loading overlay is a sibling so it is never cleared (it fades on the
      first frame). -->
 <div id="terminal"></div>
-<div id="loading"><div class="spin"></div>Loading…</div>
+<div id="loading" role="status" aria-label="Loading"><div class="bar" aria-hidden="true"></div></div>
 <!-- The importmap resolves the bare package specifiers to the JS the server
      compiles into /vendor/ at build time; the engine specifier is resolved
      transitively from the UI package's emitted imports, and the UI's ./presets
