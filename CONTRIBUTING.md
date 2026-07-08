@@ -101,8 +101,9 @@ would break the in-container build, which is why `.dockerignore` excludes it.
 - Go module is domain-rooted (`github.com/cplieger/web-terminal-server`), built
   `CGO_ENABLED=0`. Formatting is gofumpt + gci (enforced by the synced
   `.golangci.yaml`); run `gofmt`/`golangci-lint fmt` before committing.
-- slog-only observability (one structured line per request); no Prometheus
-  endpoint.
+- slog-only observability (one structured line per request), with UTC
+  timestamps via a `utcTimeAttr` `ReplaceAttr` (so the image needs no `TZ`
+  and embeds no `time/tzdata`); no Prometheus endpoint.
 - Dockerfile follows the shared `cplieger/ci` conventions: `# check=error=true`, native
   per-arch builds (no QEMU/xx), `GOTOOLCHAIN=auto`, layer-cached `go mod
   download`. The `# renovate:` ARGs track tool and package versions.
