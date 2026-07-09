@@ -2,8 +2,8 @@
 # Local dev build of web-terminal-server against the LOCAL working-tree engine
 # (../web-terminal-engine) and UI (../web-terminal-ui), before either package is published.
 #
-# It overlays both TS packages into a build node_modules so tsgo can resolve
-# the bare specifiers, compiles each to static/vendor/ (tsgo preserves bare +
+# It overlays both TS packages into a build node_modules so tsc can resolve
+# the bare specifiers, compiles each to static/vendor/ (tsc preserves bare +
 # relative import specifiers, which the served importmap then resolves),
 # concatenates the UI's CSS bundle, fetches the terminal font, and `go build`s
 # (via go.work) with everything embedded. Produces ./web-terminal-server-bin.
@@ -39,25 +39,30 @@ cp "$UI_DIR/package.json" "$NM/web-terminal-ui/package.json"
     cp "$UI_DIR/src/$f" "$NM/web-terminal-ui/src/$f"
   done
 
-TSGO_VER="$(sed -n 's/^ARG TSGO_VERSION=//p' Dockerfile)"
-if [ -n "$TSGO_VER" ] && ! tsgo --version 2>/dev/null | grep -qF "$TSGO_VER"; then
-  echo "  WARN: local tsgo != Dockerfile pin ($TSGO_VER); CDP harnesses may validate a bundle the shipped image will not reproduce" >&2
-fi
+TS_VER="$(sed -n 's/^ARG TS_VERSION=//p' Dockerfile)"
+[ -n "$TS_VER" ] || {
+  echo "error: could not read TS_VERSION from Dockerfile" >&2
+  exit 1
+}
+# No local package.json here; fetch the pinned native TS7 compiler (tsc) on
+# demand, matching the Dockerfile's TS_VERSION so the local bundle reproduces
+# the shipped one (`typescript@7` ships the native Go compiler as `tsc`).
+TSC=(npx --yes --package "typescript@${TS_VER}" tsc)
 
 echo "[2/5] compile engine -> static/vendor/cplieger-web-terminal-engine"
-tsgo --module ESNext --target ESNext --moduleResolution bundler \
+"${TSC[@]}" --module ESNext --target ESNext --moduleResolution bundler \
   --outDir static/vendor/cplieger-web-terminal-engine \
   --rootDir "$NM/web-terminal-engine/src" --skipLibCheck --strict \
   "$NM/web-terminal-engine/src"/*.ts
 
 echo "[3/5] compile UI -> static/vendor/cplieger-web-terminal-ui"
-# The UI files sit in the overlay node_modules, so tsgo's bundler resolution
+# The UI files sit in the overlay node_modules, so tsc's bundler resolution
 # walks up and finds the sibling @cplieger/web-terminal-engine package for the bare
 # import; the emitted JS keeps that specifier for the runtime importmap.
 # Compile the whole nested src tree (index.ts + presets.ts + kernel/ + features/);
 # find collects every non-test .ts (the overlay already excluded tests).
 mapfile -t ui_ts < <(find "$NM/web-terminal-ui/src" -name '*.ts')
-tsgo --module ESNext --target ESNext --moduleResolution bundler \
+"${TSC[@]}" --module ESNext --target ESNext --moduleResolution bundler \
   --outDir static/vendor/cplieger-web-terminal-ui \
   --rootDir "$NM/web-terminal-ui/src" --skipLibCheck --strict \
   "${ui_ts[@]}"
