@@ -15,7 +15,9 @@ front end over HTTP + WebSocket, built on the
 engine. A native-touch terminal in the browser for any command — phone and
 desktop alike.
 
-Published as a container image: `ghcr.io/cplieger/web-terminal-server`.
+Published as a multi-arch (amd64 + arm64) container image on **GHCR** (`ghcr.io/cplieger/web-terminal-server`) and **Docker Hub** (`cplieger/web-terminal-server`).
+
+![web-terminal-server in the browser: a multi-tab, touch-first terminal with a shell prompt and a tab bar across the bottom.](docs/screenshot.png)
 
 ## ⚠️ Security: this is a remote shell
 
@@ -73,7 +75,7 @@ Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/
 
 ### Client IP logging
 
-The access log records a `client_ip` per request. By default (`WT_TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `WT_TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `WT_TRUSTED_PROXIES=10.0.0.0/8,192.168.1.5`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
+The access log records a `client_ip` per request. By default (`WT_TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `WT_TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `WT_TRUSTED_PROXIES=10.0.0.0/8,192.0.2.10`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
 
 ## How it fits together
 
@@ -102,8 +104,8 @@ The web-terminal family:
 
 Apps built on the same engine:
 
-- [`vibekit`](https://github.com/cplieger/vibekit)
-- [`web-terminal-kiro`](https://github.com/cplieger/web-terminal-kiro)
+- [`vibekit`](https://github.com/cplieger/vibekit) — a chat-first browser front end for the Kiro CLI (chat history, MCP, editor, git/forge workflows).
+- [`web-terminal-kiro`](https://github.com/cplieger/web-terminal-kiro) — a touch-first, multi-tab browser terminal wired to the Kiro CLI (`kiro-cli`), on desktop or phone.
 
 ## Disclaimer
 
