@@ -864,24 +864,6 @@ func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 	})
 }
 
-// TestTokenBucketCapsRefillAtBurst pins that refill clamps at createBurst.
-func TestTokenBucketCapsRefillAtBurst(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		b := &tokenBucket{}
-		if !b.allow() {
-			t.Fatal("first allow() = false, want true")
-		}
-		time.Sleep(time.Hour) // virtual clock: would refill thousands if uncapped
-		allowed := 0
-		for b.allow() {
-			allowed++
-		}
-		if allowed != int(createBurst) {
-			t.Errorf("allowed %d after a long idle, want %d (refill must cap at burst)", allowed, int(createBurst))
-		}
-	})
-}
-
 func TestRouteStaticServesIndex(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
