@@ -1,7 +1,7 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
-github.com/cplieger/web-terminal-engine/v2 v2.3.1 h1:gbvBQ9CrVl7zCDZI6UQQ2RBQsu/4XtNjIVjW/HBzrcQ=
-github.com/cplieger/web-terminal-engine/v2 v2.3.1/go.mod h1:iaWoFiwkDgOrfwCdQoIiaXECFdxmPmjPA+LqUqL6ZfI=
+github.com/cplieger/web-terminal-engine/v2 v2.3.2 h1:J3GsvNeg6Pk8o1bXHX6vImvZKqQhuHfnSxD9cnYQtME=
+github.com/cplieger/web-terminal-engine/v2 v2.3.2/go.mod h1:iaWoFiwkDgOrfwCdQoIiaXECFdxmPmjPA+LqUqL6ZfI=
 github.com/cplieger/webhttp v1.3.0 h1:0DF8bCi/tFbckYyG7LWnI7RpEzrpUt8MtflqNoS2i0o=
 github.com/cplieger/webhttp v1.3.0/go.mod h1:Nb8A8w/9MzFxB90Vbt6vQ/odRPd+hPedWekRkvIFnjg=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
