@@ -1,5 +1,7 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
+github.com/cplieger/slogx v1.1.0 h1:DUk7eVF2CDYE3CMBnqL/nkafbsIY2PniLHun+VlMV4Y=
+github.com/cplieger/slogx v1.1.0/go.mod h1:15KA2NVx725imQe/PYXUmd3oM2oMpYpqwU+hdHtz7Fc=
 github.com/cplieger/web-terminal-engine/v2 v2.3.2 h1:J3GsvNeg6Pk8o1bXHX6vImvZKqQhuHfnSxD9cnYQtME=
 github.com/cplieger/web-terminal-engine/v2 v2.3.2/go.mod h1:iaWoFiwkDgOrfwCdQoIiaXECFdxmPmjPA+LqUqL6ZfI=
 github.com/cplieger/webhttp v1.3.0 h1:0DF8bCi/tFbckYyG7LWnI7RpEzrpUt8MtflqNoS2i0o=

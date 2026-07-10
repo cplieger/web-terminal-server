@@ -29,10 +29,10 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
+	"github.com/cplieger/slogx"
 	"github.com/cplieger/web-terminal-engine/v2/terminal"
 	"github.com/cplieger/webhttp"
 )
@@ -166,7 +166,7 @@ func loadConfig() (config, error) {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: utcTimeAttr})))
+	slogx.Setup(slogx.Options{})
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -371,49 +371,18 @@ const (
 	createRefillPerSec = 1.0
 )
 
-// tokenBucket is a minimal mutex-guarded token bucket (no external dependency).
-type tokenBucket struct {
-	last   time.Time
-	tokens float64
-	mu     sync.Mutex
-}
-
-// allow refills the bucket for the elapsed time and consumes one token,
-// returning false when none is available.
-func (b *tokenBucket) allow() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	now := time.Now()
-	if b.last.IsZero() {
-		b.tokens = createBurst
-	} else {
-		b.tokens += now.Sub(b.last).Seconds() * createRefillPerSec
-		if b.tokens > createBurst {
-			b.tokens = createBurst
-		}
-	}
-	b.last = now
-	if b.tokens >= 1 {
-		b.tokens--
-		return true
-	}
-	return false
-}
-
-// createRateLimit wraps the session REST handler, gating POST /api/sessions
-// (session creation) behind a token bucket so a caller cannot fork PTY
-// processes at an unbounded RATE: the limiter bounds create churn, not the
-// total live PTY population. List (GET) and close (DELETE) pass through
-// unthrottled.
+// createRateLimit gates POST /api/sessions (session creation) behind a shared
+// token bucket via webhttp.RateLimiter, so a caller cannot fork PTY processes
+// at an unbounded RATE (it bounds create churn, not the total live PTY
+// population); list (GET) and close (DELETE) pass through unthrottled. The 429
+// is the standard webhttp JSON error envelope.
 func createRateLimit(next http.Handler) http.Handler {
-	bucket := &tokenBucket{}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/sessions" && !bucket.allow() {
-			http.Error(w, "session creation rate exceeded", http.StatusTooManyRequests)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return webhttp.RateLimiter(createBurst, createRefillPerSec,
+		webhttp.WithRateLimitWhen(func(r *http.Request) bool {
+			return r.Method == http.MethodPost && r.URL.Path == "/api/sessions"
+		}),
+		webhttp.WithRateLimitError("rate_limited", "session creation rate exceeded"),
+	)(next)
 }
 
 // gzAsset is a precomputed gzip representation of an embedded text asset.
@@ -867,16 +836,4 @@ func isASCIISpace(c byte) bool {
 	default:
 		return false
 	}
-}
-
-// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
-// key in UTC, so log-line timestamps are zone-stable regardless of the
-// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
-// top-level time attribute; a user attribute that happens to share the "time"
-// key inside a group is left untouched.
-func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
-	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
-		a.Value = slog.TimeValue(a.Value.Time().UTC())
-	}
-	return a
 }
