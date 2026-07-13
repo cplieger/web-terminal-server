@@ -367,8 +367,8 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 // tabs at once) refilling at a steady rate, so sustained create churn is
 // throttled while normal use is unaffected.
 const (
-	createBurst        = 6.0
-	createRefillPerSec = 1.0
+	createBurst    = 6
+	createInterval = time.Second // interval to accrue one create token
 )
 
 // createRateLimit gates POST /api/sessions (session creation) behind a shared
@@ -377,7 +377,7 @@ const (
 // population); list (GET) and close (DELETE) pass through unthrottled. The 429
 // is the standard webhttp JSON error envelope.
 func createRateLimit(next http.Handler) http.Handler {
-	return webhttp.RateLimiter(createBurst, createRefillPerSec,
+	return webhttp.RateLimiter(createBurst, createInterval,
 		webhttp.WithRateLimitWhen(func(r *http.Request) bool {
 			return r.Method == http.MethodPost && r.URL.Path == "/api/sessions"
 		}),

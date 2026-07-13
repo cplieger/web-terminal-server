@@ -816,13 +816,13 @@ func TestCreateRateLimit(t *testing.T) {
 	}
 	// The burst (createBurst) creates are allowed; the next is throttled 429.
 	allowed := 0
-	for range int(createBurst) {
+	for range createBurst {
 		if post() == http.StatusOK {
 			allowed++
 		}
 	}
-	if allowed != int(createBurst) {
-		t.Errorf("allowed %d creates in the burst, want %d", allowed, int(createBurst))
+	if allowed != createBurst {
+		t.Errorf("allowed %d creates in the burst, want %d", allowed, createBurst)
 	}
 	if code := post(); code != http.StatusTooManyRequests {
 		t.Errorf("create past the burst = %d, want 429", code)
@@ -851,7 +851,7 @@ func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions", nil))
 			return rec.Code
 		}
-		for range int(createBurst) {
+		for range createBurst {
 			post()
 		}
 		if code := post(); code != http.StatusTooManyRequests {
