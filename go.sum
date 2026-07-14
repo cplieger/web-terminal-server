@@ -2,8 +2,8 @@ github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNU
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/cplieger/slogx v1.1.1 h1:GNlwUtowLx1BbRAVpaYFlMcTMKW7q+Heh2guay1wDhI=
 github.com/cplieger/slogx v1.1.1/go.mod h1:15KA2NVx725imQe/PYXUmd3oM2oMpYpqwU+hdHtz7Fc=
-github.com/cplieger/web-terminal-engine/v2 v2.3.2 h1:J3GsvNeg6Pk8o1bXHX6vImvZKqQhuHfnSxD9cnYQtME=
-github.com/cplieger/web-terminal-engine/v2 v2.3.2/go.mod h1:iaWoFiwkDgOrfwCdQoIiaXECFdxmPmjPA+LqUqL6ZfI=
+github.com/cplieger/web-terminal-engine/v2 v2.3.4 h1:NdIh1wZvEalIB4SG42H9VMWCMTpNXX1GX7Lq5tQTb3s=
+github.com/cplieger/web-terminal-engine/v2 v2.3.4/go.mod h1:iaWoFiwkDgOrfwCdQoIiaXECFdxmPmjPA+LqUqL6ZfI=
 github.com/cplieger/webhttp v1.6.0 h1:EnW1Gyr2nq8igwZC//Ce04WBOPJPrVZXrxbgxetWHPo=
 github.com/cplieger/webhttp v1.6.0/go.mod h1:RYtweYFUohqE5DIOt06Ypr0j9VHXjxSPBLIG3vM0H44=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
