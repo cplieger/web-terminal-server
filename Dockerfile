@@ -1,7 +1,7 @@
 # check=error=true
 
 # --- Builder: Go server + browser bundle (engine + UI compiled with tsc) ---
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS builder
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV GOTOOLCHAIN=auto
@@ -91,7 +91,7 @@ RUN mkdir -p static/vendor/fonts && \
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /web-terminal-server .
 
 # --- Runtime: minimal Debian with a shell for the default WT_CMD ---
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
