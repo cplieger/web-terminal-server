@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cplieger/envx"
 	"github.com/cplieger/slogx"
 	"github.com/cplieger/web-terminal-engine/v2/terminal"
 	"github.com/cplieger/webhttp"
@@ -51,13 +52,6 @@ const (
 	defaultScrollback = 5000
 	defaultUsername   = "admin"
 )
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
 
 // applyIntEnv parses an integer env var into *dst, leaving it unchanged when the
 // var is unset. It rejects a value below min or a non-integer.
@@ -130,11 +124,11 @@ type config struct {
 // os.Exit while a defer is pending).
 func loadConfig() (config, error) {
 	c := config{
-		addr:           envOr("WT_ADDR", defaultAddr),
-		command:        strings.Fields(envOr("WT_CMD", defaultCmd)),
+		addr:           envx.String("WT_ADDR", defaultAddr),
+		command:        strings.Fields(envx.String("WT_CMD", defaultCmd)),
 		workDir:        os.Getenv("WT_WORKDIR"),
 		scrollback:     defaultScrollback,
-		username:       envOr("WT_USERNAME", defaultUsername),
+		username:       envx.String("WT_USERNAME", defaultUsername),
 		password:       os.Getenv("WT_PASSWORD"),
 		trustedProxies: parseTrustedProxies("WT_TRUSTED_PROXIES"),
 	}
