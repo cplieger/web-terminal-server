@@ -1,7 +1,7 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
-github.com/cplieger/envx v1.0.0 h1:amAnEy+LrJDSlczo1N71UqB9zdRMlsOmBO2uwqop5EY=
-github.com/cplieger/envx v1.0.0/go.mod h1:OA7MSc3ChDXYZgIlHkABJZWt5FqUtr66yWBISLUvq20=
+github.com/cplieger/envx v1.1.0 h1:BwA+KmddeF0dWGqY0FGi1cv9SyKyP949sA05RfmCJ+c=
+github.com/cplieger/envx v1.1.0/go.mod h1:B9SEh2sZ3aP10PXELMEgIYfAO3qwP8uzuIL7BGfGlxQ=
 github.com/cplieger/slogx v1.2.0 h1:z9+DdEsg0JHMv9LJK5pz82Iw1Q/Qfjrrc0dVFH5gmKg=
 github.com/cplieger/slogx v1.2.0/go.mod h1:15KA2NVx725imQe/PYXUmd3oM2oMpYpqwU+hdHtz7Fc=
 github.com/cplieger/web-terminal-engine/v2 v2.5.0 h1:8I0Gs4TJnpc1Obh9gznVHrl8PB6fWoWXer5GHpQLov4=
