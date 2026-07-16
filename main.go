@@ -204,6 +204,16 @@ func main() {
 		webhttp.WithErrorLog(slog.NewLogLogger(slog.Default().Handler(), slog.LevelError)),
 	)
 
+	// BaseContext hands every request a context main can cancel on shutdown:
+	// the always-open /api/sessions/events SSE handler returns only on
+	// r.Context().Done(), and srv.Shutdown does not interrupt an active
+	// stream, so cancelling baseCtx is what unblocks the drain instead of
+	// holding it for the full grace window whenever a browser tab is open.
+	// (Ported from web-terminal-kiro, which grew this for exactly this reason.)
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
+	srv.BaseContext = func(net.Listener) context.Context { return baseCtx }
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -212,15 +222,19 @@ func main() {
 	if err != nil {
 		slog.Error("listen failed", "addr", cfg.addr, "error", err)
 		stop()
-		os.Exit(1) //nolint:gocritic // stop() called explicitly above; defer is a no-op safety net
+		cancelBase()
+		os.Exit(1) //nolint:gocritic // stop() and cancelBase() called explicitly above; the defers are no-op safety nets
 	}
 
-	// Flip readiness false the moment shutdown is signalled, before webhttp.Run
-	// drains, so /healthz reports 503 during the drain window (Run's teardown
-	// callback runs only after the drain completes).
+	// Flip readiness false and cancel in-flight request contexts the moment
+	// shutdown is signalled, before webhttp.Run drains, so /healthz reports 503
+	// during the drain window and the open SSE streams unblock (see the
+	// BaseContext comment above; Run's teardown callback runs only after the
+	// drain completes).
 	go func() {
 		<-ctx.Done()
 		ready.Set(false)
+		cancelBase()
 		slog.Info("shutting down", "cause", context.Cause(ctx))
 	}()
 
