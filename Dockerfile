@@ -39,7 +39,7 @@ COPY . ./
 # node_modules/@cplieger so tsc's bundler resolution finds the engine when
 # compiling the UI's `@cplieger/web-terminal-engine` import.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=2.5.0
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=2.7.0
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
 ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=3.5.0
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
