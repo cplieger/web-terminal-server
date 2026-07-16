@@ -14,7 +14,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # renovate: datasource=golang-version depName=golang
 ARG GO_VERSION=1.26.5
 RUN ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
     | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
@@ -25,7 +25,7 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 # renovate: datasource=npm depName=typescript
 ARG TS_VERSION=7.0.2
 RUN TS_ARCH=$([ "$(dpkg --print-architecture)" = "arm64" ] && echo "arm64" || echo "x64") && \
-    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 \
       "https://registry.npmjs.org/@typescript/typescript-linux-${TS_ARCH}/-/typescript-linux-${TS_ARCH}-${TS_VERSION}.tgz" \
     | tar -xz -C /tmp
 
@@ -43,9 +43,9 @@ ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=2.5.0
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
 ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=3.5.0
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
-    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" \
       | tar -xz -C node_modules/@cplieger/web-terminal-engine --strip-components=1 && \
-    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" \
       | tar -xz -C node_modules/@cplieger/web-terminal-ui --strip-components=1
 
 # Compile both packages to static/vendor/. tsc is a compiler, not a bundler:
@@ -80,7 +80,7 @@ RUN set -eu; \
 # renovate: datasource=github-releases depName=ryanoasis/nerd-fonts
 ARG NERDFONT_VERSION=v3.4.0
 RUN mkdir -p static/vendor/fonts && \
-    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERDFONT_VERSION}/Monaspace.tar.xz" \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERDFONT_VERSION}/Monaspace.tar.xz" \
       | tar -xJ -C static/vendor/fonts \
           MonaspiceNeNerdFontMono-Regular.otf \
           MonaspiceNeNerdFontMono-Bold.otf \
