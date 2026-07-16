@@ -53,33 +53,31 @@ const (
 	defaultUsername   = "admin"
 )
 
-// applyIntEnv parses an integer env var into *dst, leaving it unchanged when the
-// var is unset. It rejects a value below min or a non-integer.
+// applyIntEnv parses an integer env var into *dst via envx.IntStrict, leaving
+// it unchanged when the var is unset or empty. It rejects a value below min
+// or a non-integer.
 func applyIntEnv(key string, minVal int, dst *int) error {
-	v := os.Getenv(key)
-	if v == "" {
-		return nil
+	n, ok, err := envx.IntStrict(key)
+	if err != nil || (ok && n < minVal) {
+		return fmt.Errorf("%s must be an integer >= %d, got %q", key, minVal, os.Getenv(key))
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < minVal {
-		return fmt.Errorf("%s must be an integer >= %d, got %q", key, minVal, v)
+	if ok {
+		*dst = n
 	}
-	*dst = n
 	return nil
 }
 
-// applyDurationEnv parses a Go duration env var into *dst, leaving it unchanged
-// when unset. It rejects a negative or unparseable duration.
+// applyDurationEnv parses a Go duration env var into *dst via
+// envx.DurationStrict, leaving it unchanged when unset or empty. It rejects a
+// negative or unparseable duration.
 func applyDurationEnv(key string, dst *time.Duration) error {
-	v := os.Getenv(key)
-	if v == "" {
-		return nil
+	d, ok, err := envx.DurationStrict(key)
+	if err != nil || (ok && d < 0) {
+		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, os.Getenv(key))
 	}
-	d, err := time.ParseDuration(v)
-	if err != nil || d < 0 {
-		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, v)
+	if ok {
+		*dst = d
 	}
-	*dst = d
 	return nil
 }
 
@@ -135,10 +133,12 @@ func loadConfig() (config, error) {
 	if len(c.command) == 0 {
 		return config{}, errors.New("WT_CMD is empty")
 	}
-	if err := applyIntEnv("WT_SCROLLBACK", 0, &c.scrollback); err != nil {
-		return config{}, err
-	}
-	if err := applyDurationEnv("WT_IDLE_REAPER", &c.idleReaper); err != nil {
+	// Both validators run before returning so two simultaneously malformed
+	// WT_* values surface in one startup failure instead of one restart apart.
+	if err := errors.Join(
+		applyIntEnv("WT_SCROLLBACK", 0, &c.scrollback),
+		applyDurationEnv("WT_IDLE_REAPER", &c.idleReaper),
+	); err != nil {
 		return config{}, err
 	}
 	if c.workDir != "" {
