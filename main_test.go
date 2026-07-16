@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -17,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -336,54 +336,11 @@ func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
 	}
 }
 
-func TestInlineScriptHashes(t *testing.T) {
-	cases := []struct {
-		name string
-		html string
-		want []string
-	}{
-		{"no scripts", `<html><body>hi</body></html>`, nil},
-		{"single inline", `<head><script>let a=1;</script></head>`, []string{hashToken("let a=1;")}},
-		{"external skipped", `<script src="/vendor/x.js"></script>`, nil},
-		{"external with type skipped", `<script type="module" src="/x.js"></script>`, nil},
-		{"mixed inline and external", `<script src="/x.js"></script><script>b=2</script>`, []string{hashToken("b=2")}},
-		{
-			"two inline preserve order",
-			`<script type="importmap">{"i":1}</script><script type="module">go()</script>`,
-			[]string{hashToken(`{"i":1}`), hashToken("go()")},
-		},
-		{"case-insensitive tag", `<SCRIPT>x=3</SCRIPT>`, []string{hashToken("x=3")}},
-		{"data-src is not a src attribute", `<script data-src="x">y=4</script>`, []string{hashToken("y=4")}},
-		{"newlines hashed verbatim", "<script>\n  z=5\n</script>", []string{hashToken("\n  z=5\n")}},
-		{"scriptfoo is not a script tag", `<scriptfoo>nope</scriptfoo>`, nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := inlineScriptHashes([]byte(tc.html))
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("inlineScriptHashes(%q) = %v, want %v", tc.html, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestCSPHashTokenFormat pins that cspHash emits a CSP-grammar source token: a
-// standard-base64 encoding of a 32-byte sha256 digest wrapped as 'sha256-...'.
-// It validates the encoding/format without hardcoding any expected hash value.
-func TestCSPHashTokenFormat(t *testing.T) {
-	tok := cspHash([]byte("console.log(1)"))
-	if !strings.HasPrefix(tok, "'sha256-") || !strings.HasSuffix(tok, "'") {
-		t.Fatalf("token = %q, want the 'sha256-<base64>' form", tok)
-	}
-	b64 := strings.TrimSuffix(strings.TrimPrefix(tok, "'sha256-"), "'")
-	raw, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		t.Fatalf("hash %q is not valid standard base64: %v", b64, err)
-	}
-	if len(raw) != sha256.Size {
-		t.Errorf("decoded hash = %d bytes, want %d (sha256)", len(raw), sha256.Size)
-	}
-}
+// The inline-script scanner's own unit and format tests (TestInlineScriptHashes,
+// TestCSPHashTokenFormat) moved to webhttp with the scanner (csp_test.go there,
+// plus a fuzz target). What stays here is this app's contract: the CSP it
+// SERVES matches the inline scripts it EMBEDS (the anti-drift oracle below) and
+// buildCSPPolicy's fail-loud arms.
 
 // TestCSPScriptHashesMatchEmbeddedInlineScripts is the anti-drift guard for the
 // script-src hardening. It independently re-extracts every inline <script> in
@@ -434,12 +391,19 @@ func TestCSPScriptHashesMatchEmbeddedInlineScripts(t *testing.T) {
 	}
 }
 
-// TestFallbackCSPPolicy exercises the test-only escape hatch: fallbackCSPPolicy
-// relaxes script-src to 'unsafe-inline' (no pinned hashes) while keeping the
-// other directives, including style-src's 'unsafe-inline'. Production never
-// takes this path — newHandler always builds the hash-pinned policy from the
-// embedded index.html via buildCSPPolicy — so this both documents the contract
-// and keeps the helper exercised.
+// fallbackCSPPolicy assembles the CSP with script-src relaxed to
+// 'unsafe-inline' instead of pinned hashes. It lives in the TEST file by
+// design: production always goes through buildCSPPolicy against the real
+// embedded index.html and never relaxes script-src, so a relaxed builder must
+// not be reachable from (or even compiled into) the production binary. Tests
+// that do not exercise the inline scripts use it as their policy stand-in.
+func fallbackCSPPolicy() string {
+	return fmt.Sprintf(cspTemplate, "'unsafe-inline'")
+}
+
+// TestFallbackCSPPolicy exercises the test-only helper above: it relaxes
+// script-src to 'unsafe-inline' (no pinned hashes) while keeping the other
+// directives, including style-src's 'unsafe-inline'.
 func TestFallbackCSPPolicy(t *testing.T) {
 	policy := fallbackCSPPolicy()
 	scriptSrc := cspDirective(t, policy, "script-src")
@@ -801,6 +765,12 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	t.Fatalf("SSE stream delivered no data through the middleware (scan err: %v)", sc.Err())
 }
 
+// sessionCreateBurst pins the burst of webhttp.SessionCreateRateLimit as THIS
+// app's documented contract (six creates, then 429). A deliberate tuning
+// change in the shared preset fails these tests loudly so the app's docs and
+// expectations are updated consciously rather than drifting silently.
+const sessionCreateBurst = 6
+
 func TestCreateRateLimit(t *testing.T) {
 	var ready webhttp.Ready
 	var restHit atomic.Bool
@@ -814,15 +784,15 @@ func TestCreateRateLimit(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions", nil))
 		return rec.Code
 	}
-	// The burst (createBurst) creates are allowed; the next is throttled 429.
+	// The preset burst of creates is allowed; the next is throttled 429.
 	allowed := 0
-	for range createBurst {
+	for range sessionCreateBurst {
 		if post() == http.StatusOK {
 			allowed++
 		}
 	}
-	if allowed != createBurst {
-		t.Errorf("allowed %d creates in the burst, want %d", allowed, createBurst)
+	if allowed != sessionCreateBurst {
+		t.Errorf("allowed %d creates in the burst, want %d", allowed, sessionCreateBurst)
 	}
 	if code := post(); code != http.StatusTooManyRequests {
 		t.Errorf("create past the burst = %d, want 429", code)
@@ -851,7 +821,7 @@ func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions", nil))
 			return rec.Code
 		}
-		for range createBurst {
+		for range sessionCreateBurst {
 			post()
 		}
 		if code := post(); code != http.StatusTooManyRequests {
@@ -934,210 +904,11 @@ func TestHandlerAuthGatesAllRoutes(t *testing.T) {
 	}
 }
 
-func TestAcceptsGzip(t *testing.T) {
-	cases := []struct {
-		name   string
-		header string
-		want   bool
-	}{
-		{"plain gzip", "gzip", true},
-		{"gzip with q=1", "gzip;q=1.0", true},
-		{"gzip explicitly disabled q=0", "gzip;q=0", false},
-		{"gzip disabled q=0.0", "gzip;q=0.0", false},
-		{"gzip with fractional q", "gzip;q=0.5", true},
-		{"gzip with space before params", "gzip ; q=0", false},
-		{"second token offers gzip", "deflate, gzip", true},
-		{"second token gzip disabled", "deflate, gzip;q=0", false},
-		{"no gzip offered", "br, deflate", false},
-		{"identity only", "identity", false},
-		{"empty header", "", false},
-		{"wildcard not treated as gzip", "*", false},
-		{"malformed q is permissive", "gzip;q=bogus", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			if tc.header != "" {
-				req.Header.Set("Accept-Encoding", tc.header)
-			}
-			if got := acceptsGzip(req); got != tc.want {
-				t.Errorf("acceptsGzip(Accept-Encoding=%q) = %v, want %v", tc.header, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestIfNoneMatchContains(t *testing.T) {
-	const etag = `"abc-gz"`
-	cases := []struct {
-		name   string
-		header string
-		want   bool
-	}{
-		{"empty header", "", false},
-		{"exact match", `"abc-gz"`, true},
-		{"wildcard", "*", true},
-		{"present in comma list", `"x", "abc-gz", "y"`, true},
-		{"absent from list", `"x", "y"`, false},
-		{"whitespace trimmed around match", `  "abc-gz"  `, true},
-		{"identity etag does not match gz etag", `"abc"`, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := ifNoneMatchContains(tc.header, etag); got != tc.want {
-				t.Errorf("ifNoneMatchContains(%q, %q) = %v, want %v", tc.header, etag, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestGzipAsset(t *testing.T) {
-	t.Run("compressible asset round-trips and carries extension content type", func(t *testing.T) {
-		raw := []byte(strings.Repeat("body{color:#b48eff}\n", 500))
-		gz, ok := gzipAsset(raw, "style.css")
-		if !ok {
-			t.Fatal("gzipAsset() ok = false for a highly compressible asset, want true")
-		}
-		if len(gz.body) >= len(raw) {
-			t.Errorf("gzip body len = %d, want < raw len %d", len(gz.body), len(raw))
-		}
-		zr, err := gzip.NewReader(bytes.NewReader(gz.body))
-		if err != nil {
-			t.Fatalf("gzip.NewReader: %v", err)
-		}
-		got, err := io.ReadAll(zr)
-		if err != nil {
-			t.Fatalf("read gzip body: %v", err)
-		}
-		if !bytes.Equal(got, raw) {
-			t.Error("gzip body did not round-trip to the original asset bytes")
-		}
-		if !strings.HasPrefix(gz.contentType, "text/css") {
-			t.Errorf("contentType = %q, want it to start with %q", gz.contentType, "text/css")
-		}
-	})
-
-	t.Run("incompressible tiny asset is not gzipped", func(t *testing.T) {
-		if _, ok := gzipAsset([]byte("x"), "tiny.txt"); ok {
-			t.Error("gzipAsset() ok = true for a 1-byte asset gzip cannot shrink, want false")
-		}
-	})
-}
-
-// TestGzipAssetContentTypeFallback pins the mime-miss branch: a compressible asset whose
-// extension mime.TypeByExtension cannot resolve must fall back to http.DetectContentType.
-func TestGzipAssetContentTypeFallback(t *testing.T) {
-	raw := []byte(strings.Repeat("plain text body line\n", 500))
-	gz, ok := gzipAsset(raw, "asset.unknownext")
-	if !ok {
-		t.Fatal("gzipAsset() ok = false for a highly compressible asset, want true")
-	}
-	if gz.contentType == "" {
-		t.Fatal("contentType is empty; the mime-miss fallback did not run")
-	}
-	if !strings.HasPrefix(gz.contentType, "text/plain") {
-		t.Errorf("contentType = %q, want text/plain prefix (DetectContentType on text bytes)", gz.contentType)
-	}
-}
-
-func TestServeGzip(t *testing.T) {
-	raw := []byte(strings.Repeat("hello world\n", 300))
-	gz, ok := gzipAsset(raw, "x.txt")
-	if !ok {
-		t.Fatal("setup: gzipAsset() ok = false, want true")
-	}
-	const etag = `"deadbeef"`
-	const gzEtag = `"deadbeef-gz"`
-
-	t.Run("GET offering gzip serves the compressed body", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/x.txt", nil)
-		req.Header.Set("Accept-Encoding", "gzip")
-		if !serveGzip(rec, req, etag, gz) {
-			t.Fatal("serveGzip() = false, want true (it should have handled the gzip response)")
-		}
-		if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
-			t.Errorf("Content-Encoding = %q, want %q", got, "gzip")
-		}
-		if got := rec.Header().Get("ETag"); got != gzEtag {
-			t.Errorf("ETag = %q, want %q", got, gzEtag)
-		}
-		zr, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
-		if err != nil {
-			t.Fatalf("gzip.NewReader: %v", err)
-		}
-		got, err := io.ReadAll(zr)
-		if err != nil {
-			t.Fatalf("read gzip body: %v", err)
-		}
-		if !bytes.Equal(got, raw) {
-			t.Error("served gzip body did not decode to the original bytes")
-		}
-	})
-
-	t.Run("HEAD offering gzip sets headers but writes no body", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodHead, "/x.txt", nil)
-		req.Header.Set("Accept-Encoding", "gzip")
-		if !serveGzip(rec, req, etag, gz) {
-			t.Fatal("serveGzip() = false, want true")
-		}
-		if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
-			t.Errorf("Content-Encoding = %q, want %q", got, "gzip")
-		}
-		if rec.Body.Len() != 0 {
-			t.Errorf("HEAD body len = %d, want 0", rec.Body.Len())
-		}
-	})
-
-	t.Run("conditional GET with matching gz ETag yields 304", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/x.txt", nil)
-		req.Header.Set("Accept-Encoding", "gzip")
-		req.Header.Set("If-None-Match", gzEtag)
-		if !serveGzip(rec, req, etag, gz) {
-			t.Fatal("serveGzip() = false, want true")
-		}
-		if rec.Code != http.StatusNotModified {
-			t.Errorf("status = %d, want 304", rec.Code)
-		}
-		if rec.Body.Len() != 0 {
-			t.Errorf("304 body len = %d, want 0", rec.Body.Len())
-		}
-		if got := rec.Header().Get("Content-Encoding"); got != "" {
-			t.Errorf("304 Content-Encoding = %q, want empty", got)
-		}
-	})
-
-	t.Run("falls through (returns false) and writes nothing", func(t *testing.T) {
-		for _, tc := range []struct {
-			name   string
-			method string
-			accept string
-			rangeH string
-		}{
-			{"non GET/HEAD method", http.MethodPost, "gzip", ""},
-			{"client does not offer gzip", http.MethodGet, "identity", ""},
-			{"gzip explicitly disabled", http.MethodGet, "gzip;q=0", ""},
-			{"range request", http.MethodGet, "gzip", "bytes=0-10"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				rec := httptest.NewRecorder()
-				req := httptest.NewRequest(tc.method, "/x.txt", nil)
-				req.Header.Set("Accept-Encoding", tc.accept)
-				if tc.rangeH != "" {
-					req.Header.Set("Range", tc.rangeH)
-				}
-				if serveGzip(rec, req, etag, gz) {
-					t.Errorf("serveGzip() = true, want false (should fall back to the identity file server)")
-				}
-				if got := rec.Header().Get("Content-Encoding"); got != "" {
-					t.Errorf("Content-Encoding = %q, want empty on the fall-through path", got)
-				}
-			})
-		}
-	})
-}
+// The gzip negotiation/precompute unit tests (TestAcceptsGzip,
+// TestIfNoneMatchContains, TestGzipAsset, TestGzipAssetContentTypeFallback,
+// TestServeGzip) moved to webhttp with the static-serving mechanism
+// (static_test.go there). What stays here is the app-level contract below:
+// the assembled handler still negotiates gzip and revalidates via ETags.
 
 func TestStaticHandlerGzipNegotiation(t *testing.T) {
 	var ready webhttp.Ready
