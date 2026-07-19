@@ -110,11 +110,12 @@ done
 echo "[smoke] PASS  importmap-referenced bundle assets served (CSS, engine+UI JS, font)"
 
 # 3. /ws authenticated but WITHOUT upgrade headers -> not a 200/101. The engine
-#    (v2, multi-session) 404s /ws for an unknown/missing ?session=<id> before
-#    it ever looks at upgrade headers, so a bare GET /ws can't distinguish "no
-#    session" from "handler not mounted." Create a real session via the REST
-#    API first so the request reaches the WebSocket handler itself, which must
-#    then reject the non-upgrade request (typically 400/426).
+#    (v3, multi-session) answers every non-upgrade GET /ws with Accept's own
+#    426, known session or not (unknown sessions are reported post-upgrade via
+#    close code 4004, so a plain probe can't test session existence). Create a
+#    real session via the REST API anyway so this check also proves the REST
+#    surface is mounted, then assert the non-upgrade rejection (typically
+#    400/426).
 session_id=$(curl -s -u "admin:${PASSWORD}" -X POST "${BASE}/api/sessions" | jq -r '.id // empty')
 [ -n "$session_id" ] || fail "POST /api/sessions did not return a session id"
 code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/ws?session=${session_id}")
@@ -123,11 +124,14 @@ case "$code" in
   101) echo "[smoke] PASS  /ws upgraded = 101" ;;
   *) fail "/ws?session=${session_id} (no upgrade) = $code, want 400/426/405 (handler mounted)" ;;
 esac
-# An unknown/missing session id is a distinct, documented 404 (SessionManager.
-# WebSocketHandler) -- verify that contract too so a regression there is caught.
+# A missing/unknown session id must answer a non-upgrade GET exactly like a
+# known one (engine v3 anti-probing contract: no pre-upgrade 404 oracle for
+# session existence; the definitive "unknown session" signal is close code
+# 4004 after the upgrade). Verify the uniform rejection so a regression back
+# to the distinguishable 404 is caught.
 code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/ws")
-[ "$code" = "404" ] || fail "/ws (no session param) = $code, want 404 (unknown session)"
-echo "[smoke] PASS  /ws (no session param) = 404"
+[ "$code" = "426" ] || fail "/ws (no session param) = $code, want 426 (same as known session; no existence oracle)"
+echo "[smoke] PASS  /ws (no session param) = 426, indistinguishable from a known session"
 
 # 4. Auth gating: no credentials -> 401 with a challenge on every route.
 for path in / /healthz /ws; do
