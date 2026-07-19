@@ -89,6 +89,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       returnByValue: true,
       awaitPromise,
     });
+    if (r.exceptionDetails) {
+      throw new Error(
+        r.exceptionDetails.exception?.description ??
+          `${r.exceptionDetails.text} at ${r.exceptionDetails.lineNumber + 1}:${r.exceptionDetails.columnNumber + 1}`,
+      );
+    }
     return r.result.value;
   };
 
@@ -104,7 +110,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         bubbles: true, cancelable: true,
         clientX: window.innerWidth - 2, clientY: window.innerHeight - 2,
       }));
-      const menu = document.querySelector('.ctx-menu, #ctx-menu');
+      const menu = document.querySelector('.wt-ctx-menu');
       const r = menu.getBoundingClientRect();
       const clampedIn = r.left >= 0 && r.top >= 0 &&
         r.right <= window.innerWidth && r.bottom <= window.innerHeight && r.width > 0;
@@ -154,8 +160,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     "#term-output keeps user-select: text": structural.outputUserSelect === "text",
     "context menu clamped inside the viewport": structural.menuClampedInViewport === true,
     "a selection was made over a committed row": selBefore.length > 0,
-    "selection survives streaming frames":
-      selBefore.length > 0 && selBefore === selAfter,
+    "selection survives streaming frames": selBefore.length > 0 && selBefore === selAfter,
   };
   console.log("=== verdict ===");
   let ok = true;

@@ -26,7 +26,7 @@
 // Zero deps (Node 22 global WebSocket). Exit 0 = PASS, non-zero = FAIL.
 // Usage: node scripts/cdp-scrollback.cjs
 const WT_URL = process.env.WT_URL || "http://127.0.0.1:7681/";
-const WS_URL = WT_URL.replace(/^http/, "ws").replace(/\/+$/, "") + "/ws";
+const SESSIONS_URL = new URL("/api/sessions", WT_URL);
 const SETTLE_MS = Number(process.env.SETTLE_MS || 3000); // burst renders + base accrues
 const AFTER_MS = Number(process.env.AFTER_MS || 3000); // trigger -> ED3 -> frame
 
@@ -41,7 +41,21 @@ function decodeScreen(buf) {
 }
 
 (async () => {
-  const ws = new WebSocket(WS_URL);
+  const createResponse = await fetch(SESSIONS_URL, { method: "POST" });
+  if (!createResponse.ok) {
+    throw new Error(
+      `create session: ${createResponse.status} ${createResponse.statusText}: ${await createResponse.text()}`,
+    );
+  }
+  const session = await createResponse.json();
+  if (typeof session?.id !== "string" || session.id.length === 0) {
+    throw new Error(`create session returned no id: ${JSON.stringify(session)}`);
+  }
+  const wsURL = new URL("/ws", WT_URL);
+  wsURL.protocol = wsURL.protocol === "https:" ? "wss:" : "ws:";
+  wsURL.searchParams.set("session", session.id);
+
+  const ws = new WebSocket(wsURL);
   ws.binaryType = "arraybuffer";
   let wsError = null;
   let screenFrames = 0;
@@ -49,7 +63,9 @@ function decodeScreen(buf) {
   let triggeredAt = 0;
   const sbcAfterTrigger = []; // bases of scrollbackCleared frames seen after the trigger
 
-  ws.addEventListener("error", () => { wsError = "websocket error connecting to " + WS_URL; });
+  ws.addEventListener("error", () => {
+    wsError = "websocket error connecting to " + wsURL;
+  });
   ws.addEventListener("message", (ev) => {
     if (!(ev.data instanceof ArrayBuffer)) {
       return;
@@ -65,14 +81,22 @@ function decodeScreen(buf) {
     }
   });
 
-  await new Promise((res) => { ws.addEventListener("open", res); ws.addEventListener("error", res); });
+  await new Promise((res) => {
+    ws.addEventListener("open", res);
+    ws.addEventListener("error", res);
+  });
   if (wsError) {
     console.log(JSON.stringify({ wsError }));
     console.log("SCROLLBACK-CLEAR VERIFY: FAIL");
     process.exit(1);
   }
   // Establish PTY dimensions; the server flushes once sized.
-  ws.send(new Uint8Array([0, ...new TextEncoder().encode(JSON.stringify({ type: "resize", cols: 80, rows: 24 }))]));
+  ws.send(
+    new Uint8Array([
+      0,
+      ...new TextEncoder().encode(JSON.stringify({ type: "resize", cols: 80, rows: 24 })),
+    ]),
+  );
 
   await sleep(SETTLE_MS); // let the 200-line burst render and commit to history
   const baseBeforeTrigger = maxBase;
@@ -83,7 +107,14 @@ function decodeScreen(buf) {
   ws.send(new TextEncoder().encode("\n"));
 
   await sleep(AFTER_MS);
-  try { ws.close(); } catch { /* ignore */ }
+  try {
+    ws.close();
+  } catch {
+    /* ignore */
+  }
+  await fetch(new URL(`/api/sessions/${encodeURIComponent(session.id)}`, WT_URL), {
+    method: "DELETE",
+  }).catch(() => {});
 
   console.log("=== observed ===");
   console.log(JSON.stringify({ screenFrames, baseBeforeTrigger, sbcAfterTrigger }));
@@ -92,7 +123,9 @@ function decodeScreen(buf) {
     "connected and received screen frames": screenFrames > 0,
     "the burst committed history before the trigger (base advanced)": baseBeforeTrigger > 0,
     "an ED3 scrollbackCleared frame arrived after the trigger": sbcAfterTrigger.length > 0,
-    "the scrollbackCleared frame carries a non-zero base (history to drop)": sbcAfterTrigger.some((b) => b > 0),
+    "the scrollbackCleared frame carries a non-zero base (history to drop)": sbcAfterTrigger.some(
+      (b) => b > 0,
+    ),
   };
   console.log("=== verdict ===");
   let ok = true;
@@ -102,4 +135,7 @@ function decodeScreen(buf) {
   }
   console.log(ok ? "\nSCROLLBACK-CLEAR VERIFY: PASS" : "\nSCROLLBACK-CLEAR VERIFY: FAIL");
   process.exit(ok ? 0 : 1);
-})().catch((e) => { console.error("VERIFY ERROR:", e.message); process.exit(2); });
+})().catch((e) => {
+  console.error("VERIFY ERROR:", e.message);
+  process.exit(2);
+});

@@ -8,8 +8,8 @@
 // Simulates the keyboard by redefining window.visualViewport.height (the iOS
 // case: layout viewport stays, visual viewport shrinks) and dispatching the
 // 'resize' event the UI listens to. Instruments WebSocket.send (before app code
-// via addScriptToEvaluateOnNewDocument — no production hook) to capture the
-// 0x00-prefixed control frames the client emits.
+// via addScriptToEvaluateOnNewDocument — no production hook) to capture v4 text
+// controls and legacy 0x00-prefixed binary controls.
 //
 // Baseline setup: a server on the emitter, reachable from the browser:
 //   WT_ADDR=:7681 WT_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server-bin
@@ -24,7 +24,11 @@ function rpc(ws, id, method, params) {
   return new Promise((resolve, reject) => {
     const onMsg = (ev) => {
       let m;
-      try { m = JSON.parse(ev.data); } catch { return; }
+      try {
+        m = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
       if (m.id === id) {
         ws.removeEventListener("message", onMsg);
         m.error ? reject(new Error(method + ": " + JSON.stringify(m.error))) : resolve(m.result);
@@ -36,16 +40,20 @@ function rpc(ws, id, method, params) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Capture every 0x00-prefixed control frame (JSON payload) the client sends.
+// Capture every v4 text control and legacy 0x00-prefixed binary control.
 const INSTRUMENT = `(() => {
   const RealSend = WebSocket.prototype.send;
   window.__ctl = []; const dec = new TextDecoder();
   WebSocket.prototype.send = function(data) {
     try {
-      let b = null;
-      if (data instanceof ArrayBuffer) b = new Uint8Array(data);
-      else if (ArrayBuffer.isView(data)) b = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-      if (b && b.length > 1 && b[0] === 0x00) window.__ctl.push({ t: Date.now(), s: dec.decode(b.subarray(1)) });
+      if (typeof data === "string") {
+        window.__ctl.push({ t: Date.now(), s: data });
+      } else {
+        let b = null;
+        if (data instanceof ArrayBuffer) b = new Uint8Array(data);
+        else if (ArrayBuffer.isView(data)) b = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        if (b && b.length > 1 && b[0] === 0x00) window.__ctl.push({ t: Date.now(), s: dec.decode(b.subarray(1)) });
+      }
     } catch (e) {}
     return RealSend.apply(this, arguments);
   };
@@ -63,23 +71,49 @@ const OPEN_KB = `(() => { const vv = window.visualViewport; if (!vv) return 'no-
 const DUMP_CTL = `(() => JSON.stringify({ t0: window.__t0 || 0, ctl: window.__ctl || [] }))()`;
 
 (async () => {
-  const target = await fetch(`${CDP}/json/new?about:blank`, { method: "PUT" }).then((r) => r.json());
+  const target = await fetch(`${CDP}/json/new?about:blank`, { method: "PUT" }).then((r) =>
+    r.json(),
+  );
   const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((res, rej) => { ws.addEventListener("open", res); ws.addEventListener("error", rej); });
+  await new Promise((res, rej) => {
+    ws.addEventListener("open", res);
+    ws.addEventListener("error", rej);
+  });
   let id = 0;
   const errors = [];
   ws.addEventListener("message", (ev) => {
     let m;
-    try { m = JSON.parse(ev.data); } catch { return; }
-    if (m.method === "Runtime.consoleAPICalled" && m.params.type === "error") errors.push(m.params.args.map((a) => a.value ?? a.description ?? "").join(" "));
-    if (m.method === "Runtime.exceptionThrown") errors.push("EXC: " + (m.params.exceptionDetails.exception?.description ?? m.params.exceptionDetails.text));
+    try {
+      m = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    if (m.method === "Runtime.consoleAPICalled" && m.params.type === "error")
+      errors.push(m.params.args.map((a) => a.value ?? a.description ?? "").join(" "));
+    if (m.method === "Runtime.exceptionThrown")
+      errors.push(
+        "EXC: " +
+          (m.params.exceptionDetails.exception?.description ?? m.params.exceptionDetails.text),
+      );
   });
-  const ev = async (expression) => (await rpc(ws, ++id, "Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
+  const ev = async (expression) =>
+    (
+      await rpc(ws, ++id, "Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      })
+    ).result.value;
 
   await rpc(ws, ++id, "Page.enable", {});
   await rpc(ws, ++id, "Runtime.enable", {});
   // A realistic mobile viewport so visualViewport is meaningful and the reflow is deterministic.
-  await rpc(ws, ++id, "Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  await rpc(ws, ++id, "Emulation.setDeviceMetricsOverride", {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 2,
+    mobile: true,
+  });
   await rpc(ws, ++id, "Page.addScriptToEvaluateOnNewDocument", { source: INSTRUMENT });
   await rpc(ws, ++id, "Page.navigate", { url: URL });
   await rpc(ws, ++id, "Page.bringToFront", {}).catch(() => {});
@@ -94,7 +128,10 @@ const DUMP_CTL = `(() => JSON.stringify({ t0: window.__t0 || 0, ctl: window.__ct
 
   const resizes = [];
   for (const f of dump.ctl) {
-    try { const j = JSON.parse(f.s); if (j.type === "resize") resizes.push({ t: f.t, rows: j.rows, cols: j.cols }); } catch (e) {}
+    try {
+      const j = JSON.parse(f.s);
+      if (j.type === "resize") resizes.push({ t: f.t, rows: j.rows, cols: j.cols });
+    } catch (e) {}
   }
   const beforeResize = [...resizes].reverse().find((r) => r.t < dump.t0);
   const afterResizes = resizes.filter((r) => r.t >= dump.t0);
@@ -104,14 +141,24 @@ const DUMP_CTL = `(() => JSON.stringify({ t0: window.__t0 || 0, ctl: window.__ct
   console.log(errors.length ? errors.slice(0, 10).join("\n") : "(none)");
   console.log("open:", openRes);
   console.log("termCH:", before.termCH, "->", after.termCH, " vvH:", before.vvH, "->", after.vvH);
-  console.log("resize frames before kb:", JSON.stringify(beforeResize || null), " after kb:", JSON.stringify(afterResizes));
+  console.log(
+    "resize frames before kb:",
+    JSON.stringify(beforeResize || null),
+    " after kb:",
+    JSON.stringify(afterResizes),
+  );
 
   const checks = {
     "visualViewport is available to simulate the keyboard": openRes === "ok",
     "no console errors": errors.length === 0,
-    "content area reflowed to the smaller viewport (term clientHeight shrank)": after.termCH > 0 && after.termCH < before.termCH,
+    "content area reflowed to the smaller viewport (term clientHeight shrank)":
+      after.termCH > 0 && after.termCH < before.termCH,
     "a resize control-frame was sent after the keyboard opened": afterResizes.length > 0,
-    "the resize told the server fewer rows": !!(beforeResize && lastAfter && lastAfter.rows < beforeResize.rows),
+    "the resize told the server fewer rows": !!(
+      beforeResize &&
+      lastAfter &&
+      lastAfter.rows < beforeResize.rows
+    ),
   };
   console.log("=== verdict ===");
   let ok = true;
@@ -124,4 +171,7 @@ const DUMP_CTL = `(() => JSON.stringify({ t0: window.__t0 || 0, ctl: window.__ct
   ws.close();
   await fetch(`${CDP}/json/close/${target.id}`).catch(() => {});
   process.exit(ok ? 0 : 1);
-})().catch((e) => { console.error("VERIFY ERROR:", e.message); process.exit(2); });
+})().catch((e) => {
+  console.error("VERIFY ERROR:", e.message);
+  process.exit(2);
+});

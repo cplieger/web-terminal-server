@@ -11,8 +11,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"embed"
 	"errors"
 	"fmt"
@@ -226,18 +224,6 @@ func main() {
 		os.Exit(1) //nolint:gocritic // stop() and cancelBase() called explicitly above; the defers are no-op safety nets
 	}
 
-	// Flip readiness false and cancel in-flight request contexts the moment
-	// shutdown is signalled, before webhttp.Run drains, so /healthz reports 503
-	// during the drain window and the open SSE streams unblock (see the
-	// BaseContext comment above; Run's teardown callback runs only after the
-	// drain completes).
-	go func() {
-		<-ctx.Done()
-		ready.Set(false)
-		cancelBase()
-		slog.Info("shutting down", "cause", context.Cause(ctx))
-	}()
-
 	slog.Info("web-terminal-server listening",
 		"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 		"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
@@ -245,10 +231,19 @@ func main() {
 	ready.Set(true)
 
 	// webhttp.Run serves on the pre-bound listener and, on ctx cancellation,
-	// drains within the grace window then runs the teardown (session manager
-	// shutdown). A runtime serve failure returns a non-nil error.
+	// runs the pre-drain hook, drains within the grace window, then runs the
+	// teardown (session manager shutdown). The pre-drain hook flips readiness
+	// false and cancels in-flight request contexts before the drain starts, so
+	// /healthz reports 503 during the drain window and the open SSE streams
+	// unblock (see the BaseContext comment above). A runtime serve failure
+	// returns a non-nil error.
 	if err := webhttp.Run(ctx, srv, ln, func(context.Context) { mgr.Shutdown() },
-		webhttp.WithShutdownGrace(5*time.Second)); err != nil {
+		webhttp.WithShutdownGrace(5*time.Second),
+		webhttp.WithPreDrain(func(context.Context) {
+			ready.Set(false)
+			cancelBase()
+			slog.Info("shutting down", "cause", context.Cause(ctx))
+		})); err != nil {
 		slog.Error("http server exited", "error", err)
 		mgr.Shutdown()
 		stop()
@@ -408,19 +403,27 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// basicAuth gates every request behind HTTP Basic credentials, using
-// constant-time comparison so a wrong username or password can't be timed.
-// The browser caches the credentials after the page load and replays them on
-// the same-origin WebSocket handshake, so the terminal works behind it.
+// basicAuth gates every request behind HTTP Basic credentials, verifying each
+// via webhttp's static-token verifiers (SHA-256 digests compared in constant
+// time) so a wrong username or password can't be timed. Both verifiers are
+// built ONCE here, pre-hashing the configured credentials, so per-request
+// work hashes only what the client sent. An empty configured username or
+// password fails CLOSED — the verifier rejects every presented value,
+// including the empty string — so the open-endpoint case is only ever the
+// explicit one: newHandler skips this middleware entirely when no password is
+// configured. The browser caches the credentials after the page load and
+// replays them on the same-origin WebSocket handshake, so the terminal works
+// behind it.
 func basicAuth(next http.Handler, username, password string) http.Handler {
-	userHash := sha256.Sum256([]byte(username))
-	passHash := sha256.Sum256([]byte(password))
+	verifyUser := webhttp.NewStaticTokenVerifier(username)
+	verifyPass := webhttp.NewStaticTokenVerifier(password)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
-		gotUser := sha256.Sum256([]byte(u))
-		gotPass := sha256.Sum256([]byte(p))
-		userOK := subtle.ConstantTimeCompare(gotUser[:], userHash[:]) == 1
-		passOK := subtle.ConstantTimeCompare(gotPass[:], passHash[:]) == 1
+		// Evaluate BOTH verifications before combining: no short-circuit may
+		// skip the second compare, so a rejection's duration never reveals
+		// which credential was wrong.
+		userOK := verifyUser.Verify(u)
+		passOK := verifyPass.Verify(p)
 		if !ok || !userOK || !passOK {
 			w.Header().Set("WWW-Authenticate", `Basic realm="web-terminal", charset="UTF-8"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -437,8 +440,11 @@ func basicAuth(next http.Handler, username, password string) http.Handler {
 // reformat of an inline script — is tracked automatically without hand-editing
 // a constant. Directives other than script-src are fixed:
 //
-//	style-src 'unsafe-inline'  the terminal renderer sets dynamic per-cell
-//	                           inline style attributes and would break without it
+//	style-src 'unsafe-inline'  bound by index.html's inline loading-overlay
+//	                           <style> (hashable if ever tightened). The
+//	                           terminal renderer itself needs no relaxation:
+//	                           it styles via CSSOM property setters, which
+//	                           style-src does not govern
 //	img-src 'self' data:        favicon/icon data URIs
 //	connect-src 'self'          same-origin HTTP + the /ws WebSocket PTY
 //	frame-ancestors 'none'      blocks clickjacking of the interactive terminal
