@@ -264,6 +264,27 @@ func TestBasicAuth(t *testing.T) {
 			t.Errorf("status = %d, want 401", rec.Code)
 		}
 	})
+
+	// The empty-configured cases pin the webhttp verifier's fail-CLOSED
+	// contract at the app level: an empty configured secret matches nothing,
+	// not everything — even a client presenting the same empty string gets
+	// 401. Production wiring never configures an empty pair (newHandler skips
+	// the middleware entirely when no password is set, and envx.String
+	// defaults an empty WT_USERNAME to "admin"), so an open endpoint is only
+	// ever the explicit skip, never an accidental empty-secret match.
+	t.Run("empty configured password fails closed", func(t *testing.T) {
+		rec := basicAuthRequest(user, "", &[2]string{user, ""})
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rec.Code)
+		}
+	})
+
+	t.Run("empty configured username fails closed", func(t *testing.T) {
+		rec := basicAuthRequest("", pass, &[2]string{"", pass})
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rec.Code)
+		}
+	})
 }
 
 // cspDirective returns the single CSP directive named `name` (e.g.
