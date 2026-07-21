@@ -3,7 +3,7 @@ module github.com/cplieger/web-terminal-server
 go 1.26.5
 
 require (
-	github.com/cplieger/slogx v1.3.0
+	github.com/cplieger/slogx v1.3.1
 	github.com/cplieger/web-terminal-engine/v3 v3.0.2
 	github.com/cplieger/webhttp v1.10.0
 )
