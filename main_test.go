@@ -37,6 +37,7 @@ func setWTEnv(t *testing.T, over map[string]string) {
 	for _, k := range []string{
 		"WT_ADDR", "WT_CMD", "WT_WORKDIR", "WT_SCROLLBACK",
 		"WT_USERNAME", "WT_PASSWORD", "WT_IDLE_REAPER", "WT_TRUSTED_PROXIES",
+		"WT_ALLOWED_HOSTS",
 	} {
 		t.Setenv(k, "")
 	}
@@ -687,6 +688,229 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestLoadConfigAllowedHosts covers WT_ALLOWED_HOSTS parsing via the shared
+// webhttp.ParseHostList helper and its threading onto cfg.hostPolicy (consumed
+// by the host-allowlist middleware in newHandler). Contracts: unset yields an
+// INACTIVE policy (any Host accepted, the backward-compatible default), a
+// valid list is canonicalized into an exact-match gate, a malformed entry is
+// warned (named) and DROPPED while the valid subset is kept, and an
+// all-invalid list stays ACTIVE and empty — deny-all, fail closed, with a
+// second Warn naming the deny-all state. These cases mutate the process-global
+// default logger and WT_* env, so they run serially (no t.Parallel).
+func TestLoadConfigAllowedHosts(t *testing.T) {
+	allows := func(t *testing.T, policy *webhttp.HostPolicy, host, remoteAddr string) bool {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://"+host+"/probe", nil)
+		if remoteAddr != "" {
+			req.RemoteAddr = remoteAddr
+		}
+		return policy.Allows(req)
+	}
+
+	t.Run("unset yields an inactive policy (any Host accepted)", func(t *testing.T) {
+		setWTEnv(t, nil)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if cfg.hostPolicy.Active() {
+			t.Error("hostPolicy is active for an unset WT_ALLOWED_HOSTS; want the permissive backward-compatible default")
+		}
+		if !allows(t, cfg.hostPolicy, "anything.example:7681", "") {
+			t.Error("inactive policy rejected a request; unset WT_ALLOWED_HOSTS must accept every Host")
+		}
+	})
+
+	t.Run("valid list canonicalizes into an exact-match gate", func(t *testing.T) {
+		setWTEnv(t, map[string]string{"WT_ALLOWED_HOSTS": "localhost, 192.168.1.5, Term.Example.COM."})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if !cfg.hostPolicy.Active() || cfg.hostPolicy.Size() != 3 {
+			t.Fatalf("hostPolicy active=%v size=%d, want active with 3 entries", cfg.hostPolicy.Active(), cfg.hostPolicy.Size())
+		}
+		for _, c := range []struct {
+			host string
+			want bool
+		}{
+			{"localhost:7681", true},
+			{"192.168.1.5:7681", true},
+			{"TERM.example.com:1234", true}, // case + port canonicalize
+			{"attacker.evil:7681", false},
+		} {
+			if got := allows(t, cfg.hostPolicy, c.host, "192.168.1.50:44444"); got != c.want {
+				t.Errorf("Allows(Host %q) = %v, want %v", c.host, got, c.want)
+			}
+		}
+	})
+
+	t.Run("malformed entries are warned and dropped, valid subset kept", func(t *testing.T) {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+
+		setWTEnv(t, map[string]string{"WT_ALLOWED_HOSTS": "http://term.example.com, localhost"})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if got := cfg.hostPolicy.Size(); got != 1 {
+			t.Fatalf("hostPolicy size = %d, want 1 (the malformed entry dropped, the valid one kept)", got)
+		}
+		if !allows(t, cfg.hostPolicy, "localhost:7681", "192.168.1.50:44444") {
+			t.Error("valid entry localhost missing from the allowlist")
+		}
+		if !strings.Contains(buf.String(), "http://term.example.com") {
+			t.Errorf("warn log %q does not name the malformed entry", buf.String())
+		}
+	})
+
+	t.Run("all-invalid list fails closed (active empty, deny-all warned)", func(t *testing.T) {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+
+		setWTEnv(t, map[string]string{"WT_ALLOWED_HOSTS": ":7681"})
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if !cfg.hostPolicy.Active() || cfg.hostPolicy.Size() != 0 {
+			t.Fatalf("hostPolicy active=%v size=%d, want an active empty policy (fail closed, never fall open)", cfg.hostPolicy.Active(), cfg.hostPolicy.Size())
+		}
+		if allows(t, cfg.hostPolicy, "term.example.com:7681", "192.168.1.50:44444") {
+			t.Error("non-loopback request admitted by an active empty policy; all-invalid configuration must deny-all")
+		}
+		if !allows(t, cfg.hostPolicy, "127.0.0.1:7681", "127.0.0.1:54321") {
+			t.Error("loopback healthcheck shape rejected; the carve-out must survive an all-invalid configuration")
+		}
+		if !strings.Contains(buf.String(), "no usable entries") {
+			t.Errorf("warn log %q does not name the deny-all state", buf.String())
+		}
+	})
+}
+
+// hostPolicyFor builds an active HostPolicy from entries with this app's
+// options (loopback carve-out + the WT_ALLOWED_HOSTS 403 message), failing the
+// test on any invalid entry — handler tests configure only valid lists.
+func hostPolicyFor(t *testing.T, entries ...string) *webhttp.HostPolicy {
+	t.Helper()
+	policy, invalid := webhttp.ParseHostList(entries,
+		webhttp.WithLoopbackExempt(),
+		webhttp.WithHostAllowlistError("host_not_allowed",
+			"host not allowed; add it to WT_ALLOWED_HOSTS to serve this hostname"))
+	if len(invalid) > 0 {
+		t.Fatalf("test allowlist has invalid entries: %v", invalid)
+	}
+	return policy
+}
+
+// TestHostAllowlistGatesRoutes pins the WT_ALLOWED_HOSTS anti-DNS-rebinding
+// gate through the real middleware stack (newHandler): a rebinding attack
+// makes an attacker-controlled hostname resolve to this server, so Origin and
+// Host AGREE and CrossOriginProtection alone admits the request — the
+// exact-host allowlist must reject it BEFORE the terminal routes, while an
+// allowed Host still reaches them. Also pins that X-Forwarded-Host cannot
+// smuggle an allowed name, the loopback peer+Host carve-out (the image's own
+// healthcheck keeps working under a browser-facing allowlist; a forged
+// loopback Host from a remote peer does not), and that a zero-value config
+// (no policy) stays permissive.
+func TestHostAllowlistGatesRoutes(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	cfg := config{hostPolicy: hostPolicyFor(t, "term.example.com")}
+	h := newTestHandler(t, cfg, &ready, nil)
+
+	do := func(host, xfh, remoteAddr string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://"+host+"/healthz", nil)
+		if xfh != "" {
+			req.Header.Set("X-Forwarded-Host", xfh)
+		}
+		if remoteAddr != "" {
+			req.RemoteAddr = remoteAddr
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	cases := []struct {
+		name       string
+		host       string
+		xfh        string
+		remoteAddr string
+		want       int
+	}{
+		{name: "rebound host rejected", host: "attacker.evil:7681", remoteAddr: "192.168.1.50:44444", want: http.StatusForbidden},
+		{name: "allowed host passes", host: "term.example.com:7681", remoteAddr: "192.168.1.50:44444", want: http.StatusOK},
+		{name: "X-Forwarded-Host cannot smuggle an allowed name", host: "attacker.evil:7681", xfh: "term.example.com", remoteAddr: "192.168.1.50:44444", want: http.StatusForbidden},
+		{name: "healthcheck shape: loopback peer + loopback Host admitted", host: "127.0.0.1:7681", remoteAddr: "127.0.0.1:54321", want: http.StatusOK},
+		{name: "rebinding via same-host browser: loopback peer + attacker Host rejected", host: "attacker.evil:7681", remoteAddr: "127.0.0.1:54321", want: http.StatusForbidden},
+		{name: "forged loopback Host from remote peer rejected", host: "127.0.0.1:7681", remoteAddr: "192.168.1.50:44444", want: http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(tc.host, tc.xfh, tc.remoteAddr)
+			if rec.Code != tc.want {
+				t.Errorf("GET Host %s (peer %s) = %d, want %d", tc.host, tc.remoteAddr, rec.Code, tc.want)
+			}
+			if tc.want == http.StatusForbidden {
+				if body := rec.Body.String(); !strings.Contains(body, "host_not_allowed") || !strings.Contains(body, "WT_ALLOWED_HOSTS") {
+					t.Errorf("403 body = %q, want the host_not_allowed envelope naming WT_ALLOWED_HOSTS", body)
+				}
+			}
+		})
+	}
+
+	t.Run("zero-value config stays permissive", func(t *testing.T) {
+		open := newTestHandler(t, config{}, &ready, nil)
+		rec := httptest.NewRecorder()
+		open.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://anything.example:7681/healthz", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET /healthz with no host policy = %d, want %d (unset WT_ALLOWED_HOSTS must stay backward compatible)", rec.Code, http.StatusOK)
+		}
+	})
+}
+
+// TestHostAllowlistRunsBeforeBasicAuth pins the middleware ordering contract:
+// the host gate rejects an unauthorized Host with 403 BEFORE any credential
+// evaluation (valid credentials do not rescue a disallowed Host), while an
+// allowed Host still hits basic auth (401 without credentials, 200 with).
+func TestHostAllowlistRunsBeforeBasicAuth(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	cfg := config{
+		username:   "admin",
+		password:   "pw",
+		hostPolicy: hostPolicyFor(t, "term.example.com"),
+	}
+	h := newTestHandler(t, cfg, &ready, nil)
+
+	do := func(host string, withCreds bool) int {
+		req := httptest.NewRequest(http.MethodGet, "http://"+host+"/healthz", nil)
+		req.RemoteAddr = "192.168.1.50:44444"
+		if withCreds {
+			req.SetBasicAuth("admin", "pw")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := do("attacker.evil:7681", true); got != http.StatusForbidden {
+		t.Errorf("disallowed Host with valid credentials = %d, want 403 (the host gate must run before auth)", got)
+	}
+	if got := do("term.example.com:7681", false); got != http.StatusUnauthorized {
+		t.Errorf("allowed Host without credentials = %d, want 401 (auth still gates an allowed host)", got)
+	}
+	if got := do("term.example.com:7681", true); got != http.StatusOK {
+		t.Errorf("allowed Host with valid credentials = %d, want 200", got)
+	}
 }
 
 func TestRouteSessionsReachesREST(t *testing.T) {

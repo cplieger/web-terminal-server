@@ -37,6 +37,12 @@ like exposing SSH.
   - keep the published port bound to loopback / a private network only.
 - The server logs a loud warning at startup when it is listening on a
   non-loopback address without `WT_PASSWORD` set.
+- **DNS rebinding reaches even loopback binds** through your own browser: an
+  attacker's page makes its hostname resolve to this server, and same-origin
+  checks then pass because `Origin` and `Host` agree. Set `WT_ALLOWED_HOSTS`
+  to the exact hostnames you browse to (rejects every other `Host`), or set
+  `WT_PASSWORD` (the attacker's page cannot present credentials). The server
+  warns at startup when neither is set.
 
 Built-in Basic auth is a convenience for simple setups; a reverse proxy with
 real identity is the recommended posture for anything internet-facing. The
@@ -69,6 +75,7 @@ All configuration is via environment variables:
 | `WT_IDLE_REAPER` | _(unset → disabled)_ | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. |
 | `WT_USERNAME` | `admin` | Basic-auth username (only used when `WT_PASSWORD` is set). |
 | `WT_PASSWORD` | _(unset → no auth)_ | Basic-auth password. When set, every route (including `/ws`) requires it. |
+| `WT_ALLOWED_HOSTS` | _(unset)_ | Comma-separated exact hostnames/IPs the server answers for (e.g. `localhost,192.168.1.5,term.example.com`); a request with any other `Host` header is rejected. Requests made from the same host (loopback socket peer with a loopback `Host`) are always admitted, so the image's healthcheck keeps working under any allowlist. This blocks DNS-rebinding attacks, which can reach even a loopback-bound terminal through your own browser, so set it (or `WT_PASSWORD`, which also blocks them) for any long-running deployment. |
 | `WT_TRUSTED_PROXIES` | _(unset → socket peer)_ | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). |
 
 Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/events` (status SSE), `/healthz` (readiness).

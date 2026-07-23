@@ -97,8 +97,46 @@ func parseTrustedProxies(key string) []*net.IPNet {
 	return nets
 }
 
+// parseAllowedHosts reads the comma-separated WT_ALLOWED_HOSTS list of exact
+// hostnames / IPs this server answers for into a webhttp.HostPolicy — the
+// shared exact-match Host allowlist that closes the DNS-rebinding hole
+// same-origin checks alone leave open (a rebinding attack makes Origin and
+// Host AGREE, so CrossOriginProtection admits it; only an exact-Host check
+// breaks that chain, CWE-346). The library owns the mechanism
+// (webhttp.CanonicalHost canonicalization, X-Forwarded-Host ignored, the
+// loopback peer+Host carve-out that keeps the image's own healthcheck and
+// same-host curls working under any allowlist); this parser owns the app
+// policy: the carve-out is enabled, the 403 names WT_ALLOWED_HOSTS, and
+// malformed entries are logged (named, like parseTrustedProxies) and dropped
+// per ParseHostList's drop-and-report contract.
+//
+// An unset or all-blank var yields an INACTIVE policy — "any Host accepted",
+// the backward-compatible default; main warns when that leaves the
+// unauthenticated posture open to rebinding. Any non-blank entry engages the
+// gate, so a var whose entries are ALL malformed (a pasted URL, a lone
+// ":7681") yields an active EMPTY policy: deny-all except the loopback
+// carve-out, failing closed rather than silently unprotected — warned here by
+// name, since every browser request would otherwise 403 with no hint why.
+func parseAllowedHosts(key string) *webhttp.HostPolicy {
+	policy, invalid := webhttp.ParseHostList(strings.Split(os.Getenv(key), ","),
+		webhttp.WithLoopbackExempt(),
+		webhttp.WithHostAllowlistError("host_not_allowed",
+			"host not allowed; add it to WT_ALLOWED_HOSTS to serve this hostname"))
+	if len(invalid) > 0 {
+		slog.Warn("dropping malformed "+key+" entries; they cannot match any browser-sent Host",
+			"invalid", invalid,
+			"hint", "use bare hostnames or IPs only (no scheme, path, or CIDR), e.g. localhost,192.168.1.5,term.example.com; a lone port like :7681 belongs in WT_ADDR")
+	}
+	if policy.Active() && policy.Size() == 0 {
+		slog.Warn(key+" has no usable entries; rejecting every non-loopback request (fail closed)",
+			"hint", "fix the entries listed in the preceding warning to restore browser access")
+	}
+	return policy
+}
+
 // config holds the resolved server settings parsed from the WT_* environment.
 type config struct {
+	hostPolicy     *webhttp.HostPolicy
 	addr           string
 	workDir        string
 	username       string
@@ -121,6 +159,7 @@ func loadConfig() (config, error) {
 		username:       envx.String("WT_USERNAME", defaultUsername),
 		password:       os.Getenv("WT_PASSWORD"),
 		trustedProxies: parseTrustedProxies("WT_TRUSTED_PROXIES"),
+		hostPolicy:     parseAllowedHosts("WT_ALLOWED_HOSTS"),
 	}
 	if len(c.command) == 0 {
 		return config{}, errors.New("WT_CMD is empty")
@@ -161,6 +200,15 @@ func main() {
 	}
 
 	warnIfExposed(cfg.addr, cfg.password)
+
+	// DNS rebinding rides the victim's BROWSER, so it reaches even a loopback
+	// or LAN bind — "keep it loopback" does not cover it. WT_PASSWORD blocks
+	// it (the attacker's page cannot present credentials cross-origin), so
+	// only the unauthenticated posture warrants the warning.
+	if cfg.password == "" && !cfg.hostPolicy.Active() {
+		slog.Warn("WT_ALLOWED_HOSTS is unset or blank and no WT_PASSWORD is set; any Host header is accepted, leaving DNS rebinding open even on loopback binds",
+			"hint", "set WT_ALLOWED_HOSTS to the exact hostnames/IPs you browse to (e.g. localhost,192.168.1.5,term.example.com), or set WT_PASSWORD")
+	}
 
 	// Each session gets its own PTY-backed handler; the factory scopes the
 	// handler's logger to the session id for per-session log correlation.
@@ -255,8 +303,9 @@ func main() {
 // newHandler assembles the HTTP handler: the route mux (terminal WebSocket,
 // session REST API, status SSE, health, static files) wrapped in the middleware
 // chain via webhttp.Chain. Middleware, outermost first: request logging
-// (webhttp.Logging) -> panic recovery -> security headers -> basic auth (if
-// configured) -> cross-origin protection -> routes. The session handlers are
+// (webhttp.Logging) -> panic recovery -> security headers -> host allowlist
+// (if configured) -> basic auth (if configured) -> cross-origin protection ->
+// routes. The session handlers are
 // passed in (rather than a manager constructed here) so tests can exercise the
 // routing and middleware with stubs, without a real PTY. ready gates /healthz
 // so load balancers see
@@ -344,6 +393,13 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//     (preserved byte-for-byte via WithCSP) plus the library baseline
 	//     X-Frame-Options: DENY and Referrer-Policy (consistent with the CSP's
 	//     frame-ancestors 'none' — this UI is never framed).
+	//   - cfg.hostPolicy.Middleware — the WT_ALLOWED_HOSTS exact-host check
+	//     (see parseAllowedHosts for the DNS-rebinding rationale). Placed
+	//     before basicAuth so an unauthorized host is rejected 403 before any
+	//     credential evaluation, and before CrossOriginProtection because
+	//     rebinding makes Origin and Host agree, so the origin check alone
+	//     cannot reject it. An inactive policy (env unset/blank) collapses to
+	//     a pass-through per the library's off-contract.
 	//   - basicAuth (when configured) then http.CrossOriginProtection guard the
 	//     routes.
 	//
@@ -355,6 +411,7 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...)),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
+		cfg.hostPolicy.Middleware(),
 		authMW,
 		http.NewCrossOriginProtection().Handler,
 	)
