@@ -69,6 +69,7 @@ All configuration is via environment variables:
 | Variable | Default (binary / image) | Purpose |
 | --- | --- | --- |
 | `WT_ADDR` | `127.0.0.1:7681` / `:7681` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. |
+| `WT_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. |
 | `WT_CMD` | `/bin/bash` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). |
 | `WT_WORKDIR` | _(process default)_ | Working directory for the command. Must be an existing directory if set. |
 | `WT_SCROLLBACK` | `5000` | Lines of scrollback the server retains for reconnect replay. |

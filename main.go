@@ -191,7 +191,19 @@ func loadConfig() (config, error) {
 }
 
 func main() {
-	slogx.Setup(slogx.Options{})
+	// WT_LOG_LEVEL is parsed here, not in loadConfig: the level must be known
+	// BEFORE the handler installs so every later record (loadConfig errors
+	// included) emits at the configured level, and the parse-failure warning
+	// emits AFTER Setup through the configured handler (the slogx contract).
+	// A bad value is diagnosable-not-fatal: warn and run at info.
+	logLevel, logLevelOK := slogx.ParseLevel(envx.String("WT_LOG_LEVEL", ""), slog.LevelInfo)
+	slogx.Setup(slogx.Options{Level: logLevel})
+	if !logLevelOK {
+		// Field-name-only: a compose expansion mistake could put a secret in
+		// the value, so the raw string never reaches the log.
+		slog.Warn("unparseable WT_LOG_LEVEL; using the info default",
+			"hint", "use debug, info, warn, or error")
+	}
 
 	cfg, err := loadConfig()
 	if err != nil {
