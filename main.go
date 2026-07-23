@@ -434,12 +434,17 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 // the loopback interface without authentication — i.e. an unauthenticated
 // remote shell. Bind loopback (the default) or set WT_PASSWORD, or front it
 // with an authenticating reverse proxy.
+//
+// Classification is webhttp.ClassifyBind's classify-the-unsplit-input recipe:
+// a WT_ADDR that is not host:port (a portless "127.0.0.1", a bare hostname)
+// is read as a bare host and classified anyway, so a portless loopback stays
+// silent and everything unrecognized warns (fail-public).
 func warnIfExposed(addr, password string) {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
+	class := webhttp.ClassifyBind(addr)
+	if class == webhttp.BindInvalid {
+		class = webhttp.ClassifyBindHost(addr)
 	}
-	if isLoopbackHost(host) {
+	if class == webhttp.BindLoopback {
 		return
 	}
 	switch {
@@ -454,22 +459,6 @@ func warnIfExposed(addr, password string) {
 			"risk", "a blank/whitespace password provides negligible protection for a remote shell",
 			"fix", "set a strong WT_PASSWORD or front with an authenticating reverse proxy")
 	}
-}
-
-// isLoopbackHost reports whether host names the loopback interface. An empty
-// or wildcard host ("", "0.0.0.0", "::") binds all interfaces and is treated
-// as exposed.
-func isLoopbackHost(host string) bool {
-	switch host {
-	case "localhost":
-		return true
-	case "", "0.0.0.0", "::":
-		return false
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
 }
 
 // basicAuth gates every request behind HTTP Basic credentials, verifying each

@@ -164,7 +164,15 @@ func TestWarnIfExposed(t *testing.T) {
 		{"whitespace-only password on exposed addr", "0.0.0.0:7681", "   ", true},
 		{"loopback ipv4", "127.0.0.1:7681", "", false},
 		{"loopback name", "localhost:7681", "", false},
+		// Case-variant loopback stays silent (2026-07 fix, approved behavior
+		// change): the old case-sensitive match spuriously warned on
+		// "Localhost"; webhttp.ClassifyBind folds like the sibling apps.
+		{"loopback name mixed case", "Localhost:7681", "", false},
 		{"loopback ipv6", "[::1]:7681", "", false},
+		// The classify-the-unsplit-input recipe: a portless loopback WT_ADDR
+		// is read as a bare host and stays silent, exactly as before the
+		// webhttp migration (it fails at Listen with its own error).
+		{"portless loopback stays silent", "127.0.0.1", "", false},
 		{"wildcard ipv4 no auth", "0.0.0.0:7681", "", true},
 		{"wildcard ipv6 no auth", "[::]:7681", "", true},
 		{"routable ip no auth", "192.168.1.10:7681", "", true},
@@ -183,29 +191,6 @@ func TestWarnIfExposed(t *testing.T) {
 			if gotWarn != tc.wantWarn {
 				t.Errorf("warnIfExposed(addr=%q, passwordSet=%t) warned=%v, want %v (log=%q)",
 					tc.addr, tc.pass != "", gotWarn, tc.wantWarn, buf.String())
-			}
-		})
-	}
-}
-
-func TestIsLoopbackHost(t *testing.T) {
-	tests := []struct {
-		host string
-		want bool
-	}{
-		{"localhost", true},
-		{"127.0.0.1", true},
-		{"::1", true},
-		{"0.0.0.0", false},
-		{"::", false},
-		{"", false},
-		{"192.168.1.10", false},
-		{"example.com", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.host, func(t *testing.T) {
-			if got := isLoopbackHost(tt.host); got != tt.want {
-				t.Errorf("isLoopbackHost(%q) = %v, want %v", tt.host, got, tt.want)
 			}
 		})
 	}
