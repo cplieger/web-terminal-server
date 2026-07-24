@@ -6,7 +6,7 @@ engine and serves the
 [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui) front
 end. Org-wide defaults are inherited from
 [cplieger/.github](https://github.com/cplieger/.github); CI, lint, and license
-files are synced from [cplieger/ci](https://github.com/cplieger/ci) — do not
+files are synced from [cplieger/ci](https://github.com/cplieger/ci); do not
 hand-edit `.golangci.yaml`, `.gremlins.yaml`, `.editorconfig`, `cliff.toml`, the
 workflows, or `LICENSE`.
 
@@ -17,14 +17,15 @@ workflows, or `LICENSE`.
   `/ws?session=<id>`, the session REST API `/api/sessions` (+`/`) behind a create
   rate limit, the status SSE `/api/sessions/events`, `/healthz`, and the embedded
   static front end at `/` (the engine's `/debug/*` routes are intentionally **not**
-  exposed). Middleware (outermost first): an slog
-  access log, security headers (`X-Content-Type-Options: nosniff` + a
-  Content-Security-Policy whose `script-src` pins a sha256 of each inline
-  `<script>` in the embedded `index.html` — computed at construction and
-  fail-loud on a malformed embed), optional HTTP Basic auth, and
-  `http.CrossOriginProtection`. The `statusWriter`
+  exposed). Middleware (outermost first): request logging (one structured slog
+  line per request, with a spoof-safe `client_ip`), panic recovery, security
+  headers (`X-Content-Type-Options: nosniff` + a Content-Security-Policy whose
+  `script-src` pins a sha256 of each inline `<script>` in the embedded
+  `index.html`, computed at construction and fail-loud on a malformed embed),
+  the `WT_ALLOWED_HOSTS` host allowlist, optional HTTP Basic auth, and
+  `http.CrossOriginProtection`. The logging wrapper's response recorder
   implements `Unwrap()` so the WebSocket hijack reaches the real
-  `ResponseWriter` through the access-log wrapper.
+  `ResponseWriter`.
 - The browser bundle is **not** authored here. It is the engine + UI packages
   compiled to `static/vendor/` at build time; only `static/index.html` (the
   scaffold + importmap + inline `createTerminal(root, { features: presetTabbed() })` call) is committed, which is enough
@@ -36,7 +37,7 @@ package, not here.
 ## Local development
 
 The engine and UI are published, so a plain checkout builds against the
-released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine/v2`
+released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine/v3`
 (`go.sum` carries its checksums), and `scripts/dev-build.sh` and the Dockerfile
 pull the published `@cplieger/web-terminal-*` npm tarballs.
 
@@ -56,16 +57,16 @@ changes before they ship.
 
 `scripts/cdp-*.cjs` are zero-dependency (Node 22) live-verify harnesses. Most
 drive the server in a headless Chromium over the DevTools Protocol and assert
-the rendered DOM — the display half the Go tests can't reach; one
+the rendered DOM (the display half the Go tests can't reach); one
 (`cdp-scrollback`) is a wire-level check against the raw WebSocket. Each one
 asserts and exits 0 (pass) or non-zero (fail); none needs a
 human to read the output. They exercise the engine + UI stack (nothing
 server-specific), so this generic server is the family's baseline testing
 ground for them.
 
-Run the whole suite with one command. It provisions everything locally — a
-headless Chromium (a real one on `PATH`, or the Playwright-cached build) plus a
-loopback server on the fixtures — runs every harness, and returns non-zero if
+Run the whole suite with one command. It provisions a headless Chromium (a
+real one on `PATH`, or the Playwright-cached build) and a loopback server on
+the fixtures, runs every harness, and returns non-zero if
 any fail:
 
 ```sh
@@ -83,10 +84,10 @@ To build the **Go server** against an unreleased local engine instead of the
 pinned published one, add a `go.work` that redirects the module to your sibling
 checkout:
 
-```
-go 1.26.4
+```text
+go 1.26.5
 use .
-replace github.com/cplieger/web-terminal-engine/v2 => ../web-terminal-engine
+replace github.com/cplieger/web-terminal-engine/v3 => ../web-terminal-engine
 ```
 
 `go.work` is gitignored and dockerignored (local-dev only); the `replace` reads
@@ -110,7 +111,7 @@ would break the in-container build, which is why `.dockerignore` excludes it.
 
 ## Commits and PRs
 
-Branch from `main`, keep changes focused, open a PR. Conventional Commits —
+Branch from `main`, keep changes focused, open a PR. Conventional Commits;
 git-cliff parses them for the changelog and the version bump
 (`feat: add WT_ENV passthrough`, `fix: clamp scrollback to a sane minimum`).
 
@@ -119,5 +120,5 @@ git-cliff parses them for the changelog and the version bump
 By participating you agree to the
 [Code of Conduct](https://github.com/cplieger/.github/blob/main/CODE_OF_CONDUCT.md).
 Report security issues through the
-[security policy](https://github.com/cplieger/.github/blob/main/SECURITY.md) —
+[security policy](https://github.com/cplieger/.github/blob/main/SECURITY.md),
 never in a public issue.
