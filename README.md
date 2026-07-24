@@ -12,7 +12,7 @@ A small, generic web terminal: it runs a configured command in a PTY and serves
 the [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui)
 front end over HTTP + WebSocket, built on the
 [`github.com/cplieger/web-terminal-engine`](https://github.com/cplieger/web-terminal-engine)
-engine. A native-touch terminal in the browser for any command — phone and
+engine. A native-touch terminal in the browser for any command, on phone and
 desktop alike.
 
 Published as a multi-arch (amd64 + arm64) container image on **GHCR** (`ghcr.io/cplieger/web-terminal-server`) and **Docker Hub** (`cplieger/web-terminal-server`).
@@ -46,7 +46,7 @@ like exposing SSH.
 
 Built-in Basic auth is a convenience for simple setups; a reverse proxy with
 real identity is the recommended posture for anything internet-facing. The
-process runs as the container user (root by default) — restrict it with a
+process runs as the container user (root by default); restrict it with a
 non-root `WT_CMD` target, a read-only root filesystem, dropped capabilities,
 and a scoped work directory as your threat model requires.
 
@@ -62,22 +62,23 @@ docker run --rm -p 127.0.0.1:7681:7681 \
 Open <http://127.0.0.1:7681>. The example binds the published port to loopback
 and sets a password; adjust for your environment.
 
-## Configuration
+## Configuration reference
 
-All configuration is via environment variables:
+All configuration is via environment variables. Where the binary and image
+defaults differ, the Default column shows them as binary / image.
 
-| Variable | Default (binary / image) | Purpose |
+| Variable | Description | Default |
 | --- | --- | --- |
-| `WT_ADDR` | `127.0.0.1:7681` / `:7681` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. |
-| `WT_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. |
-| `WT_CMD` | `/bin/bash` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). |
-| `WT_WORKDIR` | _(process default)_ | Working directory for the command. Must be an existing directory if set. |
-| `WT_SCROLLBACK` | `5000` | Lines of scrollback the server retains for reconnect replay. |
-| `WT_IDLE_REAPER` | _(unset → disabled)_ | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. |
-| `WT_USERNAME` | `admin` | Basic-auth username (only used when `WT_PASSWORD` is set). |
-| `WT_PASSWORD` | _(unset → no auth)_ | Basic-auth password. When set, every route (including `/ws`) requires it. |
-| `WT_ALLOWED_HOSTS` | _(unset)_ | Comma-separated exact hostnames/IPs the server answers for (e.g. `localhost,192.168.1.5,term.example.com`); a request with any other `Host` header is rejected. Requests made from the same host (loopback socket peer with a loopback `Host`) are always admitted, so the image's healthcheck keeps working under any allowlist. This blocks DNS-rebinding attacks, which can reach even a loopback-bound terminal through your own browser, so set it (or `WT_PASSWORD`, which also blocks them) for any long-running deployment. |
-| `WT_TRUSTED_PROXIES` | _(unset → socket peer)_ | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). |
+| `WT_ADDR` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. | `127.0.0.1:7681` / `:7681` |
+| `WT_LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
+| `WT_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
+| `WT_WORKDIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
+| `WT_SCROLLBACK` | Lines of scrollback the server retains for reconnect replay. | `5000` |
+| `WT_IDLE_REAPER` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
+| `WT_USERNAME` | Basic-auth username (only used when `WT_PASSWORD` is set). | `admin` |
+| `WT_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
+| `WT_ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). Loopback requests are always admitted, so the image healthcheck keeps working. | _(unset)_ |
+| `WT_TRUSTED_PROXIES` | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). | _(unset → socket peer)_ |
 
 Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/events` (status SSE), `/healthz` (readiness).
 
@@ -85,35 +86,24 @@ Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/
 
 The access log records a `client_ip` per request. By default (`WT_TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `WT_TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `WT_TRUSTED_PROXIES=10.0.0.0/8,192.0.2.10`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
 
-## How it fits together
-
-```
-github.com/cplieger/web-terminal-engine   (Go engine: PTY + VT screen + wire protocol)
-        │
-        ├── terminal.NewSessionManager ─────►  this server (main.go)
-        │
-@cplieger/web-terminal-engine  +  @cplieger/web-terminal-ui   (TS engine + UI)
-        └── compiled to static/vendor/ at image build, served to the browser
-```
-
-The server is deliberately thin: env parsing, `terminal.NewSessionManager`, the
-session REST API + status SSE, a create rate limit, static file serving, optional
-Basic auth, and graceful shutdown. All terminal behavior lives in the engine and
-UI packages.
-
 ## Related projects
 
 The web-terminal family:
 
-- [`web-terminal-engine`](https://github.com/cplieger/web-terminal-engine) — the
+- [`web-terminal-engine`](https://github.com/cplieger/web-terminal-engine): the
   Go session engine + TypeScript browser renderer this server embeds.
-- [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui) —
+- [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui):
   the touch-first browser UI this server ships to the client.
 
 Apps built on the same engine:
 
-- [`vibekit`](https://github.com/cplieger/vibekit) — a chat-first browser front end for the Kiro CLI (chat history, MCP, editor, git/forge workflows).
-- [`web-terminal-kiro`](https://github.com/cplieger/web-terminal-kiro) — a touch-first, multi-tab browser terminal wired to the Kiro CLI (`kiro-cli`), on desktop or phone.
+- [`vibekit`](https://github.com/cplieger/vibekit): a chat-first browser front end for the Kiro CLI (chat history, MCP, editor, git/forge workflows).
+- [`web-terminal-kiro`](https://github.com/cplieger/web-terminal-kiro): a touch-first, multi-tab browser terminal wired to the Kiro CLI (`kiro-cli`), on desktop or phone.
+
+## Contributing
+
+Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+conventions and how to run the checks locally.
 
 ## Disclaimer
 
@@ -123,4 +113,4 @@ This project was built with AI-assisted tooling using [Claude](https://claude.co
 
 ## License
 
-GPL-3.0-or-later. See `LICENSE`.
+GPL-3.0. See [LICENSE](LICENSE).
