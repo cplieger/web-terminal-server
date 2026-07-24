@@ -224,23 +224,19 @@ func main() {
 
 	// Each session gets its own PTY-backed handler; the factory scopes the
 	// handler's logger to the session id for per-session log correlation.
-	factory := func(id string) *terminal.Handler {
-		opts := []terminal.Option{
-			terminal.WithScrollbackCapacity(cfg.scrollback),
-			terminal.WithLogger(slog.Default().With("session", id)),
-		}
-		if cfg.workDir != "" {
-			opts = append(opts, terminal.WithWorkDir(cfg.workDir))
-		}
-		return terminal.NewHandler(cfg.command, opts...)
-	}
+	// The id is bound through terminal.LogID: it doubles as the /ws attach +
+	// resume capability token, so logging it whole would put a session-access
+	// credential into aggregated logs (CWE-532) — and WT_PASSWORD is optional,
+	// so in the documented unauthenticated posture the token alone is enough
+	// to attach. LogID is the engine's own definition of how much of it may be
+	// logged (8-byte prefix + ellipsis), test-pinned there.
 	mgrOpts := []terminal.ManagerOption{
 		terminal.WithManagerLogger(slog.Default()),
 	}
 	if cfg.idleReaper > 0 {
 		mgrOpts = append(mgrOpts, terminal.WithIdleReaper(cfg.idleReaper))
 	}
-	mgr := terminal.NewSessionManager(factory, mgrOpts...)
+	mgr := terminal.NewSessionManager(sessionFactory(&cfg), mgrOpts...)
 
 	// webhttp.Ready is the shared serving-state flag (zero value = not ready);
 	// main owns its lifecycle, flipping it true after bind and false on the
@@ -450,6 +446,33 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 		http.NewCrossOriginProtection().Handler,
 	)
 	return handler, nil
+}
+
+// sessionFactory returns the per-session handler factory the session manager
+// calls for each new session: a PTY-backed handler scoped to cfg's command,
+// scrollback, and workdir, with a logger carrying the session id for
+// correlation.
+//
+// The id is bound through terminal.LogID rather than raw: it doubles as the
+// /ws attach + resume capability token, so logging it whole would put a
+// session-access credential into aggregated logs (CWE-532) — and WT_PASSWORD
+// is optional, so in the documented unauthenticated posture the token alone is
+// enough to attach. LogID is the engine's own definition of how much of a
+// session id may be logged (8-byte prefix + ellipsis), test-pinned there.
+//
+// Extracted from main so that boundary is reachable from a test; it was inline
+// (and logging the full id) until an audit found the leak.
+func sessionFactory(cfg *config) func(string) *terminal.Handler {
+	return func(id string) *terminal.Handler {
+		opts := []terminal.Option{
+			terminal.WithScrollbackCapacity(cfg.scrollback),
+			terminal.WithLogger(slog.Default().With("session", terminal.LogID(id))),
+		}
+		if cfg.workDir != "" {
+			opts = append(opts, terminal.WithWorkDir(cfg.workDir))
+		}
+		return terminal.NewHandler(cfg.command, opts...)
+	}
 }
 
 // warnIfExposed logs a prominent warning when the server is reachable beyond
