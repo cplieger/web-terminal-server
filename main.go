@@ -420,7 +420,27 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// omits its access line entirely. Quieter still (the routine-probe-noise
 	// goal is preserved), but there is no longer a Debug-level /healthz line.
 	handler := webhttp.Chain(mux,
-		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...)),
+		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...),
+			// DELETE /api/sessions/{id} and PUT /api/sessions/{id}/title embed
+			// the FULL session id — the /ws attach capability token the engine
+			// itself declares log-sensitive (session_manager.go logID). Their
+			// access lines are KEPT, with the recorded path rewritten to the
+			// token-free route template via WithPathFunc, so a live token
+			// never reaches log-read consumers (webhttp records the
+			// "(path-redaction-failed)" placeholder — never the raw path —
+			// if this mapping breaks). The exact-path create/list lines and
+			// the /api/sessions/events SSE line keep their real path.
+			webhttp.WithPathFunc(func(r *http.Request) string {
+				p := r.URL.Path
+				if !strings.HasPrefix(p, "/api/sessions/") || p == "/api/sessions/events" {
+					return p
+				}
+				if strings.HasSuffix(p, "/title") {
+					return "/api/sessions/{id}/title"
+				}
+				return "/api/sessions/{id}"
+			}),
+		),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
 		cfg.hostPolicy.Middleware(),
