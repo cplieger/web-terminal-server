@@ -87,6 +87,25 @@ RUN mkdir -p static/vendor/fonts && \
           MonaspiceNeNerdFontMono-Italic.otf \
           MonaspiceNeNerdFontMono-BoldItalic.otf
 
+# Wire-floor gate (cross-language compatibility): go.mod's engine module and
+# the ARG-pinned npm client version move INDEPENDENTLY (Renovate bumps them in
+# separate PRs, and a Go-only engine release publishes no npm package), so
+# their pairing is governed by the engine's exported wire-compatibility floors,
+# not by version strings looking alike. Assert both directional floors at build
+# time — a declared-incompatible pairing would refuse every session at first
+# connect (close code 4002) while /healthz stays green, so fail HERE instead.
+# Client constants come from the vendored artifact fetched above (published
+# source, frozen export shape); server constants come from the engine's public
+# Go API inside scripts/wirecheck (no source scraping on the Go half).
+# hadolint ignore=DL3062
+RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    WIRE_TS=node_modules/@cplieger/web-terminal-engine/src/wire-compatibility.ts && \
+    CLIENT_REV=$(sed -n 's|^export const WIRE_PROTOCOL_VERSION = \([0-9]\{1,\}\);.*|\1|p' "$WIRE_TS") && \
+    CLIENT_MIN_SERVER=$(sed -n 's|^export const MIN_SUPPORTED_SERVER_WIRE_VERSION = \([0-9]\{1,\}\);.*|\1|p' "$WIRE_TS") && \
+    : "${CLIENT_REV:?wire-floor-gate: WIRE_PROTOCOL_VERSION not found in the vendored engine artifact (source layout changed?)}" && \
+    : "${CLIENT_MIN_SERVER:?wire-floor-gate: MIN_SUPPORTED_SERVER_WIRE_VERSION not found in the vendored engine artifact (source layout changed?)}" && \
+    go run ./scripts/wirecheck -client-rev "$CLIENT_REV" -client-min-server "$CLIENT_MIN_SERVER"
+
 # Build the static binary with assets embedded via go:embed.
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /web-terminal-server .
 

@@ -1301,3 +1301,42 @@ func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 		t.Errorf("access log = %q, want no healthy-probe line at the default level (ProbeLogLevel maps 2xx to Debug)", log)
 	}
 }
+
+// TestSessionLoggerTruncatesSessionID pins the session-token log boundary in
+// main's handler factory. The session id doubles as the /ws attach + resume
+// capability token, and WT_PASSWORD is optional, so in the documented
+// unauthenticated posture a full id in an aggregated log is enough for anyone
+// with log-read reach to attach to a live terminal (CWE-532). The factory
+// therefore binds only terminal.LogID's truncated form.
+//
+// This test exists because the app previously logged the whole id and nothing
+// failed: the leak was found by audit, not by CI. It drives the real engine
+// session manager through the real factory so a regression (widening the
+// prefix, dropping the LogID call, or binding the raw id again) fails here.
+// Serial: swaps the process-global default logger the factory reads.
+func TestSessionLoggerTruncatesSessionID(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	cfg := config{command: []string{"/bin/cat"}, scrollback: 100}
+	mgr := terminal.NewSessionManager(sessionFactory(&cfg), terminal.WithManagerLogger(slog.Default()))
+	t.Cleanup(mgr.Shutdown)
+	id, err := mgr.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(id) <= 8 {
+		t.Fatalf("session id %q is too short to exercise truncation", id)
+	}
+
+	log := buf.String()
+	if strings.Contains(log, id) {
+		t.Errorf("log = %q, must never carry the FULL session id %q (it is the /ws resume capability token)", log, id)
+	}
+	want := terminal.LogID(id)
+	if !strings.Contains(log, want) {
+		t.Errorf("log = %q, want the engine's LogID form %q for correlation", log, want)
+	}
+}
