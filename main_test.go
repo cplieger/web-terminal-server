@@ -1216,3 +1216,58 @@ func TestStaticHandlerGzipNegotiation(t *testing.T) {
 		}
 	})
 }
+
+// TestAccessLogRedactsSessionTokenPaths pins the WithPathFunc wiring in
+// newHandler: the token-bearing /api/sessions/{id} REST paths (the /ws attach
+// capability token the engine declares log-sensitive) must emit access lines
+// whose recorded path is the token-free route template — never the raw id —
+// while /healthz stays skipped and the exact-path create/list and SSE routes
+// keep their real path. A regression dropping the transform would leak live
+// session tokens to every log-read consumer (CWE-532). Serial: swaps the
+// process-global default logger (newHandler binds slog.Default() at
+// construction).
+func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	var ready webhttp.Ready
+	ready.Set(true)
+	h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, stubHandler{}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+
+	for _, path := range []string{
+		"/api/sessions/live-token-1234/title",
+		"/api/sessions/live-token-5678",
+		"/api/sessions/events",
+		"/api/sessions",
+		"/healthz",
+	} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, http.NoBody))
+	}
+
+	log := buf.String()
+	for _, token := range []string{"live-token-1234", "live-token-5678"} {
+		if strings.Contains(log, token) {
+			t.Errorf("access log = %q, must never carry the raw session token %q (WithPathFunc must rewrite the subtree's recorded path)", log, token)
+		}
+	}
+	if !strings.Contains(log, "path=/api/sessions/{id}/title") {
+		t.Errorf("access log = %q, want a template-path access line for the title route", log)
+	}
+	if !strings.Contains(log, "path=/api/sessions/{id}") {
+		t.Errorf("access log = %q, want a template-path access line for the id route", log)
+	}
+	if !strings.Contains(log, "path=/api/sessions/events") {
+		t.Errorf("access log = %q, want the SSE route's REAL path (the events carve-out must not be template-rewritten)", log)
+	}
+	if !strings.Contains(log, "path=/api/sessions ") {
+		t.Errorf("access log = %q, want the exact create/list path unchanged (it misses the subtree prefix)", log)
+	}
+	if strings.Contains(log, "path=/healthz") {
+		t.Errorf("access log = %q, want /healthz skipped entirely", log)
+	}
+}
