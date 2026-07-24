@@ -397,8 +397,8 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//     socket peer host (the direct client on loopback, or the fronting
 	//     proxy), spoof-safe. Behind a reverse proxy, set WT_TRUSTED_PROXIES to
 	//     the proxy's CIDR(s) so the access log shows the real client.
-	//     WithSkipPaths("/healthz") drops the routine Docker-probe access line
-	//     entirely.
+	//     ProbeLogLevel("/healthz") keeps the routine Docker-probe line at
+	//     Debug and surfaces a failing probe at Warn/Error.
 	//   - webhttp.Recoverer turns a downstream panic into a logged 500; inside
 	//     Logging so the recovered request logs its 500, not the default 200.
 	//   - webhttp.SecurityHeaders applies nosniff + the app's hash-pinned CSP
@@ -415,12 +415,14 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//   - basicAuth (when configured) then http.CrossOriginProtection guard the
 	//     routes.
 	//
-	// /healthz logging change: the former app-side accessLog logged /healthz at
-	// Debug to keep the every-30s HEALTHCHECK probe quiet; WithSkipPaths now
-	// omits its access line entirely. Quieter still (the routine-probe-noise
-	// goal is preserved), but there is no longer a Debug-level /healthz line.
+	// /healthz logging: the every-30s HEALTHCHECK probe rides the
+	// fleet-standard ProbeLogLevel — healthy probes at Debug (out of the
+	// shipped stream, visible under WT_LOG_LEVEL=debug), a failing probe
+	// (the drain-window 503) at Warn/Error. Replaces the WithSkipPaths
+	// idiom, which hid the failure signal along with the noise (and before
+	// that the app-side accessLog's unconditional Debug line).
 	handler := webhttp.Chain(mux,
-		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...),
+		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.ProbeLogLevel("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...),
 			// DELETE /api/sessions/{id} and PUT /api/sessions/{id}/title embed
 			// the FULL session id — the /ws attach capability token the engine
 			// itself declares log-sensitive (session_manager.go logID). Their

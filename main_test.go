@@ -1271,3 +1271,33 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 		t.Errorf("access log = %q, want /healthz skipped entirely", log)
 	}
 }
+
+// TestFailingProbeSurfacesInAccessLog pins the ProbeLogLevel contract on
+// /healthz: a healthy probe logs at Debug (dropped at the default level), a
+// failing probe (the drain-window 503) surfaces at Error — the silent-skip
+// idiom this replaced hid that signal. Serial: swaps the process-global
+// default logger.
+func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	var ready webhttp.Ready // zero value: not ready -> /healthz answers 503
+	h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, stubHandler{}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody))
+	if log := buf.String(); !strings.Contains(log, "path=/healthz") || !strings.Contains(log, "level=ERROR") {
+		t.Errorf("access log = %q, want the failing /healthz probe at Error", log)
+	}
+
+	buf.Reset()
+	ready.Set(true)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody))
+	if log := buf.String(); strings.Contains(log, "path=/healthz") {
+		t.Errorf("access log = %q, want no healthy-probe line at the default level (ProbeLogLevel maps 2xx to Debug)", log)
+	}
+}
