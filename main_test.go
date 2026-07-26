@@ -324,11 +324,21 @@ func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
 		t.Errorf("script-src = %q, want 'unsafe-inline' dropped", scriptSrc)
 	}
 
-	// style-src keeps 'unsafe-inline' (the renderer's dynamic per-cell inline
-	// styles depend on it).
+	// style-src is hash-pinned, not 'unsafe-inline'. The old comment here claimed
+	// "the renderer's dynamic per-cell inline styles depend on it", which was
+	// FALSE and contradicted main.go's own note 200 lines away: the renderer
+	// styles via CSSOM property setters, which style-src does not govern, and
+	// neither the UI nor the engine template emits a style= attribute. The
+	// sibling web-terminal-kiro proved it by hash-pinning the same page shape in
+	// production. A stale comment asserting a security relaxation is REQUIRED when
+	// it is not is exactly what stops someone tightening it later, so this now
+	// pins the tightened policy instead.
 	styleSrc := cspDirective(t, csp, "style-src")
-	if !strings.Contains(styleSrc, "'unsafe-inline'") {
-		t.Errorf("style-src = %q, want it to keep 'unsafe-inline'", styleSrc)
+	if strings.Contains(styleSrc, "'unsafe-inline'") {
+		t.Errorf("style-src = %q, want 'unsafe-inline' dropped in favour of a hash", styleSrc)
+	}
+	if !strings.Contains(styleSrc, "'sha256-") {
+		t.Errorf("style-src = %q, want an inline-style sha256 hash", styleSrc)
 	}
 
 	// Every other directive is unchanged.
@@ -398,19 +408,20 @@ func TestCSPScriptHashesMatchEmbeddedInlineScripts(t *testing.T) {
 	}
 }
 
-// fallbackCSPPolicy assembles the CSP with script-src relaxed to
+// fallbackCSPPolicy assembles the CSP with BOTH hash slots relaxed to
 // 'unsafe-inline' instead of pinned hashes. It lives in the TEST file by
 // design: production always goes through buildCSPPolicy against the real
-// embedded index.html and never relaxes script-src, so a relaxed builder must
-// not be reachable from (or even compiled into) the production binary. Tests
-// that do not exercise the inline scripts use it as their policy stand-in.
+// embedded index.html and never relaxes script-src or style-src, so a relaxed
+// builder must not be reachable from (or even compiled into) the production
+// binary. Tests that do not exercise the inline scripts use it as their policy
+// stand-in.
 func fallbackCSPPolicy() string {
-	return fmt.Sprintf(cspTemplate, "'unsafe-inline'")
+	return fmt.Sprintf(cspTemplate, "'unsafe-inline'", "'unsafe-inline'")
 }
 
-// TestFallbackCSPPolicy exercises the test-only helper above: it relaxes
-// script-src to 'unsafe-inline' (no pinned hashes) while keeping the other
-// directives, including style-src's 'unsafe-inline'.
+// TestFallbackCSPPolicy exercises the test-only helper above: it relaxes both
+// script-src and style-src to 'unsafe-inline' (no pinned hashes) while keeping
+// the other directives.
 func TestFallbackCSPPolicy(t *testing.T) {
 	policy := fallbackCSPPolicy()
 	scriptSrc := cspDirective(t, policy, "script-src")
@@ -420,17 +431,24 @@ func TestFallbackCSPPolicy(t *testing.T) {
 	if strings.Contains(scriptSrc, "'sha256-") {
 		t.Errorf("fallback script-src = %q, want no pinned sha256 hash", scriptSrc)
 	}
-	if styleSrc := cspDirective(t, policy, "style-src"); !strings.Contains(styleSrc, "'unsafe-inline'") {
-		t.Errorf("fallback style-src = %q, want it to keep 'unsafe-inline'", styleSrc)
+	// style-src is relaxed here for the same test-only reason. Production pins a
+	// hash; TestCSPHeaderIsPresent asserts that on the real policy.
+	styleSrc := cspDirective(t, policy, "style-src")
+	if !strings.Contains(styleSrc, "'unsafe-inline'") {
+		t.Errorf("fallback style-src = %q, want the test-only 'unsafe-inline' relaxation", styleSrc)
+	}
+	if strings.Contains(styleSrc, "'sha256-") {
+		t.Errorf("fallback style-src = %q, want no pinned sha256 hash", styleSrc)
 	}
 }
 
 // TestBuildCSPPolicyFailsLoud pins the fail-loud contract: buildCSPPolicy
 // returns an error (never a silent 'unsafe-inline' degrade) when the static FS
-// is nil, index.html is missing, or index.html holds no inline <script>. A
-// production build always embeds index.html with its two inline scripts, so any
-// of these means a malformed build that must abort startup, not serve a policy
-// that drops the script-src hardening.
+// is nil, index.html is missing, index.html holds no inline <script>, or it does
+// not hold exactly one inline <style>. A production build always embeds
+// index.html with its two inline scripts and its one loading-overlay style, so
+// any of these means a malformed build that must abort startup, not serve a
+// policy that drops the script-src or style-src hardening.
 func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 	cases := []struct {
 		name string
@@ -440,6 +458,21 @@ func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 		{"missing index.html", fstest.MapFS{}},
 		{"only external scripts", fstest.MapFS{
 			"index.html": &fstest.MapFile{Data: []byte(`<html><body><script src="/vendor/x.js"></script></body></html>`)},
+		}},
+		// The style half, mirroring web-terminal-kiro's cases: style-src is
+		// hash-pinned now, so anything other than exactly one inline block is a
+		// malformed build and must abort rather than degrade to 'unsafe-inline'.
+		{"no style block", fstest.MapFS{
+			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script></html>`)},
+		}},
+		{"unterminated style block", fstest.MapFS{
+			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script><style>body{margin:0}`)},
+		}},
+		{"unterminated style open tag", fstest.MapFS{
+			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script><style`)},
+		}},
+		{"two style blocks", fstest.MapFS{
+			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script><style>a{}</style><style>b{}</style>`)},
 		}},
 	}
 	for _, tc := range cases {
@@ -1241,6 +1274,8 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 
 	for _, path := range []string{
 		"/api/sessions/live-token-1234/title",
+		"/api/sessions/live-token-abcd/pinned-title",
+		"/api/sessions/live-token-9999/future-subresource",
 		"/api/sessions/live-token-5678",
 		"/api/sessions/events",
 		"/api/sessions",
@@ -1250,13 +1285,26 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	}
 
 	log := buf.String()
-	for _, token := range []string{"live-token-1234", "live-token-5678"} {
+	for _, token := range []string{
+		"live-token-1234", "live-token-abcd", "live-token-9999", "live-token-5678",
+	} {
 		if strings.Contains(log, token) {
 			t.Errorf("access log = %q, must never carry the raw session token %q (WithPathFunc must rewrite the subtree's recorded path)", log, token)
 		}
 	}
 	if !strings.Contains(log, "path=/api/sessions/{id}/title") {
 		t.Errorf("access log = %q, want a template-path access line for the title route", log)
+	}
+	// The rename subresource must be DISTINGUISHABLE from the session-delete route,
+	// not merely id-free: a suffix ladder matched "/title" and not "/pinned-title",
+	// so every rename used to log as if it were a DELETE of the session.
+	if !strings.Contains(log, "path=/api/sessions/{id}/pinned-title") {
+		t.Errorf("access log = %q, want a template-path access line for the rename route", log)
+	}
+	// A subresource this build does not know is recorded as unmapped rather than
+	// collapsed onto a route it is not — the failure mode above, made visible.
+	if !strings.Contains(log, "path=/api/sessions/{id}/(unmapped)") {
+		t.Errorf("access log = %q, want an unmapped-subresource access line", log)
 	}
 	if !strings.Contains(log, "path=/api/sessions/{id}") {
 		t.Errorf("access log = %q, want a template-path access line for the id route", log)
