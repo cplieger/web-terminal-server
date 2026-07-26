@@ -13,4 +13,6 @@ go.work
 go.work.sum
 static/vendor/
 static/style.css
-scripts/
+# scripts/ is deliberately NOT excluded: the wire-floor gate compiles
+# scripts/wirecheck inside the builder stage, so it must be in the build
+# context. Only the built binary is copied into the final image.
