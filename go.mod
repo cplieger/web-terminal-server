@@ -15,6 +15,6 @@ require (
 
 require (
 	github.com/coder/websocket v1.8.15 // indirect
-	github.com/cplieger/envx v1.2.2
+	github.com/cplieger/envx v1.3.0
 	github.com/creack/pty v1.1.24 // indirect
 )
