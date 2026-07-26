@@ -419,25 +419,16 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// that the app-side accessLog's unconditional Debug line).
 	handler := webhttp.Chain(mux,
 		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.ProbeLogLevel("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...),
-			// DELETE /api/sessions/{id} and PUT /api/sessions/{id}/title embed
-			// the FULL session id — the /ws attach capability token the engine
-			// itself declares log-sensitive (session_manager.go logID). Their
-			// access lines are KEPT, with the recorded path rewritten to the
-			// token-free route template via WithPathFunc, so a live token
-			// never reaches log-read consumers (webhttp records the
-			// "(path-redaction-failed)" placeholder — never the raw path —
-			// if this mapping breaks). The exact-path create/list lines and
-			// the /api/sessions/events SSE line keep their real path.
-			webhttp.WithPathFunc(func(r *http.Request) string {
-				p := r.URL.Path
-				if !strings.HasPrefix(p, "/api/sessions/") || p == "/api/sessions/events" {
-					return p
-				}
-				if strings.HasSuffix(p, "/title") {
-					return "/api/sessions/{id}/title"
-				}
-				return "/api/sessions/{id}"
-			}),
+			// Every /api/sessions/{id}... route embeds the FULL session id — the
+			// /ws attach capability token the engine itself declares
+			// log-sensitive (session_manager.go logID). Their access lines are
+			// KEPT, with the recorded path rewritten to the token-free route
+			// template via WithPathFunc, so a live token never reaches log-read
+			// consumers (webhttp records the "(path-redaction-failed)"
+			// placeholder — never the raw path — if this mapping breaks). The
+			// exact-path create/list lines and the /api/sessions/events SSE line
+			// keep their real path.
+			webhttp.WithPathFunc(sessionRoutePath),
 		),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
@@ -446,6 +437,42 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 		http.NewCrossOriginProtection().Handler,
 	)
 	return handler, nil
+}
+
+// sessionRoutePath maps a request path to the route template the access log
+// should record, keeping session ids out of the log while preserving WHICH
+// operation was called.
+//
+// Built from the engine's own exported path constants, so a route topology change
+// there cannot leave this mapping silently pointing at the wrong prefix.
+//
+// It keys on the subresource segment rather than testing suffixes one at a time:
+// a suffix ladder silently mis-attributes any route it does not know (when
+// PUT/DELETE /api/sessions/{id}/pinned-title was added, a `HasSuffix(p, "/title")`
+// test did not match it, so every rename logged as the bare `/api/sessions/{id}`
+// delete route). An unrecognised subresource is recorded generically rather than
+// guessed at, and the id is redacted either way.
+func sessionRoutePath(r *http.Request) string {
+	p := r.URL.Path
+	// Not a session subtree path, or the one exact-path member of it: as-is.
+	if !strings.HasPrefix(p, terminal.SessionsSubtreePath) || p == terminal.SessionEventsPath {
+		return p
+	}
+	rest := strings.TrimPrefix(p, terminal.SessionsSubtreePath)
+	_, sub, hasSub := strings.Cut(rest, "/")
+	if !hasSub || sub == "" {
+		return terminal.SessionsPath + "/{id}" // the session itself (DELETE)
+	}
+	switch sub {
+	case "title", "pinned-title":
+		return terminal.SessionsPath + "/{id}/" + sub
+	default:
+		// A route this build does not know about. Record it distinguishably
+		// instead of collapsing it onto a route it is not, and still without the
+		// id: the point is that a NEW subresource is visible in the log as
+		// unmapped rather than silently mislabelled.
+		return terminal.SessionsPath + "/{id}/(unmapped)"
+	}
 }
 
 // sessionFactory returns the per-session handler factory the session manager
@@ -464,6 +491,14 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 // (and logging the full id) until an audit found the leak.
 func sessionFactory(cfg *config) func(string) *terminal.Handler {
 	return func(id string) *terminal.Handler {
+		// terminal.WithInputTitle is deliberately NOT set. It names a session after
+		// the first line typed into it, which fits a session-per-conversation agent
+		// shell (web-terminal-kiro enables it) and not a general-purpose terminal:
+		// here a session is a shell you run many unrelated commands in, so the
+		// engine's foreground-process/cwd ladder is the better automatic label and
+		// the shell's own OSC title is usually meaningful. A user who wants a fixed
+		// name renames the tab (PUT /api/sessions/{id}/pinned-title), which
+		// outranks every automatic source.
 		opts := []terminal.Option{
 			terminal.WithScrollbackCapacity(cfg.scrollback),
 			terminal.WithLogger(slog.Default().With("session", terminal.LogID(id))),
@@ -536,39 +571,50 @@ func basicAuth(next http.Handler, username, password string) http.Handler {
 	})
 }
 
-// cspTemplate is the Content-Security-Policy applied to every response, with a
-// single %s placeholder for the script-src hash tokens. The tokens are computed
-// once at server construction from the embedded index.html (see
+// cspTemplate is the Content-Security-Policy applied to every response, with two
+// %s placeholders: the script-src hash tokens and the style-src hash token. Both
+// are computed once at server construction from the embedded index.html (see
 // buildCSPPolicy), so an index.html edit — including a pure-whitespace prettier
-// reformat of an inline script — is tracked automatically without hand-editing
-// a constant. Directives other than script-src are fixed:
+// reformat of an inline script or style — is tracked automatically without
+// hand-editing a constant. Directives other than script-src/style-src are fixed:
 //
-//	style-src 'unsafe-inline'  bound by index.html's inline loading-overlay
-//	                           <style> (hashable if ever tightened). The
-//	                           terminal renderer itself needs no relaxation:
-//	                           it styles via CSSOM property setters, which
-//	                           style-src does not govern
+//	style-src 'self' <hash>    index.html's single inline loading-overlay
+//	                           <style> is hash-pinned like the inline scripts,
+//	                           so an injected style block cannot obscure or
+//	                           spoof the terminal UI. The terminal renderer
+//	                           itself needs no relaxation: it styles via CSSOM
+//	                           property setters, which style-src does not
+//	                           govern, and neither the UI nor the engine
+//	                           template emits a style= attribute (which a hash
+//	                           would NOT cover anyway — style-src-attr governs
+//	                           those and needs 'unsafe-hashes')
 //	img-src 'self' data:        favicon/icon data URIs
 //	connect-src 'self'          same-origin HTTP + the /ws WebSocket PTY
 //	frame-ancestors 'none'      blocks clickjacking of the interactive terminal
 const cspTemplate = "default-src 'self'; " +
 	"script-src 'self' %s; " +
-	"style-src 'self' 'unsafe-inline'; " +
+	"style-src 'self' %s; " +
 	"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
 	"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; " +
 	"form-action 'none'"
 
-// buildCSPPolicy reads index.html from sub, hashes every inline <script>
-// in it (via webhttp.InlineScriptHashes — the byte-precise scanner that hashes
-// exactly the content a browser hashes), and assembles the full CSP string.
+// buildCSPPolicy reads index.html from sub, hashes every inline <script> in it
+// (via webhttp.InlineScriptHashes) plus its single inline <style> block (via
+// webhttp.InlineStyleHashes) — both the byte-precise scanners that hash exactly
+// the content a browser hashes — and assembles the full CSP string.
 // Called once at server construction (newHandler). It FAILS LOUD — returning
 // an error rather than degrading to 'unsafe-inline' — when sub is nil,
-// index.html can't be read, or the file holds no inline scripts: a valid build
-// always embeds index.html with its two inline scripts (the importmap and the
-// module bootstrap), so a failure here means a malformed build, which should
-// abort startup with a clear message rather than silently drop the script-src
-// hardening or serve a hash set that would block the browser's import-map and
-// break ES module loading.
+// index.html can't be read, the file holds no inline scripts, or it does not hold
+// exactly one inline style block: a valid build always embeds index.html with its
+// two inline scripts (the importmap and the module bootstrap) and its one
+// loading-overlay style, so a failure here means a malformed build, which should
+// abort startup with a clear message rather than silently drop the hardening or
+// serve a hash set that would block the browser's import-map and break ES module
+// loading.
+//
+// style-src was 'unsafe-inline' until webhttp gained InlineStyleHashes: the block
+// was always hashable, but only script hashing was shared, so this server kept the
+// relaxation while its web-terminal-kiro sibling hash-pinned the same page shape.
 func buildCSPPolicy(sub fs.FS) (string, error) {
 	if sub == nil {
 		return "", errors.New("buildCSPPolicy: nil static FS")
@@ -581,5 +627,12 @@ func buildCSPPolicy(sub fs.FS) (string, error) {
 	if len(hashes) == 0 {
 		return "", errors.New("buildCSPPolicy: no inline <script> blocks in index.html")
 	}
-	return fmt.Sprintf(cspTemplate, strings.Join(hashes, " ")), nil
+	styleHashes := webhttp.InlineStyleHashes(html)
+	if len(styleHashes) != 1 {
+		return "", fmt.Errorf(
+			"buildCSPPolicy: want exactly one inline <style> block in index.html, found %d",
+			len(styleHashes),
+		)
+	}
+	return fmt.Sprintf(cspTemplate, strings.Join(hashes, " "), styleHashes[0]), nil
 }
