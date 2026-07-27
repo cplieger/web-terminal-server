@@ -11,14 +11,20 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/style.css">
-<!-- [html-validate-disable-next no-style-tag -- critical CSS for instant loading indicator] -->
+<!-- [html-validate-disable-next no-style-tag -- brand token for the loading overlay] -->
 <style>
-#loading{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:#000;color:var(--accent,#6ea8ff);transition:opacity .3s ease}
-#loading.fade{opacity:0}
-#loading .bar{position:relative;inline-size:min(220px,62vw);block-size:5px;overflow:hidden;border-radius:999px;background:color-mix(in oklch,currentColor 16%,transparent)}
-#loading .bar::before{content:"";position:absolute;inset-block:0;inline-size:42%;border-radius:inherit;background:linear-gradient(90deg,transparent,currentColor 28%,color-mix(in oklch,currentColor,#fff 45%) 50%,currentColor 72%,transparent);filter:drop-shadow(0 0 4px color-mix(in oklch,currentColor 55%,transparent));animation:wt-loading-slide 1.5s cubic-bezier(.65,0,.35,1) infinite}
-@keyframes wt-loading-slide{0%{transform:translateX(-110%)}100%{transform:translateX(250%)}}
-@media (prefers-reduced-motion:reduce){#loading .bar::before{animation-duration:3s}}
+/* The loading overlay's appearance lives in web-terminal-ui's css/page.css, which
+   /style.css above concatenates; this page used to carry a byte-identical copy of
+   it inline for no benefit (that link is render-blocking, so nothing painted
+   sooner either way) and the one loading screen therefore existed three times
+   across the family. All that is left here is this server's own accent, set as
+   the library's overlay token -- the same override mechanism the component tokens
+   use, except the overlay is our element so no JS is involved.
+   Keep exactly ONE inline <style> in this file: buildCSPPolicy (main.go) hashes it
+   for style-src and fails startup loudly on any other count. */
+#loading {
+  --wt-loading-accent: #6ea8ff;
+}
 </style>
 </head>
 <body>
@@ -26,7 +32,15 @@
      the loading overlay is a sibling so it is never cleared (it fades on the
      first frame). -->
 <div id="terminal"></div>
-<div id="loading" role="status" aria-label="Loading"><div class="bar" aria-hidden="true"></div></div>
+<!-- Styled by css/page.css through the wt-loading* CLASSES, not by this id.
+     role="status" is load-bearing: once startup takes more than a few seconds the
+     kernel writes a progressive status line in here (and the session owner can
+     replace it with the server's own reason), which is the feedback this page
+     previously had no way to show at all -- the library's toast and banner both
+     live inside .wt-root and paint UNDER this overlay. -->
+<div id="loading" class="wt-loading" role="status" aria-label="Loading">
+  <div class="wt-loading-bar" aria-hidden="true"></div>
+</div>
 <!-- The importmap resolves the bare package specifiers to the JS the server
      compiles into /vendor/ at build time; the engine specifier is resolved
      transitively from the UI package's emitted imports, and the UI's ./presets
