@@ -422,13 +422,24 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 			// Every /api/sessions/{id}... route embeds the FULL session id — the
 			// /ws attach capability token the engine itself declares
 			// log-sensitive (session_manager.go logID). Their access lines are
-			// KEPT, with the recorded path rewritten to the token-free route
-			// template via WithPathFunc, so a live token never reaches log-read
-			// consumers (webhttp records the "(path-redaction-failed)"
-			// placeholder — never the raw path — if this mapping breaks). The
+			// KEPT, with the recorded path rewritten to the route template the
+			// mux actually matched, so a live token never reaches log-read
+			// consumers; a path under the subtree that routes nowhere records
+			// "/api/sessions/(unmatched)" rather than the raw path. The
 			// exact-path create/list lines and the /api/sessions/events SSE line
-			// keep their real path.
-			webhttp.WithPathFunc(sessionRoutePath),
+			// are their own registered patterns, so they keep their real path.
+			//
+			// The prefix comes from the engine, which DECLARES these routes and
+			// already treats the id as a credential, and the template comes from
+			// r.Pattern -- so a route the engine adds in a future version logs
+			// correctly with no change here. This replaced a local transform that
+			// re-derived the engine's route table by string-parsing the path.
+			// web-terminal-kiro had written the same transform independently and
+			// the two had already DIVERGED on the unmatched case (it returned the
+			// empty string, indistinguishable from a broken policy; this one
+			// returned an "(unmapped)" marker), which is why the decision now
+			// lives once in webhttp instead of once per app.
+			webhttp.WithTemplatePathsUnder(terminal.SessionsSubtreePath),
 		),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
@@ -437,42 +448,6 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 		http.NewCrossOriginProtection().Handler,
 	)
 	return handler, nil
-}
-
-// sessionRoutePath maps a request path to the route template the access log
-// should record, keeping session ids out of the log while preserving WHICH
-// operation was called.
-//
-// Built from the engine's own exported path constants, so a route topology change
-// there cannot leave this mapping silently pointing at the wrong prefix.
-//
-// It keys on the subresource segment rather than testing suffixes one at a time:
-// a suffix ladder silently mis-attributes any route it does not know (when
-// PUT/DELETE /api/sessions/{id}/pinned-title was added, a `HasSuffix(p, "/title")`
-// test did not match it, so every rename logged as the bare `/api/sessions/{id}`
-// delete route). An unrecognised subresource is recorded generically rather than
-// guessed at, and the id is redacted either way.
-func sessionRoutePath(r *http.Request) string {
-	p := r.URL.Path
-	// Not a session subtree path, or the one exact-path member of it: as-is.
-	if !strings.HasPrefix(p, terminal.SessionsSubtreePath) || p == terminal.SessionEventsPath {
-		return p
-	}
-	rest := strings.TrimPrefix(p, terminal.SessionsSubtreePath)
-	_, sub, hasSub := strings.Cut(rest, "/")
-	if !hasSub || sub == "" {
-		return terminal.SessionsPath + "/{id}" // the session itself (DELETE)
-	}
-	switch sub {
-	case "title", "pinned-title":
-		return terminal.SessionsPath + "/{id}/" + sub
-	default:
-		// A route this build does not know about. Record it distinguishably
-		// instead of collapsing it onto a route it is not, and still without the
-		// id: the point is that a NEW subresource is visible in the log as
-		// unmapped rather than silently mislabelled.
-		return terminal.SessionsPath + "/{id}/(unmapped)"
-	}
 }
 
 // sessionFactory returns the per-session handler factory the session manager
