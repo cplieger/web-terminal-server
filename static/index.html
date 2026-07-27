@@ -43,8 +43,18 @@
 <script type="module">
   import { createTerminal } from "@cplieger/web-terminal-ui";
   import { presetTabbed } from "@cplieger/web-terminal-ui/presets";
-  createTerminal(document.getElementById("terminal"), {
-    features: presetTabbed(),
+  // The root goes in as a SELECTOR and the preset as a FUNCTION, and both are
+  // load-bearing rather than stylistic. createTerminal resolves the selector and
+  // calls the preset inside its own failure boundary, so a missing #terminal or a
+  // preset that throws lowers the overlay and renders the library's "Terminal
+  // failed to start" panel with a Reload button. This script is inline, so tsc
+  // never sees it: written the old way -- passing document.getElementById("terminal")
+  // and presetTabbed() -- a missing root reached the library as null and threw a
+  // SECOND error out of its own catch, and a throwing preset never reached it at
+  // all. Either way this page had no recovery surface of its own, so the user got
+  // a spinner that never stops.
+  createTerminal("#terminal", {
+    features: presetTabbed,
     loading: document.getElementById("loading"),
   });
 </script>
