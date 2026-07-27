@@ -1250,15 +1250,24 @@ func TestStaticHandlerGzipNegotiation(t *testing.T) {
 	})
 }
 
-// TestAccessLogRedactsSessionTokenPaths pins the WithPathFunc wiring in
-// newHandler: the token-bearing /api/sessions/{id} REST paths (the /ws attach
+// TestAccessLogRedactsSessionTokenPaths pins the WithTemplatePathsUnder wiring
+// in newHandler: the token-bearing /api/sessions/{id} REST paths (the /ws attach
 // capability token the engine declares log-sensitive) must emit access lines
 // whose recorded path is the token-free route template — never the raw id —
 // while /healthz stays skipped and the exact-path create/list and SSE routes
-// keep their real path. A regression dropping the transform would leak live
-// session tokens to every log-read consumer (CWE-532). Serial: swaps the
-// process-global default logger (newHandler binds slog.Default() at
-// construction).
+// keep their real path. A regression dropping the policy would leak live session
+// tokens to every log-read consumer (CWE-532). Serial: swaps the process-global
+// default logger (newHandler binds slog.Default() at construction).
+//
+// It passes the ENGINE's real REST handler rather than a stub, and that is the
+// point: the recorded template now comes from the pattern the mux actually
+// matched, so this asserts the app agrees with the engine's route table instead
+// of with a local copy of it. This app used to carry that table as a
+// string-parsing transform — and so did web-terminal-kiro, independently, and the
+// two had already diverged on the unmatched case. Mounting the real routes means
+// there is one table, and a route the engine adds or renames shows up here.
+// ws/events stay stubs: neither is template-rewritten, and the real SSE handler
+// only returns when the client disconnects.
 func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -1267,29 +1276,41 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 
 	var ready webhttp.Ready
 	ready.Set(true)
-	h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, stubHandler{}, &ready)
+	// The engine's own REST route table. The factory is never invoked (nothing
+	// here creates a session), so no PTY is spawned.
+	mgr := terminal.NewSessionManager(
+		func(string) *terminal.Handler { return terminal.NewHandler([]string{"/bin/true"}) },
+		terminal.WithManagerLogger(slog.New(slog.DiscardHandler)),
+	)
+	t.Cleanup(mgr.Shutdown)
+	h, err := newHandler(&config{}, stubHandler{}, mgr.RESTHandler(), stubHandler{}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
 
-	for _, path := range []string{
-		"/api/sessions/live-token-1234/title",
-		"/api/sessions/live-token-abcd/pinned-title",
-		"/api/sessions/live-token-9999/future-subresource",
-		"/api/sessions/live-token-5678",
-		"/api/sessions/events",
-		"/api/sessions",
-		"/healthz",
+	// Each route with the METHOD the engine registers it under: the templates are
+	// method-scoped, so a GET at a PUT-only route would route nowhere and prove
+	// nothing.
+	for _, req := range []struct{ method, path string }{
+		{http.MethodPut, "/api/sessions/live-token-1234/title"},
+		{http.MethodPut, "/api/sessions/live-token-abcd/pinned-title"},
+		{http.MethodDelete, "/api/sessions/live-token-bcde/pinned-title"},
+		{http.MethodGet, "/api/sessions/live-token-9999/future-subresource"},
+		{http.MethodDelete, "/api/sessions/live-token-5678"},
+		{http.MethodGet, "/api/sessions/events"},
+		{http.MethodGet, "/api/sessions"},
+		{http.MethodGet, "/healthz"},
 	} {
-		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, http.NoBody))
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(req.method, req.path, http.NoBody))
 	}
 
 	log := buf.String()
 	for _, token := range []string{
-		"live-token-1234", "live-token-abcd", "live-token-9999", "live-token-5678",
+		"live-token-1234", "live-token-abcd", "live-token-bcde", "live-token-9999",
+		"live-token-5678",
 	} {
 		if strings.Contains(log, token) {
-			t.Errorf("access log = %q, must never carry the raw session token %q (WithPathFunc must rewrite the subtree's recorded path)", log, token)
+			t.Errorf("access log = %q, must never carry the raw session token %q (WithTemplatePathsUnder must rewrite the subtree's recorded path)", log, token)
 		}
 	}
 	if !strings.Contains(log, "path=/api/sessions/{id}/title") {
@@ -1301,10 +1322,12 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	if !strings.Contains(log, "path=/api/sessions/{id}/pinned-title") {
 		t.Errorf("access log = %q, want a template-path access line for the rename route", log)
 	}
-	// A subresource this build does not know is recorded as unmapped rather than
-	// collapsed onto a route it is not — the failure mode above, made visible.
-	if !strings.Contains(log, "path=/api/sessions/{id}/(unmapped)") {
-		t.Errorf("access log = %q, want an unmapped-subresource access line", log)
+	// A subresource the engine does not serve is recorded as unmatched rather than
+	// collapsed onto a route it is not — the failure mode above, made visible. The
+	// marker is the library's now, so this app and web-terminal-kiro can no longer
+	// disagree about what it looks like.
+	if !strings.Contains(log, "path=/api/sessions/(unmatched)") {
+		t.Errorf("access log = %q, want an unmatched-subresource access line", log)
 	}
 	if !strings.Contains(log, "path=/api/sessions/{id}") {
 		t.Errorf("access log = %q, want a template-path access line for the id route", log)
