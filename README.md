@@ -1,6 +1,6 @@
 # web-terminal-server
 
-[![Image Size](https://ghcr-badge.egpl.dev/cplieger/web-terminal-server/size)](https://github.com/cplieger/web-terminal-server/pkgs/container/web-terminal-server)
+[![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/web-terminal-server/badges/size.json)](https://github.com/cplieger/web-terminal-server/pkgs/container/web-terminal-server)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Debian](https://img.shields.io/badge/base-Debian-A81D33?logo=debian)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/web-terminal-server/badges/coverage.json)](https://github.com/cplieger/web-terminal-server/actions/workflows/coverage.yml)
