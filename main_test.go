@@ -1373,6 +1373,49 @@ func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 	}
 }
 
+// TestWebSocketUpgradeSkippedButRefusalLogged pins the WithSkipUpgrades wiring
+// in newHandler, whose two halves fail in opposite directions. A COMPLETED
+// upgrade must emit NO access line: the handshake ends the HTTP exchange, so a
+// line would only appear when the socket closes, carrying a session-length
+// duration and a status net/http never sent. A REFUSED handshake must still be
+// logged — here the uniform 426 that keeps /ws unprobeable, and by the same
+// path the 400 on a malformed key, the CrossOriginProtection 403 and the
+// basicAuth 401 — because that is what an operator greps when a browser cannot
+// attach. A regression to WithSkipPaths("/ws") satisfies the first half and
+// silently breaks the second, which is the failure this pins. Serial: swaps the
+// process-global default logger (newHandler binds slog.Default()).
+func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// serveWS drives GET /ws through the real chain with a stub that answers
+	// status, and returns whatever the access logger emitted.
+	serveWS := func(t *testing.T, status int) string {
+		t.Helper()
+		buf.Reset()
+		var ready webhttp.Ready
+		ready.Set(true)
+		ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
+		h, err := newHandler(&config{}, ws, stubHandler{}, stubHandler{}, &ready)
+		if err != nil {
+			t.Fatalf("newHandler() error: %v", err)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ws", http.NoBody))
+		return buf.String()
+	}
+
+	// 101 is what coder/websocket records before it hijacks, so this is the
+	// shape a real completed upgrade takes through the StatusRecorder.
+	if log := serveWS(t, http.StatusSwitchingProtocols); strings.Contains(log, "path=/ws") {
+		t.Errorf("access log = %q, want no line for a completed /ws upgrade (the line describes a response that no longer exists)", log)
+	}
+	if log := serveWS(t, http.StatusUpgradeRequired); !strings.Contains(log, "path=/ws") {
+		t.Errorf("access log = %q, want a refused /ws handshake logged (WithSkipUpgrades must suppress ONLY a completed upgrade)", log)
+	}
+}
+
 // TestSessionLoggerTruncatesSessionID pins the session-token log boundary in
 // main's handler factory. The session id doubles as the /ws attach + resume
 // capability token, and WT_PASSWORD is optional, so in the documented
