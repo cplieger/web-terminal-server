@@ -254,8 +254,18 @@ func main() {
 	// 10s, IdleTimeout 120s, MaxHeaderBytes 1 MiB, and ReadTimeout/WriteTimeout
 	// left unset. Leaving Read/WriteTimeout unset is required, not incidental:
 	// either would cap the lifetime of the hijacked /ws WebSocket stream.
+	//
+	// WithSlogErrorLog routes net/http's OWN connection-level lines — above all
+	// "http: Accept error: ...; retrying", the trace of an exhausted fd budget
+	// that no request-scoped line reports — into slog at Error instead of the
+	// level-less standard logger no level-based log rule can match. Error is
+	// this app's policy call: the process exists only to serve the terminal, so
+	// an accept loop that cannot accept is an outage, not a degradation. The
+	// option resolves slog.Default() as NewServer applies it, so the slogx.Setup
+	// at the top of main must already have run — it has. It replaces the
+	// hand-rolled slog.NewLogLogger recipe three consumers had each written out.
 	srv := webhttp.NewServer(handler,
-		webhttp.WithErrorLog(slog.NewLogLogger(slog.Default().Handler(), slog.LevelError)),
+		webhttp.WithSlogErrorLog(slog.LevelError),
 	)
 
 	// BaseContext hands every request a context main can cancel on shutdown:
@@ -394,7 +404,9 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//     proxy), spoof-safe. Behind a reverse proxy, set WT_TRUSTED_PROXIES to
 	//     the proxy's CIDR(s) so the access log shows the real client.
 	//     ProbeLogLevel("/healthz") keeps the routine Docker-probe line at
-	//     Debug and surfaces a failing probe at Warn/Error.
+	//     Debug and surfaces a failing probe at Warn/Error, and WithSkipUpgrades
+	//     drops the line a completed /ws upgrade would emit at socket close
+	//     while keeping every handshake refusal (rationale at the option).
 	//   - webhttp.Recoverer turns a downstream panic into a logged 500; inside
 	//     Logging so the recovered request logs its 500, not the default 200.
 	//   - webhttp.SecurityHeaders applies nosniff + the app's hash-pinned CSP
@@ -440,6 +452,28 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 			// returned an "(unmapped)" marker), which is why the decision now
 			// lives once in webhttp instead of once per app.
 			webhttp.WithTemplatePathsUnder(terminal.SessionsSubtreePath),
+			// A COMPLETED /ws upgrade gets no access line. The handshake ends the
+			// HTTP exchange rather than completing it (coder/websocket records 101
+			// through the ResponseWriter, then hijacks), so the only line that
+			// could be emitted arrives when the socket finally closes — hours
+			// later, carrying a session-length duration and a status net/http
+			// never sent, describing a response that no longer exists.
+			//
+			// WithSkipUpgrades reads that fact from the RESPONSE (a recorded 101,
+			// or a hijack taken with nothing recorded) instead of predicting from
+			// the request which /ws calls will upgrade, so every handshake
+			// REFUSAL on the same route KEEPS its record with its real status,
+			// duration, request id and client_ip: the uniform 426 that makes /ws
+			// unprobeable, a 400 on a malformed Sec-WebSocket-Key, the
+			// CrossOriginProtection 403, the basicAuth 401. Those are the lines
+			// an operator greps when a browser cannot attach, which is why this
+			// is not WithSkipPaths("/ws") — a path skip is decided before the
+			// handler runs and would take the refusals with it.
+			//
+			// It covers upgrades only, deliberately: /api/sessions/events is an
+			// ordinary 200 that streams, so its line is still emitted at stream
+			// close and still tells the truth about the status that was sent.
+			webhttp.WithSkipUpgrades(),
 		),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
