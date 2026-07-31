@@ -149,6 +149,13 @@ EXPOSE 7681
 # either can't break out of the config's quoted value or inject another curl
 # directive. Do NOT simplify to -u: that reintroduces both the argv exposure
 # and the injection vector.
+# DL3025 wants JSON notation, which cannot run this: the probe assembles a curl
+# config file on stdin through two command substitutions and a pipe, precisely so
+# the password never reaches argv. Exec form supports none of that, and adopting
+# it would mean going back to -u and reintroducing the exposure the comment above
+# forbids. This image also ships a shell entrypoint, so the distroless case the
+# rule guards does not arise here.
+# hadolint ignore=DL3025
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
     CMD u=$(printf '%s' "${WT_USERNAME:-admin}" | sed 's/[\\"]/\\&/g'); \
         p=$(printf '%s' "${WT_PASSWORD:-}" | sed 's/[\\"]/\\&/g'); \
