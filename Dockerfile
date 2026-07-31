@@ -48,6 +48,17 @@ RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/w
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" \
       | tar -xz -C node_modules/@cplieger/web-terminal-ui --strip-components=1
 
+# Re-arm the bash SHELL before the bash-only RUNs below. It is already declared
+# at the top of this stage and nothing changed it, but hadolint (>=2.15.0) resets
+# its shell-dialect tracking to POSIX sh on any ARG or ENV that FOLLOWS a SHELL
+# directive -- the Renovate-pinned ARGs above do exactly that -- and then
+# shellchecks the rest of the stage as sh, calling this file's bash arrays
+# (SC3054) and process substitution (SC3001) undefined. Re-declaring keeps those
+# two checks live and real, where suppressing the codes on the instruction would
+# switch them off for good. Docker-side this is a no-op: same shell, no layer.
+# Drop it when upstream honours the first declaration again.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Compile both packages to static/vendor/. tsc is a compiler, not a bundler:
 # it preserves the UI's bare `@cplieger/web-terminal-engine` import and its relative
 # `./*.js` imports, which the served importmap and vendored dirs resolve at
