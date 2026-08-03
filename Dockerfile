@@ -89,7 +89,7 @@ RUN set -eu; \
 # Nerd Font for the monospace terminal display (box-drawing + icon glyphs that
 # system monospace fonts render as tofu).
 # renovate: datasource=github-releases depName=ryanoasis/nerd-fonts
-ARG NERDFONT_VERSION=v3.4.0
+ARG NERDFONT_VERSION=v3.5.0
 RUN mkdir -p static/vendor/fonts && \
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERDFONT_VERSION}/Monaspace.tar.xz" \
       | tar -xJ -C static/vendor/fonts \
