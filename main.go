@@ -421,7 +421,13 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//     cannot reject it. An inactive policy (env unset/blank) collapses to
 	//     a pass-through per the library's off-contract.
 	//   - basicAuth (when configured) then http.CrossOriginProtection guard the
-	//     routes.
+	//     routes — with ONE gap worth stating, because the wording used to
+	//     imply otherwise: CrossOriginProtection.Check returns early for GET,
+	//     HEAD and OPTIONS as safe methods, and a WebSocket handshake is a GET.
+	//     So this layer never inspects the /ws upgrade, and the cross-origin
+	//     gate on the terminal socket is entirely the engine's — coder/
+	//     websocket's same-origin default, widened only by an explicit engine
+	//     origin policy. Do not treat the CSRF middleware as covering /ws.
 	//
 	// /healthz logging: the every-30s HEALTHCHECK probe rides the
 	// fleet-standard ProbeLogLevel — healthy probes at Debug (out of the
