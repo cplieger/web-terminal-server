@@ -1,7 +1,7 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
-github.com/cplieger/envx v1.5.1 h1:uzNePwLQYna5ojRfRKHMVGxHlqdDNwGttBgo0UYPyOM=
-github.com/cplieger/envx v1.5.1/go.mod h1:bdIxSs3VcSw/2zR1d+bNWAnwn/ISYngodlsrV6Re6O8=
+github.com/cplieger/envx v1.6.0 h1:TMYjXLAJQDlwddx9dU6+ErURtaO4L1lFfKyrf9SzSOY=
+github.com/cplieger/envx v1.6.0/go.mod h1:bdIxSs3VcSw/2zR1d+bNWAnwn/ISYngodlsrV6Re6O8=
 github.com/cplieger/pathinside v1.0.0 h1:w58q7tntX7VcVnDmF4r/FNKnvl1yLq4tDac845XTdBU=
 github.com/cplieger/pathinside v1.0.0/go.mod h1:yHMRs1HFsqkCGWYUzRCD+DoKWCIZE8Uj0wTKkFTFUsg=
 github.com/cplieger/runesafe v1.4.0 h1:gdDYtWTysEl32n68fJM9hfrjoebT/QGiXuSQ08XyQ1g=
