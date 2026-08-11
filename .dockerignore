@@ -16,3 +16,7 @@ static/style.css
 # scripts/ is deliberately NOT excluded: the wire-floor gate compiles
 # scripts/wirecheck inside the builder stage, so it must be in the build
 # context. Only the built binary is copied into the final image.
+#
+# A LOCAL build of it at the repo root is a different matter: 6 MB of host-arch
+# binary that the builder would ship into its context and then ignore.
+/wirecheck

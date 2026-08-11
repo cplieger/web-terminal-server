@@ -1,6 +1,10 @@
 # Local dev build artifacts
 web-terminal-server-bin
 /web-terminal-server
+# The wirecheck helper, built from scripts/wirecheck/. Anchored so the SOURCE
+# directory (scripts/wirecheck/) stays tracked and only the root binary is
+# ignored; it is 6 MB and was one `git add -A` away from the history.
+/wirecheck
 build/
 node_modules/
 

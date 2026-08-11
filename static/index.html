@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark">
+<!-- Whether this deployment persists terminal scrollback in the browser. The
+     server stamps the resolved value here at startup from WT_PERSIST_SCROLLBACK
+     (main.go applyPersistFlag), in either direction, so this committed value is
+     documentation of the default rather than a load-bearing input. On by default
+     because without it a reloaded or discarded tab refills its whole buffer over
+     the wire, which is the normal case on a phone; WT_PERSIST_SCROLLBACK=false is
+     the opt-out for a shared device or a compliance constraint. The exact byte
+     string is matched by the server and startup FAILS if it is missing, so edit it
+     only alongside main.go's constants. -->
+<meta name="wt-persist-scrollback" content="on">
 <title>Web Terminal</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
@@ -55,7 +65,7 @@
 }
 </script>
 <script type="module">
-  import { createTerminal } from "@cplieger/web-terminal-ui";
+  import { createTerminal, localScrollbackStorage } from "@cplieger/web-terminal-ui";
   import { presetTabbed } from "@cplieger/web-terminal-ui/presets";
   // The root goes in as a SELECTOR and the preset as a FUNCTION, and both are
   // load-bearing rather than stylistic. createTerminal resolves the selector and
@@ -67,9 +77,18 @@
   // SECOND error out of its own catch, and a throwing preset never reached it at
   // all. Either way this page had no recovery surface of its own, so the user got
   // a spinner that never stops.
+  //
+  // Scrollback persistence is the operator's call, read from the meta tag the
+  // server stamps from WT_PERSIST_SCROLLBACK. It is OMITTED rather than passed as
+  // undefined when off, because the option's presence is what enables the feature.
+  // The store is the library's own, so this page carries no storage code and no
+  // orphan sweep of its own to get wrong.
+  const persist =
+    document.querySelector('meta[name="wt-persist-scrollback"]')?.getAttribute("content") === "on";
   createTerminal("#terminal", {
     features: presetTabbed,
     loading: document.getElementById("loading"),
+    ...(persist ? { persistScrollback: localScrollbackStorage() } : {}),
   });
 </script>
 </body>

@@ -37,6 +37,11 @@ like exposing SSH.
   - keep the published port bound to loopback / a private network only.
 - The server logs a loud warning at startup when it is listening on a
   non-loopback address without `WT_PASSWORD` set.
+- Each session's recent output (200 lines) is kept in the browser's `localStorage` by default so a
+  reloaded tab does not refill over the wire. It is readable from that browser without
+  passing `WT_PASSWORD` and outlives the tab; set `WT_PERSIST_SCROLLBACK=false` on a
+  shared device or where storing command output at rest is unacceptable. See
+  [Persisted scrollback](#persisted-scrollback).
 - **DNS rebinding reaches even loopback binds** through your own browser: an
   attacker's page makes its hostname resolve to this server, and same-origin
   checks then pass because `Origin` and `Host` agree. Set `WT_ALLOWED_HOSTS`
@@ -73,7 +78,8 @@ defaults differ, the Default column shows them as binary / image.
 | `WT_LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
 | `WT_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
 | `WT_WORKDIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
-| `WT_SCROLLBACK` | Lines of scrollback the server retains for reconnect replay. | `5000` |
+| `WT_SCROLLBACK` | Lines of history the server retains per session — how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer — asking for less server history would cost the phone more. | `100000` |
+| `WT_PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off — see [Persisted scrollback](#persisted-scrollback). | `true` |
 | `WT_IDLE_REAPER` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
 | `WT_USERNAME` | Basic-auth username (only used when `WT_PASSWORD` is set). | `admin` |
 | `WT_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
@@ -87,6 +93,43 @@ Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/
 Each terminal tab is labelled automatically: whatever is running in it (the foreground command), or the directory it sits in when the shell is idle, or the window title the program set for itself. Right-click a tab (press `F2`, or double-click it) to type your own name instead, which then sticks for the life of that terminal and shows on every device you have the page open on. The same menu offers **Use automatic name** to remove it again.
 
 Names live on the server, not in your browser, so they survive a reload and are the same in every window.
+
+### Persisted scrollback
+
+On by default. Set `WT_PERSIST_SCROLLBACK=false` to turn it off.
+
+What it does: the browser keeps the newest 200 lines of each session, so a reload
+asks the server only for what was printed while the page was gone. Without it the
+terminal comes back holding nothing and pulls the whole retained scrollback back
+over the wire — you see the history filling in, and on a phone that is the normal
+case rather than an edge case, because iOS discards backgrounded tabs under memory
+pressure and returning to one re-runs the page. A warm reconnect and switching
+between tabs in one page already replay nothing, so this only changes the
+fresh-load case.
+
+What it stores, which is the reason there is a switch at all: up to 200 lines of
+each session's output, in this origin's `localStorage`, and at most about 1 MB in
+total across every session. That is readable from that
+browser without reaching this server and without passing `WT_PASSWORD`, and it
+outlives the tab that produced it — an entry is deleted when you close its
+terminal, and otherwise after seven days. `WT_CMD` decides what ends up in there.
+
+Most ways to read it also hand over a live shell, so the snapshot is rarely the
+weakest thing available. The exception worth knowing is a window where the snapshot
+is readable and the shell is not: a laptop off the VPN, a stopped container, an
+expired credential. **Turn it off on a shared or borrowed device, or where storing
+command output at rest is not acceptable.**
+
+Nothing is ever sent anywhere: the server neither reads nor receives these
+snapshots, and it does not know whether a browser kept one. No permission prompt is
+involved — `localStorage` needs none — and a browser that blocks site data, or a
+private window, simply restores nothing and replays over the wire as before.
+
+Restored content is checked against the running server on the first reconnect and
+cleared if it came from a previous run, which covers the confusing case: a restarted
+server numbers its output from the beginning again. If that session is already gone
+— which is what a restart usually leaves — the restore is discarded outright rather
+than shown behind a “Session ended” banner.
 
 ### Client IP logging
 

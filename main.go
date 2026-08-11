@@ -39,19 +39,38 @@ import (
 var staticFS embed.FS
 
 const (
-	defaultAddr       = "127.0.0.1:7681"
-	defaultCmd        = "/bin/bash"
-	defaultScrollback = 5000
-	defaultUsername   = "admin"
+	defaultAddr     = "127.0.0.1:7681"
+	defaultCmd      = "/bin/bash"
+	defaultUsername = "admin"
 )
+
+// healthzPath is the readiness route: the target of the image's baked
+// HEALTHCHECK, the path ProbeLogLevel quiets, and one of the two prefixes the
+// canonical-path guard covers. Named once so those three cannot drift apart —
+// the guard only protects the probe if it guards the path the probe calls.
+const healthzPath = "/healthz"
 
 // applyIntEnv parses an integer env var into *dst via envx.IntStrict, leaving
 // it unchanged when the var is unset or empty. It rejects a value below min
 // or a non-integer.
+//
+// Each rejection names what it actually rejected. A non-integer reads its value
+// off envx's *ParseError (v1.6.0), never from a second os.Getenv: that returns
+// the value UNTRIMMED, so it could report " 5x " while the parse that failed saw
+// "5x". A below-min value has no ParseError — it parsed fine — so the number
+// itself is the honest thing to name.
 func applyIntEnv(key string, minVal int, dst *int) error {
 	n, ok, err := envx.IntStrict(key)
-	if err != nil || (ok && n < minVal) {
-		return fmt.Errorf("%s must be an integer >= %d, got %q", key, minVal, os.Getenv(key))
+	if err != nil {
+		var perr *envx.ParseError
+		raw := ""
+		if errors.As(err, &perr) {
+			raw = perr.Value
+		}
+		return fmt.Errorf("%s must be an integer >= %d, got %q", key, minVal, raw)
+	}
+	if ok && n < minVal {
+		return fmt.Errorf("%s must be an integer >= %d, got %d", key, minVal, n)
 	}
 	if ok {
 		*dst = n
@@ -62,13 +81,52 @@ func applyIntEnv(key string, minVal int, dst *int) error {
 // applyDurationEnv parses a Go duration env var into *dst via
 // envx.DurationStrict, leaving it unchanged when unset or empty. It rejects a
 // negative or unparseable duration.
+//
+// Same split as applyIntEnv: an unparseable value comes off the *ParseError, a
+// negative one names the parsed duration. String() is deliberate — %q on a
+// time.Duration renders a rune literal, since its underlying kind is int64.
 func applyDurationEnv(key string, dst *time.Duration) error {
 	d, ok, err := envx.DurationStrict(key)
-	if err != nil || (ok && d < 0) {
-		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, os.Getenv(key))
+	if err != nil {
+		var perr *envx.ParseError
+		raw := ""
+		if errors.As(err, &perr) {
+			raw = perr.Value
+		}
+		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, raw)
+	}
+	if ok && d < 0 {
+		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, d.String())
 	}
 	if ok {
 		*dst = d
+	}
+	return nil
+}
+
+// applyBoolEnv parses a boolean env var into *dst via envx.BoolStrict, leaving it
+// unchanged when the var is unset or empty.
+//
+// Strict rather than "anything non-empty is true": this flag decides whether
+// terminal output is written to browser storage, so an operator who typed
+// WT_PERSIST_SCROLLBACK=flase deserves a startup error rather than a container
+// that quietly persists. Accepted spellings are envx's (true/1/yes/on and
+// false/0/no/off, case-insensitive).
+//
+// The library's error is returned verbatim, unlike applyIntEnv's and
+// applyDurationEnv's rewordings, and the difference is deliberate on both sides:
+// BoolStrict carries no fragment of the value (there is no parse error to wrap,
+// and a boolean key is one an operator could wire to a secret by mistake), which
+// is also this app's own posture everywhere it reports a bad env value — see the
+// field-name-only WT_LOG_LEVEL warning in main. It already names the key and the
+// accepted vocabulary, so rewording it here could only lose information.
+func applyBoolEnv(key string, dst *bool) error {
+	v, ok, err := envx.BoolStrict(key)
+	if err != nil {
+		return err
+	}
+	if ok {
+		*dst = v
 	}
 	return nil
 }
@@ -136,7 +194,18 @@ func parseAllowedHosts(key string) *webhttp.HostPolicy {
 
 // config holds the resolved server settings parsed from the WT_* environment.
 type config struct {
-	hostPolicy     *webhttp.HostPolicy
+	hostPolicy *webhttp.HostPolicy
+	// scrollback is the operator's retained-history depth, or nil when they set
+	// nothing — the handler is then built WITHOUT WithScrollbackCapacity and
+	// inherits the engine's default. This app holds no opinion on the depth: it
+	// is a sizing decision the engine documents at
+	// terminal.DefaultScrollbackCapacity, and three consumers each carrying a
+	// copy is how they drift apart.
+	//
+	// A POINTER so "unset" is the ZERO VALUE, which matters because tests build
+	// config{} by hand: 0 is a legal depth meaning "retain nothing", so an int
+	// sentinel would have made every bare config{} silently disable scrollback.
+	scrollback     *int
 	addr           string
 	workDir        string
 	username       string
@@ -144,7 +213,12 @@ type config struct {
 	command        []string
 	trustedProxies []*net.IPNet
 	idleReaper     time.Duration
-	scrollback     int
+	// persistScrollback lets the browser keep each session's recent scrollback in
+	// localStorage, so a reloaded or browser-discarded tab resumes with a delta
+	// instead of refilling its whole buffer over the wire (the visible symptom on
+	// iOS, which evicts backgrounded tabs). ON by default; WT_PERSIST_SCROLLBACK is
+	// the opt-out, and static_persist.go carries what enabling it puts where.
+	persistScrollback bool
 }
 
 // loadConfig parses and validates the WT_* environment into a config. It
@@ -155,22 +229,44 @@ func loadConfig() (config, error) {
 		addr:           envx.String("WT_ADDR", defaultAddr),
 		command:        strings.Fields(envx.String("WT_CMD", defaultCmd)),
 		workDir:        os.Getenv("WT_WORKDIR"),
-		scrollback:     defaultScrollback,
 		username:       envx.String("WT_USERNAME", defaultUsername),
 		password:       os.Getenv("WT_PASSWORD"),
 		trustedProxies: parseTrustedProxies("WT_TRUSTED_PROXIES"),
 		hostPolicy:     parseAllowedHosts("WT_ALLOWED_HOSTS"),
+		// On by default: without it a reloaded or browser-discarded tab asks for the
+		// whole retained scrollback back over the wire, which is the normal case on a
+		// phone and reads as a fault rather than a reload. WT_PERSIST_SCROLLBACK is
+		// the opt-OUT; see static_persist.go for what enabling it puts where.
+		persistScrollback: true,
 	}
 	if len(c.command) == 0 {
 		return config{}, errors.New("WT_CMD is empty")
 	}
+	// Local sentinel, deliberately NOT a config field: it exists only to detect
+	// "the operator said nothing" through applyIntEnv, which writes only when the
+	// variable is set. Keeping it out of the struct is what leaves config{}'s
+	// zero value meaning "engine default" instead of "scrollback disabled".
+	scrollbackUnset := -1
+	scrollbackLines := scrollbackUnset
 	// Both validators run before returning so two simultaneously malformed
 	// WT_* values surface in one startup failure instead of one restart apart.
 	if err := errors.Join(
-		applyIntEnv("WT_SCROLLBACK", 0, &c.scrollback),
+		applyIntEnv(terminal.ScrollbackEnvVar, 0, &scrollbackLines),
 		applyDurationEnv("WT_IDLE_REAPER", &c.idleReaper),
+		applyBoolEnv("WT_PERSIST_SCROLLBACK", &c.persistScrollback),
 	); err != nil {
 		return config{}, err
+	}
+	if scrollbackLines != scrollbackUnset {
+		// The shallow-but-nonzero middle is honoured by the ring yet too shallow
+		// for the engine to offer demand-paged history, and the browser's
+		// fallback then holds MORE memory than the operator asked to save. The
+		// engine owns that judgement so all three consumers apply it identically.
+		capacity, reason := terminal.ClampScrollbackCapacity(scrollbackLines)
+		if reason != "" {
+			slog.Warn(reason)
+		}
+		c.scrollback = &capacity
 	}
 	if c.workDir != "" {
 		// WT_WORKDIR is operator-supplied configuration (the directory the
@@ -290,9 +386,16 @@ func main() {
 		os.Exit(1) //nolint:gocritic // stop() and cancelBase() called explicitly above; the defers are no-op safety nets
 	}
 
+	// The effective retained-history depth, resolved for the log: an operator
+	// debugging "my scrollback stops early" needs the number that is actually in
+	// force, and when this app omits the option that number lives in the engine.
+	scrollbackLines := terminal.DefaultScrollbackCapacity
+	if cfg.scrollback != nil {
+		scrollbackLines = *cfg.scrollback
+	}
 	slog.Info("web-terminal-server listening",
 		"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
-		"work_dir", cfg.workDir, "scrollback", cfg.scrollback,
+		"work_dir", cfg.workDir, "scrollback", scrollbackLines,
 		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
 	ready.Set(true)
 
@@ -322,7 +425,8 @@ func main() {
 // session REST API, status SSE, health, static files) wrapped in the middleware
 // chain via webhttp.Chain. Middleware, outermost first: request logging
 // (webhttp.Logging) -> panic recovery -> security headers -> host allowlist
-// (if configured) -> basic auth (if configured) -> cross-origin protection ->
+// (if configured) -> failed-auth throttle (if configured) -> basic auth
+// (if configured) -> cross-origin protection -> canonical-path guard ->
 // routes. The session handlers are
 // passed in (rather than a manager constructed here) so tests can exercise the
 // routing and middleware with stubs, without a real PTY. ready gates /healthz
@@ -350,11 +454,19 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// This /healthz readiness gate is deliberately DISTINCT from a process
 	// liveness marker: this app has no health-library file-marker, so /healthz
 	// is its sole health endpoint (also the Docker HEALTHCHECK target).
-	mux.Handle("/healthz", webhttp.ReadinessHandler(ready))
+	mux.Handle(healthzPath, webhttp.ReadinessHandler(ready))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
+	}
+	// Apply the one server fact the front end reads (WT_PERSIST_SCROLLBACK) BEFORE
+	// either consumer below sees the tree, so the static handler's ETag and gzip
+	// body and the CSP's script hash are all computed over the bytes the browser
+	// actually receives. Fails loud on a build that lost the marker.
+	sub, err = applyPersistFlag(sub, cfg.persistScrollback)
+	if err != nil {
+		return nil, fmt.Errorf("apply WT_PERSIST_SCROLLBACK: %w", err)
 	}
 	// webhttp.StaticHandler supplies the embedded-static mechanism this app
 	// used to hand-roll: per-file content-hash ETags (embed.FS reports a zero
@@ -384,11 +496,39 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// webhttp.Middleware it slots into the Chain just inside the security
 	// headers (so a 401 still carries them) and outside cross-origin protection;
 	// a nil entry is skipped by Chain when no password is set.
-	var authMW webhttp.Middleware
+	//
+	// The failed-auth throttle in front of it is built from the SAME gate, so
+	// the two read one verdict about one parse of the Authorization header (see
+	// basicAuthGate). Both are left nil in the unauthenticated posture: with no
+	// WT_PASSWORD there are no credentials to fail, so there is nothing to
+	// throttle, and Chain skips a nil entry. That is deliberately how "inert"
+	// is expressed — the middleware and its token bucket are not CONSTRUCTED at
+	// all, rather than built and then bypassed by a predicate that always
+	// returns false. It mirrors how basicAuth itself has always expressed
+	// "absent", it leaves no live bucket in a process that can never draw from
+	// it, and it makes the no-auth path byte-identical to before this control
+	// existed instead of merely behaviourally equal.
+	var authMW, authThrottleMW webhttp.Middleware
 	if cfg.password != "" {
-		authMW = func(next http.Handler) http.Handler {
-			return basicAuth(next, cfg.username, cfg.password)
-		}
+		gate := newBasicAuthGate(cfg.username, cfg.password)
+		// webhttp.FailedAuthRateLimit (burst 10, one token per 6s, code
+		// "too_many_auth_failures") bounds the guessing RATE against the single
+		// static WT_PASSWORD. Without it every route sits behind a credential
+		// check that answers in microseconds and nothing above it counts
+		// attempts: SessionCreateRateLimit is further in AND only gates POST
+		// /api/sessions, so a wrong password never reaches it, and a guessing
+		// run against a remote shell proceeds as fast as the network allows.
+		// Ten immediate attempts still absorb an operator retrying a rotated
+		// credential by hand; sustained guessing drops to ten a minute.
+		//
+		// Only a request the gate is about to REFUSE draws a token, so a valid
+		// credential is never throttled — not even mid-flood, which is what
+		// keeps the baked healthcheck (it sends WT_USERNAME/WT_PASSWORD) and a
+		// legitimate browser working while an attacker is being throttled.
+		authThrottleMW = webhttp.FailedAuthRateLimit(
+			func(r *http.Request) bool { return !gate.presentsValidCredentials(r) },
+			"too many failed authentication attempts; check the credentials in WT_USERNAME/WT_PASSWORD")
+		authMW = gate.middleware
 	}
 
 	// Assemble the stack with webhttp.Chain (first listed = outermost) rather
@@ -403,7 +543,7 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//     socket peer host (the direct client on loopback, or the fronting
 	//     proxy), spoof-safe. Behind a reverse proxy, set WT_TRUSTED_PROXIES to
 	//     the proxy's CIDR(s) so the access log shows the real client.
-	//     ProbeLogLevel("/healthz") keeps the routine Docker-probe line at
+	//     ProbeLogLevel(healthzPath) keeps the routine Docker-probe line at
 	//     Debug and surfaces a failing probe at Warn/Error, and WithSkipUpgrades
 	//     drops the line a completed /ws upgrade would emit at socket close
 	//     while keeping every handshake refusal (rationale at the option).
@@ -420,6 +560,19 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//     rebinding makes Origin and Host agree, so the origin check alone
 	//     cannot reject it. An inactive policy (env unset/blank) collapses to
 	//     a pass-through per the library's off-contract.
+	//   - authThrottleMW (when configured) — the failed-auth token bucket,
+	//     placed directly in FRONT of basicAuth so a credential flood is
+	//     answered 429 before the gate answers 401. It sits INSIDE Logging on
+	//     purpose: slog is this app's only observability channel (no metrics
+	//     endpoint), and it already refuses to silence refusals anywhere else
+	//     in this stack, so the 429 must be greppable with its request id and
+	//     client_ip. Outside Logging it would additionally suppress the
+	//     one-line-per-attempt access flood, at the price of a throttle that
+	//     fires invisibly on a remote shell — the wrong half of that trade
+	//     here. It stays inside the host gate so a disallowed Host is a 403
+	//     that never spends a token: a rebinding probe is not a credential
+	//     attempt, and letting it drain the bucket would let an attacker
+	//     throttle the real operator.
 	//   - basicAuth (when configured) then http.CrossOriginProtection guard the
 	//     routes — with ONE gap worth stating, because the wording used to
 	//     imply otherwise: CrossOriginProtection.Check returns early for GET,
@@ -428,6 +581,12 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	//     gate on the terminal socket is entirely the engine's — coder/
 	//     websocket's same-origin default, widened only by an explicit engine
 	//     origin policy. Do not treat the CSRF middleware as covering /ws.
+	//   - canonicalPathGuard is INNERMOST, wrapping the mux directly: it must
+	//     see the path the mux is about to route, and nothing above it needs
+	//     the verdict. Being last also means an unauthenticated or
+	//     cross-origin caller is answered 401/403 and never learns anything
+	//     about route spelling. Its scope is deliberately narrow — see the
+	//     function for which prefixes and why the static mount is excluded.
 	//
 	// /healthz logging: the every-30s HEALTHCHECK probe rides the
 	// fleet-standard ProbeLogLevel — healthy probes at Debug (out of the
@@ -436,7 +595,7 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 	// idiom, which hid the failure signal along with the noise (and before
 	// that the app-side accessLog's unconditional Debug line).
 	handler := webhttp.Chain(mux,
-		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.ProbeLogLevel("/healthz"), webhttp.WithClientIP(cfg.trustedProxies...),
+		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.ProbeLogLevel(healthzPath), webhttp.WithClientIP(cfg.trustedProxies...),
 			// Every /api/sessions/{id}... route embeds the FULL session id — the
 			// /ws attach capability token the engine itself declares
 			// log-sensitive (session_manager.go logID). Their access lines are
@@ -484,8 +643,10 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
 		cfg.hostPolicy.Middleware(),
+		authThrottleMW,
 		authMW,
 		http.NewCrossOriginProtection().Handler,
+		canonicalPathGuard(healthzPath, terminal.SessionsPath),
 	)
 	return handler, nil
 }
@@ -515,8 +676,13 @@ func sessionFactory(cfg *config) func(string) *terminal.Handler {
 		// name renames the tab (PUT /api/sessions/{id}/pinned-title), which
 		// outranks every automatic source.
 		opts := []terminal.Option{
-			terminal.WithScrollbackCapacity(cfg.scrollback),
 			terminal.WithLogger(slog.Default().With("session", terminal.LogID(id))),
+		}
+		// Omitted, not defaulted, when the operator said nothing: the engine's
+		// own default then applies, so a future change to it reaches this app
+		// without a rebuild of its intent.
+		if cfg.scrollback != nil {
+			opts = append(opts, terminal.WithScrollbackCapacity(*cfg.scrollback))
 		}
 		if cfg.workDir != "" {
 			opts = append(opts, terminal.WithWorkDir(cfg.workDir))
@@ -556,34 +722,166 @@ func warnIfExposed(addr, password string) {
 	}
 }
 
-// basicAuth gates every request behind HTTP Basic credentials, verifying each
-// via webhttp's static-token verifiers (SHA-256 digests compared in constant
-// time) so a wrong username or password can't be timed. Both verifiers are
-// built ONCE here, pre-hashing the configured credentials, so per-request
-// work hashes only what the client sent. An empty configured username or
-// password fails CLOSED — the verifier rejects every presented value,
-// including the empty string — so the open-endpoint case is only ever the
-// explicit one: newHandler skips this middleware entirely when no password is
-// configured. The browser caches the credentials after the page load and
-// replays them on the same-origin WebSocket handshake, so the terminal works
-// behind it.
-func basicAuth(next http.Handler, username, password string) http.Handler {
-	verifyUser := webhttp.NewStaticTokenVerifier(username)
-	verifyPass := webhttp.NewStaticTokenVerifier(password)
+// basicAuthGate holds the two constant-time verifiers for the single
+// operator-configured Basic credential pair and answers the one question two
+// layers of this stack both need answered: does this request present valid
+// credentials?
+//
+// It exists because that question is now asked twice and the two answers must
+// never disagree. The 401 gate (middleware) refuses a request presenting
+// anything else; the failed-auth throttle in front of it must draw a token from
+// exactly the requests the gate is about to refuse and from no others. A second,
+// independent parse of the Authorization header would be free to drift — one
+// side reading a missing header as a failure while the other did not would
+// either charge the healthcheck a token or leave a guessing run unthrottled.
+// There is one parse here and both callers read its verdict.
+//
+// Both verifiers are built ONCE (newBasicAuthGate), pre-hashing the configured
+// credentials, so per-request work hashes only what the client sent.
+type basicAuthGate struct {
+	verifyUser webhttp.StaticTokenVerifier
+	verifyPass webhttp.StaticTokenVerifier
+}
+
+// newBasicAuthGate builds the gate for the configured credential pair, hashing
+// both values once via webhttp's static-token verifiers (SHA-256 digests
+// compared in constant time) so a wrong username or password can't be timed.
+//
+// An empty configured username or password fails CLOSED — the verifier rejects
+// every presented value, including the empty string — so the open-endpoint case
+// is only ever the explicit one: newHandler builds no gate at all when no
+// password is configured.
+func newBasicAuthGate(username, password string) *basicAuthGate {
+	return &basicAuthGate{
+		verifyUser: webhttp.NewStaticTokenVerifier(username),
+		verifyPass: webhttp.NewStaticTokenVerifier(password),
+	}
+}
+
+// presentsValidCredentials reports whether r carries HTTP Basic credentials
+// matching the configured pair. It is the shared predicate behind both the 401
+// gate and the failed-auth throttle's "did this attempt fail?" question, so
+// those two can never classify the same request differently.
+//
+// A request with no Authorization header, a non-Basic scheme, or an
+// undecodable value reports false — the same answer as wrong credentials.
+// That is the right reading for both callers: the gate must refuse it, and the
+// throttle must count it, because an unauthenticated flood is precisely the
+// thing being bounded.
+func (g *basicAuthGate) presentsValidCredentials(r *http.Request) bool {
+	u, p, ok := r.BasicAuth()
+	// Evaluate BOTH verifications before combining: no short-circuit may
+	// skip the second compare, so a rejection's duration never reveals
+	// which credential was wrong.
+	userOK := g.verifyUser.Verify(u)
+	passOK := g.verifyPass.Verify(p)
+	return ok && userOK && passOK
+}
+
+// middleware gates every request behind the configured Basic credentials,
+// answering 401 with a challenge when presentsValidCredentials says no. The
+// browser caches the credentials after the page load and replays them on the
+// same-origin WebSocket handshake, so the terminal works behind it.
+func (g *basicAuthGate) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, p, ok := r.BasicAuth()
-		// Evaluate BOTH verifications before combining: no short-circuit may
-		// skip the second compare, so a rejection's duration never reveals
-		// which credential was wrong.
-		userOK := verifyUser.Verify(u)
-		passOK := verifyPass.Verify(p)
-		if !ok || !userOK || !passOK {
+		if !g.presentsValidCredentials(r) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="web-terminal", charset="UTF-8"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// canonicalPathGuard returns middleware that refuses a request whose path is
+// not the spelling http.ServeMux will route, but only when the path the mux
+// WOULD route it as falls under one of prefixes. Every other request passes
+// through untouched.
+//
+// # What it prevents
+//
+// ServeMux cleans the request path before it selects a pattern, and answers a
+// 307 with a Location when the cleaned path differs — before any handler runs,
+// so no registered pattern can intercept it. To a browser that is invisible.
+// To a client that does NOT follow redirects, a 307 is a SUCCESS: this image's
+// baked HEALTHCHECK is `curl -sf` with no -L, so a probe sent to //healthz or
+// /./healthz would exit 0 having never invoked the readiness gate — reporting
+// a container healthy without ever asking it. The same shape lies to any
+// scripted caller of the session API: a POST that never created a session, a
+// DELETE that never closed one, each answered 307 and read as success.
+//
+// # Why the scope is narrow
+//
+// The static mount is deliberately NOT guarded. This app serves a browser
+// bundle from "/", where ServeMux's cleaning redirect and http.FileServer's
+// directory redirect are legitimate and wanted: a browser follows them, and
+// refusing them would break relative-path asset loads that work today for no
+// gain, since a static GET has no side effect a missed redirect could hide.
+// The guarded prefixes are exactly the two surfaces whose callers are machines
+// that may not follow redirects and whose requests mean something:
+//
+//   - healthzPath — the readiness probe, the motivating case above.
+//   - terminal.SessionsPath ("/api/sessions") — a segment prefix, so it also
+//     covers the REST subtree (/api/sessions/{id}, .../title) and the SSE
+//     stream (/api/sessions/events). It comes from the engine, which owns
+//     that route table, so a route the engine adds under it is covered with
+//     no change here.
+//
+// /ws is deliberately outside the scope too. A WebSocket client cannot be
+// fooled into believing a 3xx handshake succeeded (the protocol makes it a
+// failure), so there is nothing to prevent — and the engine answers a uniform
+// 426 there specifically to keep /ws unprobeable, which an app-shaped 400 on
+// some spellings and not others would undo.
+//
+// # Refusal policy
+//
+// The status, code, and body are this app's, not the library's: a 400 in the
+// same webhttp.WriteError envelope its host-allowlist 403 and rate-limit 429
+// use, with a code in the same snake_case taxonomy. 400 because the request
+// target is malformed, not absent (404 would deny a route that exists) and not
+// unauthorized (403 would imply a permission). The message names the fix
+// without echoing the received path back into the response.
+func canonicalPathGuard(prefixes ...string) webhttp.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// EscapedPath is the value ServeMux itself cleans, so this verdict
+			// is exactly "would the mux answer a 307 here?" — no wider. The
+			// decoded r.URL.Path was the available alternative and would also
+			// refuse encoded dot segments (%2e%2e), which ServeMux does NOT
+			// redirect: that would invent a refusal for requests that reach
+			// the handler and work today, on routes where nothing traverses a
+			// filesystem path. Refuse what the redirect would have answered,
+			// and nothing else.
+			clean, canonical := webhttp.CanonicalRequestPath(r.URL.EscapedPath())
+			if !canonical && pathUnderAny(clean, prefixes) {
+				webhttp.WriteError(w, r, http.StatusBadRequest, "non_canonical_path",
+					"request path is not canonical; send the route path exactly, without empty, dot, or dot-dot segments")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// pathUnderAny reports whether clean equals one of prefixes or sits beneath it.
+//
+// It matches on whole path segments, so a prefix can never match a longer
+// sibling name (/api/sessionsfoo is not under /api/sessions), and it accepts a
+// prefix written with or without a trailing slash so the engine's SessionsPath
+// and SessionsSubtreePath constants name the same scope.
+//
+// The CLEANED path is what it tests, deliberately: the raw path of a
+// non-canonical request carries the wrong prefix by construction (//healthz has
+// no /healthz prefix), so scoping on the raw spelling would let every attack
+// spelling escape the guard. The cleaned path is where the request would have
+// landed, which is the route whose semantics are at stake.
+func pathUnderAny(clean string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if clean == p || strings.HasPrefix(clean, strings.TrimSuffix(p, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // cspTemplate is the Content-Security-Policy applied to every response, with two

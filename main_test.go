@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -58,8 +59,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if len(cfg.command) != 1 || cfg.command[0] != defaultCmd {
 		t.Errorf("command = %v, want [%q]", cfg.command, defaultCmd)
 	}
-	if cfg.scrollback != defaultScrollback {
-		t.Errorf("scrollback = %d, want %d", cfg.scrollback, defaultScrollback)
+	// UNSET (nil), not defaulted: with no WT_SCROLLBACK the app holds no opinion
+	// and omits the option, so the handler inherits the engine's own default. A
+	// number here would be this app re-deciding a sizing question the engine
+	// documents, and the three consumers sharing this knob would drift.
+	if cfg.scrollback != nil {
+		t.Errorf("scrollback = %d, want unset", *cfg.scrollback)
 	}
 	if cfg.username != "admin" {
 		t.Errorf("username = %q, want %q", cfg.username, "admin")
@@ -107,6 +112,46 @@ func TestLoadConfigErrors(t *testing.T) {
 	}
 }
 
+// TestLoadConfigRejectionNamesWhatItRejected pins what envx v1.6.0's
+// *ParseError bought these two validators: the message names the value the
+// PARSER saw, not a second read of the environment. os.Getenv returns the value
+// untrimmed, so the old shape reported " lots " while the parse that failed saw
+// "lots" — one message disagreeing with itself about what was rejected.
+//
+// The out-of-range cases have no *ParseError (they parsed fine and are merely
+// out of bounds), so they name the parsed value instead. The duration case also
+// pins String(): %q on a time.Duration renders a rune literal, since its
+// underlying kind is int64.
+func TestLoadConfigRejectionNamesWhatItRejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    string
+		notWant string
+	}{
+		{"unparseable int quotes the trimmed value", map[string]string{"WT_SCROLLBACK": "  lots\t"}, `"lots"`, `"  lots`},
+		{"below-min int names the parsed number", map[string]string{"WT_SCROLLBACK": "-5"}, "got -5", `"-5"`},
+		{"unparseable duration quotes the trimmed value", map[string]string{"WT_IDLE_REAPER": " 5x "}, `"5x"`, `" 5x`},
+		{"negative duration names the parsed duration", map[string]string{"WT_IDLE_REAPER": "-5s"}, `"-5s"`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setWTEnv(t, tt.env)
+
+			_, err := loadConfig()
+			if err == nil {
+				t.Fatalf("loadConfig() = nil error, want a rejection for %v", tt.env)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to contain %s", err, tt.want)
+			}
+			if tt.notWant != "" && strings.Contains(err.Error(), tt.notWant) {
+				t.Errorf("error = %q, must not contain %s (that is the untrimmed environment value)", err, tt.notWant)
+			}
+		})
+	}
+}
+
 func TestLoadConfigWorkDirAccepted(t *testing.T) {
 	dir := t.TempDir()
 	setWTEnv(t, map[string]string{"WT_WORKDIR": dir})
@@ -141,8 +186,49 @@ func TestLoadConfigScrollbackZeroAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig() error: %v", err)
 	}
-	if cfg.scrollback != 0 {
-		t.Errorf("scrollback = %d, want 0", cfg.scrollback)
+	// 0 passes through untouched: "retain nothing beyond the live screen" is a
+	// coherent request, and it is the one shallow value the engine's clamp does
+	// not raise (a client cannot page against a server holding no history, so
+	// the inverted outcome the clamp exists to prevent cannot arise).
+	if cfg.scrollback == nil || *cfg.scrollback != 0 {
+		t.Errorf("scrollback = %v, want 0 set explicitly", cfg.scrollback)
+	}
+}
+
+// TestLoadConfigScrollbackClampsBelowPagingFloor pins the one adjustment this
+// app makes to an operator's number, and pins that it comes from the ENGINE
+// rather than from a local copy of the threshold.
+//
+// A depth between 1 and the paging floor is honoured by the ring but too shallow
+// for the server to offer demand-paged history — and the browser's fallback then
+// retains its whole legacy buffer, so asking for less server history costs MORE
+// phone memory. Clamping up and warning beats obeying that quietly.
+func TestLoadConfigScrollbackClampsBelowPagingFloor(t *testing.T) {
+	shallow := terminal.MinPagingCapacity - 1
+	setWTEnv(t, map[string]string{"WT_SCROLLBACK": strconv.Itoa(shallow)})
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() error: %v", err)
+	}
+	if cfg.scrollback == nil || *cfg.scrollback != terminal.MinPagingCapacity {
+		t.Errorf("scrollback = %v, want %d (clamped up to the paging floor)",
+			cfg.scrollback, terminal.MinPagingCapacity)
+	}
+}
+
+// TestLoadConfigScrollbackHonoursDeepValues pins that there is no upper bound to
+// trip over: an operator asking for far more history than any session will reach
+// is how this family spells "never truncate", and the engine's ring allocates
+// only what it fills, so the number costs nothing until it is used.
+func TestLoadConfigScrollbackHonoursDeepValues(t *testing.T) {
+	const deep = 50_000_000
+	setWTEnv(t, map[string]string{"WT_SCROLLBACK": strconv.Itoa(deep)})
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() error: %v", err)
+	}
+	if cfg.scrollback == nil || *cfg.scrollback != deep {
+		t.Errorf("scrollback = %v, want %d honoured as given", cfg.scrollback, deep)
 	}
 }
 
@@ -204,7 +290,7 @@ func basicAuthRequest(user, pass string, creds *[2]string) *httptest.ResponseRec
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("inner"))
 	})
-	h := basicAuth(next, user, pass)
+	h := newBasicAuthGate(user, pass).middleware(next)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	if creds != nil {
 		req.SetBasicAuth(creds[0], creds[1])
@@ -1434,7 +1520,8 @@ func TestSessionLoggerTruncatesSessionID(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	cfg := config{command: []string{"/bin/cat"}, scrollback: 100}
+	scrollbackLines := 100
+	cfg := config{command: []string{"/bin/cat"}, scrollback: &scrollbackLines}
 	mgr := terminal.NewSessionManager(sessionFactory(&cfg), terminal.WithManagerLogger(slog.Default()))
 	t.Cleanup(mgr.Shutdown)
 	id, err := mgr.Create()
@@ -1453,4 +1540,279 @@ func TestSessionLoggerTruncatesSessionID(t *testing.T) {
 	if !strings.Contains(log, want) {
 		t.Errorf("log = %q, want the engine's LogID form %q for correlation", log, want)
 	}
+}
+
+// failedAuthBurst pins the burst of webhttp.FailedAuthRateLimit as THIS app's
+// documented contract (ten immediate failed attempts, then 429), the same way
+// sessionCreateBurst pins the create preset. A deliberate tuning change in the
+// shared preset fails these tests loudly so this app's docs and expectations
+// are updated consciously rather than drifting silently.
+const failedAuthBurst = 10
+
+// authThrottleHandler builds the real stack with Basic auth configured, plus a
+// requester that drives one GET /healthz through it either with the correct
+// credentials or with a wrong password.
+func authThrottleHandler(t *testing.T) (http.Handler, func(validCreds bool) *httptest.ResponseRecorder) {
+	t.Helper()
+	var ready webhttp.Ready
+	ready.Set(true)
+	h := newTestHandler(t, config{username: "admin", password: "pw"}, &ready, nil)
+	do := func(validCreds bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, healthzPath, nil)
+		if validCreds {
+			req.SetBasicAuth("admin", "pw")
+		} else {
+			req.SetBasicAuth("admin", "wrong")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	return h, do
+}
+
+// TestFailedAuthThrottle pins the failed-auth throttle
+// (webhttp.FailedAuthRateLimit) fronting basicAuth: before it, a wrong password
+// was answered 401 in microseconds with nothing counting attempts, so the single
+// static WT_PASSWORD guarding an interactive remote shell could be guessed at
+// wire speed. The properties that make the control correct are that failures
+// cost a token, that success never does, and that the refusal is this app's own
+// envelope.
+func TestFailedAuthThrottle(t *testing.T) {
+	t.Run("failed attempts draw tokens and are 429 past the burst", func(t *testing.T) {
+		_, do := authThrottleHandler(t)
+		for i := range failedAuthBurst {
+			if code := do(false).Code; code != http.StatusUnauthorized {
+				t.Fatalf("failed attempt %d = %d, want 401 (the burst must still reach the gate)", i+1, code)
+			}
+		}
+		if code := do(false).Code; code != http.StatusTooManyRequests {
+			t.Errorf("failed attempt past the burst = %d, want 429", code)
+		}
+	})
+
+	t.Run("valid credentials never draw a token", func(t *testing.T) {
+		_, do := authThrottleHandler(t)
+		// Three times the burst in valid requests. If any of them consumed a
+		// token, the single failed attempt afterwards would be 429 instead of
+		// reaching the gate — which is the whole reason the predicate asks
+		// "did this attempt FAIL?" rather than "is this route authenticated?".
+		for i := range failedAuthBurst * 3 {
+			if code := do(true).Code; code != http.StatusOK {
+				t.Fatalf("valid request %d = %d, want 200", i+1, code)
+			}
+		}
+		if code := do(false).Code; code != http.StatusUnauthorized {
+			t.Errorf("first failed attempt after %d valid ones = %d, want 401 (valid requests must not spend tokens)",
+				failedAuthBurst*3, code)
+		}
+	})
+
+	t.Run("valid credentials still pass with the bucket empty", func(t *testing.T) {
+		_, do := authThrottleHandler(t)
+		for range failedAuthBurst + 1 {
+			do(false)
+		}
+		if code := do(false).Code; code != http.StatusTooManyRequests {
+			t.Fatalf("bucket is not empty: failed attempt = %d, want 429", code)
+		}
+		// The operator (and the image's baked healthcheck, which sends
+		// WT_USERNAME/WT_PASSWORD) must keep working while an attacker is being
+		// throttled on the same shared bucket.
+		if code := do(true).Code; code != http.StatusOK {
+			t.Errorf("valid request mid-flood = %d, want 200 (a correct credential is never throttled)", code)
+		}
+	})
+
+	t.Run("429 carries the app envelope and a Retry-After hint", func(t *testing.T) {
+		_, do := authThrottleHandler(t)
+		for range failedAuthBurst {
+			do(false)
+		}
+		rec := do(false)
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "too_many_auth_failures") {
+			t.Errorf("429 body = %q, want the too_many_auth_failures code (what log queries and alert rules key on)", body)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "WT_USERNAME/WT_PASSWORD") {
+			t.Errorf("429 body = %q, want the message naming the credentials to check", body)
+		}
+		if ra := rec.Header().Get("Retry-After"); ra == "" {
+			t.Error("429 has no Retry-After; a legitimate operator retrying a rotated credential has nothing to wait on")
+		}
+	})
+
+	t.Run("a disallowed Host is 403 and spends no token", func(t *testing.T) {
+		var ready webhttp.Ready
+		ready.Set(true)
+		cfg := config{username: "admin", password: "pw", hostPolicy: hostPolicyFor(t, "term.example.com")}
+		h := newTestHandler(t, cfg, &ready, nil)
+		get := func(host, pass string) int {
+			req := httptest.NewRequest(http.MethodGet, "http://"+host+healthzPath, nil)
+			req.RemoteAddr = "192.168.1.50:44444"
+			req.SetBasicAuth("admin", pass)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			return rec.Code
+		}
+		// The host gate stays OUTSIDE the throttle: a rebinding probe is not a
+		// credential attempt, so it must not be able to drain the bucket and
+		// throttle the real operator out of their own server.
+		for i := range failedAuthBurst * 2 {
+			if code := get("attacker.evil:7681", "wrong"); code != http.StatusForbidden {
+				t.Fatalf("disallowed-Host request %d = %d, want 403", i+1, code)
+			}
+		}
+		if code := get("term.example.com:7681", "wrong"); code != http.StatusUnauthorized {
+			t.Errorf("first real failed attempt after %d rejected hosts = %d, want 401 (403s must not spend tokens)",
+				failedAuthBurst*2, code)
+		}
+	})
+}
+
+// TestFailedAuthThrottleInertWithoutPassword pins the inert mode. With no
+// WT_PASSWORD this app is deliberately unauthenticated — there is no credential
+// to fail — so the throttle must not exist: newHandler builds neither it nor its
+// token bucket, and Chain skips the nil entry. Any 429 here would be a
+// regression that throttled the documented no-auth posture.
+func TestFailedAuthThrottleInertWithoutPassword(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+	for i := range failedAuthBurst * 3 {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, healthzPath, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d with no WT_PASSWORD = %d, want 200 (the throttle must be absent, not merely lenient)",
+				i+1, rec.Code)
+		}
+	}
+	// Credentials nobody asked for are not a failed attempt either: with the
+	// gate absent there is no verdict to count, so these must pass untouched.
+	for i := range failedAuthBurst * 3 {
+		req := httptest.NewRequest(http.MethodGet, healthzPath, nil)
+		req.SetBasicAuth("nobody", "whatever")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unsolicited-credential request %d with no WT_PASSWORD = %d, want 200", i+1, rec.Code)
+		}
+	}
+}
+
+// TestCanonicalPathGuard pins the canonical-path guard (webhttp.
+// CanonicalRequestPath). http.ServeMux cleans the request path before it selects
+// a pattern and answers 307 when the cleaned path differs — before any handler
+// runs. A 307 is a SUCCESS status to a client that does not follow redirects,
+// and this image's baked HEALTHCHECK is `curl -sf` with no -L: a probe sent to
+// //healthz would exit 0 having never invoked the readiness gate. The guard
+// refuses those spellings on the probe and session-API surfaces instead.
+//
+// The other half of the contract is the SCOPE. The static mount keeps its
+// redirects: a browser follows them, they are how relative asset paths resolve,
+// and a static GET has no side effect a missed redirect could hide.
+func TestCanonicalPathGuard(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+
+	t.Run("guarded prefixes refuse a non-canonical spelling", func(t *testing.T) {
+		// Each of these is a path ServeMux would answer 307 for, on a route
+		// whose caller is a machine that may not follow it.
+		for _, path := range []string{
+			"//healthz",
+			"/./healthz",
+			"/anything/../healthz",
+			"//api/sessions",
+			"/api/./sessions",
+			"//api/sessions/events",
+			"/api/sessions/x/../events",
+		} {
+			rec := get(path)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("GET %q = %d, want 400 (a 307 here reads as success to a probe without -L)", path, rec.Code)
+			}
+			if body := rec.Body.String(); !strings.Contains(body, "non_canonical_path") {
+				t.Errorf("GET %q body = %q, want the non_canonical_path envelope", path, body)
+			}
+			if loc := rec.Header().Get("Location"); loc != "" {
+				t.Errorf("GET %q set Location %q; the guard must refuse, not redirect", path, loc)
+			}
+		}
+	})
+
+	t.Run("canonical spellings on the same routes pass", func(t *testing.T) {
+		for path, want := range map[string]int{
+			healthzPath:            http.StatusOK,
+			"/api/sessions":        http.StatusOK,
+			"/api/sessions/events": http.StatusOK,
+			"/api/sessions/abc123": http.StatusOK,
+			"/healthz/":            http.StatusNotFound, // canonical, simply not a route
+		} {
+			if code := get(path).Code; code != want {
+				t.Errorf("GET %q = %d, want %d (the guard must not touch a canonical path)", path, code, want)
+			}
+		}
+	})
+
+	t.Run("static paths keep their redirects", func(t *testing.T) {
+		// The cleaning redirect a browser follows, on the unguarded static
+		// mount. Refusing these would break relative asset loads that work
+		// today for no gain.
+		for _, path := range []string{"//", "//index.html", "//favicon.svg"} {
+			rec := get(path)
+			if rec.Code != http.StatusTemporaryRedirect {
+				t.Errorf("GET %q = %d, want 307 (static redirects are legitimate and must survive the guard)", path, rec.Code)
+			}
+			if rec.Header().Get("Location") == "" {
+				t.Errorf("GET %q = 307 with no Location", path)
+			}
+		}
+		// The file-server redirect on an ALREADY-canonical path, which the
+		// guard never had a verdict on: /index.html is served as "./".
+		if rec := get("/index.html"); rec.Code != http.StatusMovedPermanently {
+			t.Errorf("GET /index.html = %d, want 301 (the file server's own redirect must survive)", rec.Code)
+		}
+	})
+
+	t.Run("the WebSocket route is deliberately out of scope", func(t *testing.T) {
+		// A WebSocket client cannot mistake a 3xx handshake for success, and
+		// the engine answers a uniform 426 on /ws to keep it unprobeable — an
+		// app-shaped 400 on some spellings would undo that.
+		if rec := get("//ws"); rec.Code != http.StatusTemporaryRedirect {
+			t.Errorf("GET //ws = %d, want 307 (/ws is not guarded)", rec.Code)
+		}
+	})
+
+	t.Run("an encoded dot segment is not refused", func(t *testing.T) {
+		// The guard is fed r.URL.EscapedPath(), the value ServeMux itself
+		// cleans, so its verdict is exactly "would the mux redirect this?".
+		// %2e%2e is not a dot segment on the wire, ServeMux draws no redirect
+		// for it, and the request reaches the handler as it did before this
+		// control existed. Feeding the decoded path instead would refuse it —
+		// a wider policy that was available and deliberately not taken.
+		if code := get("/api/sessions/%2e%2e").Code; code != http.StatusOK {
+			t.Errorf("GET /api/sessions/%%2e%%2e = %d, want 200 (the guard tracks the mux's cleaning, no wider)", code)
+		}
+	})
+
+	t.Run("auth answers before the guard does", func(t *testing.T) {
+		// The guard is innermost, so an unauthenticated caller learns nothing
+		// about route spelling.
+		var authReady webhttp.Ready
+		authReady.Set(true)
+		ah := newTestHandler(t, config{username: "admin", password: "pw"}, &authReady, nil)
+		rec := httptest.NewRecorder()
+		ah.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "//healthz", nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("unauthenticated GET //healthz = %d, want 401 (auth outranks the path verdict)", rec.Code)
+		}
+	})
 }
