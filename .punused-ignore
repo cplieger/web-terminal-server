@@ -16,7 +16,7 @@
 #
 #   fs.ReadDir  -> overlayFS.ReadDir   (directory enumeration; the overlay adds
 #                                       and removes no entries, so it delegates)
-#   fs.File     -> memFile.Stat/Read/Seek
+#   fs.File     -> memFile.Stat/Read/Close/Seek
 #                                      (Seek is not optional: http.ServeContent
 #                                       needs an io.Seeker to size the body and to
 #                                       answer a Range request. Without it the
@@ -37,6 +37,7 @@ method (overlayFS).ReadDir
 method (*memFile).Stat
 method (*memFile).Read
 method (*memFile).Seek
+method (*memFile).Close
 method (memInfo).Name
 method (memInfo).Size
 method (memInfo).Mode
