@@ -74,35 +74,32 @@ while IFS= read -r line || [ -n "$line" ]; do
   cat "$UI_DIR/css/${line}" >>static/style.css
 done <"$UI_DIR/css/MANIFEST"
 
-FONT_VER="$(sed -n 's/^ARG NERDFONT_VERSION=//p' Dockerfile)"
+# The SAME source and filenames the Dockerfile uses. A dev build that fetched a
+# different family served files the CSS does not reference, so every @font-face
+# 404'd and the terminal sized itself against fallback metrics — silently, because
+# document.fonts.load() resolves on zero matches.
+FONT_VER="$(sed -n 's/^ARG MONASPACE_VERSION=//p' Dockerfile)"
 [ -n "$FONT_VER" ] || {
-  echo "error: could not read NERDFONT_VERSION from Dockerfile" >&2
+  echo "error: could not read MONASPACE_VERSION from Dockerfile" >&2
   exit 1
 }
-# Cache per font version so a NERDFONT_VERSION bump forces a fresh
-# download instead of copying a stale cached .otf into the build.
+# Cache per font version so a MONASPACE_VERSION bump forces a fresh download
+# instead of copying a stale cached face into the build.
 FONT_CACHE="${HOME}/.cache/web-terminal-fonts/${FONT_VER}"
-fonts=(
-  MonaspiceNeNerdFontMono-Regular.otf
-  MonaspiceNeNerdFontMono-Bold.otf
-  MonaspiceNeNerdFontMono-Italic.otf
-  MonaspiceNeNerdFontMono-BoldItalic.otf
-)
+faces=(Regular Bold Italic BoldItalic)
 mkdir -p "$FONT_CACHE" static/vendor/fonts
-# Re-download if ANY of the four .otf files is missing so a partial cache left
-# by an interrupted fetch self-heals instead of embedding an incomplete font.
-need_fonts=
-for font in "${fonts[@]}"; do
-  [ -f "$FONT_CACHE/$font" ] || need_fonts=1
-done
-if [ -n "$need_fonts" ]; then
-  echo "  downloading Monaspace ${FONT_VER}..."
+FONT_BASE="https://raw.githubusercontent.com/githubnext/monaspace/${FONT_VER}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon"
+for face in "${faces[@]}"; do
+  # Per face, so a partial cache left by an interrupted fetch self-heals instead
+  # of embedding an incomplete font.
+  [ -f "$FONT_CACHE/MonaspaceNeonNF-${face}.woff2" ] && continue
+  echo "  downloading MonaspaceNeonNF-${face} (${FONT_VER})..."
   curl -fsSL --connect-timeout 10 --max-time 60 --retry 2 \
-    "https://github.com/ryanoasis/nerd-fonts/releases/download/${FONT_VER}/Monaspace.tar.xz" \
-    | tar -xJ -C "$FONT_CACHE" "${fonts[@]}" \
+    -o "$FONT_CACHE/MonaspaceNeonNF-${face}.woff2" \
+    "${FONT_BASE}/MonaspaceNeonNF-${face}.woff2" \
     || echo "  WARN: font fetch failed (display will use a fallback font)"
-fi
-cp "$FONT_CACHE"/MonaspiceNeNerdFontMono-*.otf static/vendor/fonts/ 2>/dev/null || true
+done
+cp "$FONT_CACHE"/MonaspaceNeonNF-*.woff2 static/vendor/fonts/ 2>/dev/null || true
 
 echo "[5/5] go build (assets embedded via go:embed)"
 CGO_ENABLED=0 go build -trimpath -o web-terminal-server-bin .
