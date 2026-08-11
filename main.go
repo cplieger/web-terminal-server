@@ -677,6 +677,14 @@ func sessionFactory(cfg *config) func(string) *terminal.Handler {
 		// outranks every automatic source.
 		opts := []terminal.Option{
 			terminal.WithLogger(slog.Default().With("session", terminal.LogID(id))),
+			// Keep the colours an arbitrary WT_CMD paints legible on the UI's
+			// near-black background. A program picks a palette SLOT (SGR 34 for
+			// blue) and cannot know what RGB this terminal resolves it to, so the
+			// terminal is the only layer that can hold a legibility floor. 4.5 is
+			// the WCAG AA floor for body text and VS Code's default for its
+			// integrated terminal. Backgrounds and default foregrounds are never
+			// touched, so a consumer's own theme keeps control of --bg and --text.
+			terminal.WithMinimumContrast(4.5),
 		}
 		// Omitted, not defaulted, when the operator said nothing: the engine's
 		// own default then applies, so a future change to it reaches this app
