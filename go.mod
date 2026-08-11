@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cplieger/slogx v1.6.0
-	github.com/cplieger/web-terminal-engine/v3 v3.9.0
+	github.com/cplieger/web-terminal-engine/v3 v3.10.0
 	github.com/cplieger/webhttp v1.23.0
 )
 
