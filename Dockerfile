@@ -91,9 +91,16 @@ RUN set -eu; \
 # GitHub's own Monaspace repo, which publishes official nerd-fonts-patched
 # WOFF2 webfonts (the nerd-fonts release repo is OTF-only; WOFF2 halves the
 # served bytes, and outlines + PUA icon advances are identical to the
-# previously bundled MonaspiceNe NFM OTFs). sha256 per face: raw files at a
-# git tag are as mutable as release assets, so the hashes are the integrity
-# anchor.
+# previously bundled MonaspiceNe NFM OTFs — HORIZONTAL metrics only. The
+# vertical ones are not: these faces declare 0.945em ascent + 0.200em descent
+# where the patched OTFs carried 0.995em + 0.250em, which is shorter than the
+# terminal's 17px cell and left a 1px unpainted stripe on every row of
+# application background. web-terminal-ui's page.css restores the OTF pair with
+# ascent-override/descent-override and pins it against the cell height in its
+# own suite; a Monaspace bump that changes those tables again needs that
+# override re-measured, not just these sha pins refreshed). sha256 per face:
+# raw files at a git tag are as mutable as release assets, so the hashes are
+# the integrity anchor.
 # renovate: datasource=github-releases depName=githubnext/monaspace
 ARG MONASPACE_VERSION=v1.400
 # repin: dep=githubnext/monaspace url=https://raw.githubusercontent.com/githubnext/monaspace/{version}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon/MonaspaceNeonNF-Regular.woff2
