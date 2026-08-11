@@ -1,0 +1,44 @@
+# punused findings adjudicated for this repo. One literal substring per line,
+# matched against punused's output line; full-line `#` comments carry the reason.
+#
+# punused asks gopls for `textDocument/references` and reports a declaration with
+# none. A method that exists ONLY to satisfy an interface has no direct reference
+# by construction: the caller holds the interface, not the concrete type. Deleting
+# one does not remove dead code, it removes an interface implementation, and the
+# type stops satisfying its contract.
+
+# --- static_persist.go's in-memory overlay: every entry below is an interface
+# method invoked by net/http through fs.FS, and each is required for the served
+# bytes to be correct rather than optional.
+#
+# The overlay swaps ONE file's content inside the embedded static FS so the
+# persistence flag reaches the page. http.FileServer then drives it:
+#
+#   fs.ReadDir  -> overlayFS.ReadDir   (directory enumeration; the overlay adds
+#                                       and removes no entries, so it delegates)
+#   fs.File     -> memFile.Stat/Read/Seek
+#                                      (Seek is not optional: http.ServeContent
+#                                       needs an io.Seeker to size the body and to
+#                                       answer a Range request. Without it the
+#                                       overlaid file is refused.)
+#   fs.FileInfo -> memInfo.Name/Size/Mode/ModTime/Sys
+#                                      (ModTime is deliberately the zero time,
+#                                       matching embed.FS, so no Last-Modified
+#                                       appears on one file and not its
+#                                       neighbours; the content-hash ETag is the
+#                                       validator.)
+#
+# static_persist.go also carries compile-time assertions that these types satisfy
+# fs.ReadDirFS, fs.File and fs.FileInfo, so dropping a method is a build failure
+# rather than a 500 on one asset. The behaviour is covered end to end by
+# TestPersistFlagReachesTheServedPage and
+# TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent.
+method (overlayFS).ReadDir
+method (*memFile).Stat
+method (*memFile).Read
+method (*memFile).Seek
+method (memInfo).Name
+method (memInfo).Size
+method (memInfo).Mode
+method (memInfo).ModTime
+method (memInfo).Sys
