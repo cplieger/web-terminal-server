@@ -35,6 +35,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"time"
 )
@@ -112,6 +113,18 @@ func (o overlayFS) Open(name string) (fs.File, error) {
 func (o overlayFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	return fs.ReadDir(o.base, name)
 }
+
+// The three interfaces net/http drives this overlay through. Stated as
+// assertions because every method below exists only to satisfy one of them: the
+// caller holds the interface, never the concrete type, so a dropped method is
+// invisible to a reference search (see .punused-ignore) and would otherwise
+// surface as a 500 on one asset at runtime. Here it is a compile error.
+var (
+	_ fs.ReadDirFS = overlayFS{}
+	_ fs.File      = (*memFile)(nil)
+	_ io.Seeker    = (*memFile)(nil)
+	_ fs.FileInfo  = memInfo{}
+)
 
 // memFile is a read-only fs.File over a byte slice. It implements io.Seeker
 // because http.ServeContent needs one to answer a Range request and to size the

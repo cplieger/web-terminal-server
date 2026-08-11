@@ -103,7 +103,7 @@ for asset in \
   /vendor/cplieger-web-terminal-ui/index.js \
   /vendor/cplieger-web-terminal-ui/presets.js \
   /vendor/cplieger-web-terminal-engine/index.js \
-  /vendor/fonts/MonaspiceNeNerdFontMono-Regular.otf; do
+  /vendor/fonts/MonaspaceNeonNF-Regular.woff2; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}${asset}")
   [ "$code" = "200" ] || fail "bundle asset ${asset} = $code, want 200 (UI bundle incomplete)"
 done
