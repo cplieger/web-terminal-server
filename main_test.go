@@ -1816,3 +1816,64 @@ func TestCanonicalPathGuard(t *testing.T) {
 		}
 	})
 }
+
+// TestAttentionIconVariantsAreServed pins the promise index.html makes when it
+// passes attentionIcons: true to the UI preset.
+//
+// That option tells the library to swap every link[rel=icon] to a status variant
+// while a background session wants the user, and the library derives those URLs
+// from a NAMING CONVENTION rather than a map it can validate: it inserts -input,
+// -done or -alert after the filename's `favicon` token. Nothing in the library can
+// check the files exist, because they live here — the dot's colour is the app's
+// theme, so the assets are a per-app artifact of
+// web-terminal-ui/scripts/gen-attention-icons.py.
+//
+// So the failure mode of breaking the promise is a BLANK tab icon, not a missing
+// dot, and this test is what stands between a renamed icon and that.
+func TestAttentionIconVariantsAreServed(t *testing.T) {
+	t.Parallel()
+
+	indexHTML, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+
+	// The app has to be ASKING for the variants, or the rest of this test would
+	// pass just as well on a page that never swaps an icon.
+	if !bytes.Contains(indexHTML, []byte("attentionIcons: true")) {
+		t.Fatal("index.html no longer opts into attentionIcons; delete this test or restore the option")
+	}
+
+	iconHref := regexp.MustCompile(`<link\s+rel="icon"[^>]*href="([^"]+)"`)
+	matches := iconHref.FindAllSubmatch(indexHTML, -1)
+	// Guard the guard: a regexp that stopped matching would make every assertion
+	// below vacuous and the test would pass on a page with no icons at all.
+	if len(matches) < 3 {
+		t.Fatalf("expected at least 3 rel=icon links in index.html, found %d", len(matches))
+	}
+
+	// Derived the same way the library derives them, so a passing test cannot be
+	// reading a stale literal list. Go's RE2 has no lookahead, so the separator is
+	// captured and put back rather than merely asserted.
+	faviconToken := regexp.MustCompile(`(^|/)favicon([-.])`)
+	for _, m := range matches {
+		href := strings.TrimPrefix(string(m[1]), "/")
+		if _, err := staticFS.ReadFile("static/" + href); err != nil {
+			t.Errorf("base icon %q is linked but not embedded: %v", href, err)
+			continue
+		}
+		for _, variant := range []string{"input", "done", "alert"} {
+			name := faviconToken.ReplaceAllString(href, "${1}favicon-"+variant+"${2}")
+			// An unchanged name means the convention did not apply to this href,
+			// so the library would leave that link alone and its dot would
+			// silently never appear.
+			if name == href {
+				t.Errorf("icon %q does not match the favicon naming convention, so no %s variant can be derived", href, variant)
+				continue
+			}
+			if _, err := staticFS.ReadFile("static/" + name); err != nil {
+				t.Errorf("attention variant %q is missing: %v", name, err)
+			}
+		}
+	}
+}
