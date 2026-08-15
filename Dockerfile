@@ -162,8 +162,21 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # bash for the default command; curl for the healthcheck; ca-certificates for
 # TLS from within the shell. Operators who set a different WT_CMD layer their
 # own tools on top.
+# PKG_REFRESH busts the cache for this layer. Without it BuildKit restores the
+# layer verbatim on every rebuild and `apt-get upgrade` never runs again, so the
+# image keeps shipping whatever packages were current when the layer was first
+# built (measured 2026-08: 11 days stale, with Debian security updates already
+# out for util-linux). The central release/CI/scan builds pass today's UTC date.
+# The `echo` is load-bearing: BuildKit keys a RUN on the build args it actually
+# CONSUMES, so a merely-declared ARG would change nothing.
+ARG PKG_REFRESH=static
+# Re-declared after the ARG above: hadolint >= 2.15.0 drops a stage's SHELL
+# dialect at the next ARG/ENV and shellchecks the rest of the stage as POSIX
+# sh. Docker-side a no-op (same shell, no layer); it keeps the SC checks live.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+RUN echo "OS package refresh: ${PKG_REFRESH}" \
+    && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     bash ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
