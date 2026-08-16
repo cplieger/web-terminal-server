@@ -31,6 +31,25 @@ import (
 	"github.com/cplieger/webhttp"
 )
 
+// shutdownManager tears the manager down at the end of a test and fails it when
+// the teardown does not finish. It builds its own context rather than taking the
+// test's: a subtest's context is already cancelled by the time cleanups run, so a
+// wait against it would report an expiry on every test.
+//
+// The budget is deliberately generous against the real ceiling (the engine bounds
+// a stubborn child's reap at 5s, and the containment and marker ladders each
+// spend several grace windows), so a failure here means teardown genuinely hung
+// rather than that the runner was loaded.
+func shutdownManager(t *testing.T, mgr *terminal.SessionManager) {
+	t.Helper()
+	const budget = 20 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	if err := mgr.Shutdown(ctx); err != nil {
+		t.Errorf("SessionManager.Shutdown(ctx) = %v, want nil (teardown must finish within %v)", err, budget)
+	}
+}
+
 // setWTEnv clears every WT_* variable then applies the given overrides, so each
 // loadConfig case runs against a known-clean environment regardless of the host
 // shell or test ordering. t.Setenv restores the prior values at test end.
@@ -1092,7 +1111,7 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 		return terminal.NewHandler([]string{"/bin/cat"}, terminal.WithLogger(nil))
 	}
 	mgr := terminal.NewSessionManager(factory, terminal.WithManagerLogger(nil))
-	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, mgr) })
 	id, err := mgr.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1384,7 +1403,7 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 		func(string) *terminal.Handler { return terminal.NewHandler([]string{"/bin/true"}) },
 		terminal.WithManagerLogger(slog.New(slog.DiscardHandler)),
 	)
-	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, mgr) })
 	h, err := newHandler(&config{}, stubHandler{}, mgr.RESTHandler(), stubHandler{}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1539,7 +1558,7 @@ func TestSessionLoggerTruncatesSessionID(t *testing.T) {
 	scrollbackLines := 100
 	cfg := config{command: []string{"/bin/cat"}, scrollback: &scrollbackLines}
 	mgr := terminal.NewSessionManager(sessionFactory(&cfg), terminal.WithManagerLogger(slog.Default()))
-	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(func() { shutdownManager(t, mgr) })
 	id, err := mgr.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
