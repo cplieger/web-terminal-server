@@ -4,6 +4,10 @@ services:
     image: ghcr.io/cplieger/web-terminal-server:latest
     container_name: web-terminal-server
     restart: unless-stopped
+    # Required, not optional. Whatever the shell runs can orphan a child, and the
+    # server waits only for its own; without an init it is PID 1 and those orphans
+    # stay zombies for the container's life. See README "Run".
+    init: true
 
     environment:
       # Set this. Without it every route, including the terminal WebSocket, is unauthenticated.
