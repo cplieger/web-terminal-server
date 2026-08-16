@@ -45,11 +45,11 @@ manifest="$css_root/MANIFEST"
 root_real=$(realpath "$css_root")
 manifest_real=$(realpath "$manifest")
 case "$manifest_real" in
-"$root_real"/*) ;;
-*)
-  printf 'ERROR css-manifest-escapes: %s resolves outside %s\n' "$manifest" "$root_real" >&2
-  exit 1
-  ;;
+  "$root_real"/*) ;;
+  *)
+    printf 'ERROR css-manifest-escapes: %s resolves outside %s\n' "$manifest" "$root_real" >&2
+    exit 1
+    ;;
 esac
 
 tmp=$(mktemp "${out}.XXXXXX")
@@ -58,7 +58,7 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 member_count=0
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-  '' | '#'*) continue ;;
+    '' | '#'*) continue ;;
   esac
   member="$css_root/$line"
   [ -L "$member" ] && {
@@ -75,11 +75,11 @@ while IFS= read -r line || [ -n "$line" ]; do
   }
   member_real=$(realpath "$member")
   case "$member_real" in
-  "$root_real"/*) ;;
-  *)
-    printf 'ERROR css-member-escapes: %s resolves outside %s\n' "$line" "$root_real" >&2
-    exit 1
-    ;;
+    "$root_real"/*) ;;
+    *)
+      printf 'ERROR css-member-escapes: %s resolves outside %s\n' "$line" "$root_real" >&2
+      exit 1
+      ;;
   esac
   cat "$member" >>"$tmp"
   printf '\n' >>"$tmp"

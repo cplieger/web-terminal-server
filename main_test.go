@@ -129,7 +129,7 @@ func TestLoadConfigErrors(t *testing.T) {
 // renders a rune literal, since its underlying kind is int64.
 func TestLoadConfigRejectionNamesTheKeyAndNeverTheValue(t *testing.T) {
 	// A value shaped like a credential, so a regression prints something obviously wrong.
-	const secretish = "glpat-AAAAAAAAAAAAAAAAAAAA"
+	const secretish = "not-a-real-credential-AAAAAAAAAAAA"
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -2127,7 +2127,9 @@ func TestSecurityHeadersCarryTheHardenedSet(t *testing.T) {
 //
 // Not parallel: it swaps the process-global slog handler.
 func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
-	const token = "0123456789abcdef0123456789abcdef"
+	// A session id, which is what /ws carries. Distinctive enough that a leak of it
+	// into the log is unmistakable, and shaped like the engine's ids rather than a key.
+	const sessionID = "0123456789abcdef0123456789abcdef"
 
 	for name, tc := range map[string]struct {
 		headers map[string]string
@@ -2161,7 +2163,7 @@ func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
 				reached.Store(true)
 			}))
 
-			req := httptest.NewRequest(http.MethodGet, terminal.WSPath+"?session="+token, nil)
+			req := httptest.NewRequest(http.MethodGet, terminal.WSPath+"?session="+sessionID, nil)
 			for k, v := range tc.headers {
 				req.Header.Set(k, v)
 			}
@@ -2174,7 +2176,7 @@ func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
 			if logged != tc.want {
 				t.Errorf("wsAttachLog logged %q = %v, want %v (log: %s)", wsAttachMsg, logged, tc.want, buf.String())
 			}
-			if strings.Contains(buf.String(), token) {
+			if strings.Contains(buf.String(), sessionID) {
 				t.Errorf("wsAttachLog logged the full session token; it must bind the id through terminal.LogID (log: %s)", buf.String())
 			}
 		})
@@ -2352,7 +2354,7 @@ func TestCanonicalPathGuardRefusesTheSideEffect(t *testing.T) {
 // Not parallel: it replaces the process-global logger, and t.Setenv forbids it anyway.
 func TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly(t *testing.T) {
 	// A value shaped like a credential, so a regression prints something unmistakable.
-	const secretish = "glpat-BBBBBBBBBBBBBBBBBBBB"
+	const secretish = "not-a-real-credential-BBBBBBBBBBBB"
 	for name, tc := range map[string]struct {
 		value     string
 		wantLevel slog.Level
