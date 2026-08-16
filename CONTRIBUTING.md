@@ -82,7 +82,7 @@ package, not here.
 ## Local development
 
 The engine and UI are published, so a plain checkout builds against the
-released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine/v3`
+released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine/v4`
 (`go.sum` carries its checksums), and `scripts/dev-build.sh` and the Dockerfile
 pull the published `@cplieger/web-terminal-*` npm tarballs.
 
@@ -132,7 +132,7 @@ checkout:
 ```text
 go 1.26.5
 use .
-replace github.com/cplieger/web-terminal-engine/v3 => ../web-terminal-engine
+replace github.com/cplieger/web-terminal-engine/v4 => ../web-terminal-engine
 ```
 
 `go.work` is gitignored and dockerignored (local-dev only); the `replace` reads

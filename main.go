@@ -1,6 +1,6 @@
 // Command web-terminal-server is a thin, generic web terminal: it runs a
 // configured command in a PTY and serves the @cplieger/web-terminal-ui front
-// end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v3.
+// end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v4.
 //
 // SECURITY: this is a remote shell. Anyone who can reach the listen address
 // and pass auth (if any) gets an interactive process running WT_CMD with this
@@ -264,6 +264,14 @@ func main() {
 	}
 }
 
+// shutdownGrace bounds the whole graceful stop: the drain, then the session
+// teardown inside whatever the drain left. The engine's own budget guidance is
+// larger than this (cmd.WaitDelay alone reaps a stubborn child for 5s, and the
+// containment and marker ladders each spend several grace windows on top), so a
+// heavily-loaded stop can overrun it. That is the deliberate choice: this server
+// would rather log the overrun than hold the container past its stop timeout.
+const shutdownGrace = 5 * time.Second
+
 // The startup stages a failure can be attributed to. Values, not messages: these
 // are the strings an operator's log query or alert rule matches, so changing one
 // is a breaking change to the log surface.
@@ -355,6 +363,18 @@ func run() error {
 	}
 	mgr := terminal.NewSessionManager(sessionFactory(&cfg), mgrOpts...)
 
+	// The engine's blocking teardown, on whatever budget the caller hands it. An
+	// expiry means a session's teardown (reaping the child, ending its cgroup,
+	// sweeping /proc for escapees) did not finish inside the grace, which is
+	// otherwise silent: there is no branch to take, because the process is
+	// stopping either way, so the only useful thing to do is say so.
+	shutdownSessions := func(ctx context.Context) {
+		if teardownErr := mgr.Shutdown(ctx); teardownErr != nil {
+			slog.Warn("session teardown did not finish within the shutdown grace",
+				"grace", shutdownGrace, "error", teardownErr)
+		}
+	}
+
 	// webhttp.Ready is the shared serving-state flag (zero value = not ready). run owns
 	// its lifecycle, flipping it true after bind and false on the shutdown signal.
 	var ready webhttp.Ready
@@ -418,17 +438,21 @@ func run() error {
 	// pre-drain hook flips readiness false and cancels in-flight request contexts
 	// before the drain starts, so /healthz reports 503 during the window and the open
 	// SSE streams unblock (see BaseContext above).
-	if err := webhttp.Run(ctx, srv, ln, func(context.Context) { mgr.Shutdown() },
-		webhttp.WithShutdownGrace(5*time.Second),
+	if err := webhttp.Run(ctx, srv, ln, shutdownSessions,
+		webhttp.WithShutdownGrace(shutdownGrace),
 		webhttp.WithPreDrain(func(context.Context) {
 			ready.Set(false)
 			cancelBase()
 			slog.Info("shutting down", "cause", context.Cause(ctx))
 		})); err != nil {
 		// webhttp.Run does NOT run its teardown on a fatal serve error (it returns
-		// before the graceful sequence), so this is the only mgr.Shutdown on this
-		// path rather than a duplicate of the deferred one.
-		mgr.Shutdown()
+		// before the graceful sequence), so this is the only session teardown on
+		// this path rather than a duplicate of the deferred one. It gets its own
+		// budget, because the one webhttp would have handed the teardown hook is
+		// only created on the graceful path.
+		tctx, cancelTeardown := context.WithTimeout(context.Background(), shutdownGrace)
+		shutdownSessions(tctx)
+		cancelTeardown()
 		return atStage(stageServe, fmt.Errorf("http server exited: %w", err))
 	}
 	slog.Info("web-terminal-server stopped")
