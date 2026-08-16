@@ -27,7 +27,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/v3/terminal"
+	"github.com/cplieger/web-terminal-engine/v4/terminal"
 	"github.com/cplieger/webhttp"
 )
 
