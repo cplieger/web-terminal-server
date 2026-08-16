@@ -13,6 +13,15 @@ go.work
 go.work.sum
 static/vendor/
 static/style.css
+# The css-bundle temp sibling. Load-bearing rather than tidy: a leftover in the
+# build context reaches COPY . ./ and then `go:embed static`, so it would ship
+# inside the binary.
+static/style.css.*
+# Skill artifact trees. They cache-bust COPY . ./ on every review checkpoint and
+# are excluded from git for the same reason.
+**/.code-review/
+**/.judgement/
+**/.app-review/
 # scripts/ is deliberately NOT excluded: the wire-floor gate compiles
 # scripts/wirecheck inside the builder stage, so it must be in the build
 # context. Only the built binary is copied into the final image.

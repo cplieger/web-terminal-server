@@ -10,43 +10,86 @@ ENV GOTOOLCHAIN=auto
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates curl xz-utils && rm -rf /var/lib/apt/lists/*
 
-# Go toolchain for the server binary.
+# Go toolchain for the server binary. Digest-verified per arch: TLS authenticates
+# go.dev, not the bytes, and this tarball is the largest single input to the image.
+# The digests come from go.dev's own release index, so Renovate's custom datasources
+# rewrite the version and both shas as one group.
 # renovate: datasource=golang-version depName=golang
 ARG GO_VERSION=1.26.6
+# renovate: datasource=custom.golang-amd64 depName=golang-amd64
+ARG GO_SHA256_AMD64=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89  # go1.26.6
+# renovate: datasource=custom.golang-arm64 depName=golang-arm64
+ARG GO_SHA256_ARM64=d0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e  # go1.26.6
 RUN ARCH=$(dpkg --print-architecture) && \
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
-    | tar -C /usr/local -xz
+    case "$ARCH" in \
+      amd64) GO_SHA256="$GO_SHA256_AMD64" ;; \
+      arm64) GO_SHA256="$GO_SHA256_ARM64" ;; \
+      *) echo "ERROR unsupported-arch: no Go digest pinned for $ARCH" >&2; exit 1 ;; \
+    esac && \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
+      -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" && \
+    printf '%s  /tmp/go.tar.gz\n' "$GO_SHA256" | sha256sum -c - && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm -f /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
 # tsc — the TypeScript 7 native compiler (a Go binary) — compiles the browser
 # TS. Build-time only. Since TS7 shipped stable, the native compiler is the
 # `typescript` package's per-platform `tsc` (@typescript/typescript-linux-<arch>,
-# published in lockstep with the metapackage).
+# published in lockstep with the metapackage). Digest-verified per arch: npm
+# publishes SHA-512 in its metadata and nothing recomputes it here, so the pin is
+# recomputed by scripts/repin-sha.sh from the marker above each ARG. The arch
+# dispatch FAILS on anything unrecognized rather than defaulting to x64, which
+# would silently ship the wrong binary.
 # renovate: datasource=npm depName=typescript
 ARG TS_VERSION=7.0.2
-RUN TS_ARCH=$([ "$(dpkg --print-architecture)" = "arm64" ] && echo "arm64" || echo "x64") && \
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 \
-      "https://registry.npmjs.org/@typescript/typescript-linux-${TS_ARCH}/-/typescript-linux-${TS_ARCH}-${TS_VERSION}.tgz" \
-    | tar -xz -C /tmp
+# repin: dep=typescript url=https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-{version}.tgz
+ARG TS_SHA256_X64=7ecad6f67377e831856367ab062ef394f21506a611405bf8ac0ff039348637d3
+# repin: dep=typescript url=https://registry.npmjs.org/@typescript/typescript-linux-arm64/-/typescript-linux-arm64-{version}.tgz
+ARG TS_SHA256_ARM64=c83d931ac9dd7549cde6e71246aa9d6a9812843023df3e277fe3b5dcf41dd0ea
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) TS_ARCH=x64; TS_SHA256="$TS_SHA256_X64" ;; \
+      arm64) TS_ARCH=arm64; TS_SHA256="$TS_SHA256_ARM64" ;; \
+      *) echo "ERROR unsupported-arch: no tsc digest pinned for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
+      -o /tmp/tsc.tgz "https://registry.npmjs.org/@typescript/typescript-linux-${TS_ARCH}/-/typescript-linux-${TS_ARCH}-${TS_VERSION}.tgz" && \
+    printf '%s  /tmp/tsc.tgz\n' "$TS_SHA256" | sha256sum -c - && \
+    tar -xzf /tmp/tsc.tgz -C /tmp && \
+    rm -f /tmp/tsc.tgz
 
 WORKDIR /build
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/root/go/pkg/mod go mod download
 COPY . ./
 
 # Fetch the engine + UI TypeScript from the npm registry (both publish TS
 # source only, like @cplieger/reactive). Extracted side by side under one
 # node_modules/@cplieger so tsc's bundler resolution finds the engine when
 # compiling the UI's `@cplieger/web-terminal-engine` import.
+#
+# Both are digest-verified: these two tarballs ARE the served client bundle, so an
+# unverified fetch would let a registry compromise put arbitrary JS into the page
+# that drives a remote shell. Downloaded to a file first because a pipe cannot be
+# hashed before it is consumed.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
 ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=3.10.4
+# repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=fdf345f25efd86652b1e8b355972db50b429393ba489e3219777a65438823b29
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
 ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=5.6.0
+# repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
+ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=2734e81640f419fef3077f4175af4f160eb1b80201cc18b63c78ab0a6e309d65
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" \
-      | tar -xz -C node_modules/@cplieger/web-terminal-engine --strip-components=1 && \
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" \
-      | tar -xz -C node_modules/@cplieger/web-terminal-ui --strip-components=1
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
+      -o /tmp/engine.tgz "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" && \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
+      -o /tmp/ui.tgz "https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-${CPLIEGER_WEB_TERMINAL_UI_VERSION}.tgz" && \
+    printf '%s  /tmp/engine.tgz\n%s  /tmp/ui.tgz\n' \
+      "$CPLIEGER_WEB_TERMINAL_ENGINE_SHA256" "$CPLIEGER_WEB_TERMINAL_UI_SHA256" | sha256sum -c - && \
+    tar -xzf /tmp/engine.tgz -C node_modules/@cplieger/web-terminal-engine --strip-components=1 && \
+    tar -xzf /tmp/ui.tgz -C node_modules/@cplieger/web-terminal-ui --strip-components=1 && \
+    rm -f /tmp/engine.tgz /tmp/ui.tgz
 
 # Re-arm the bash SHELL before the bash-only RUNs below. It is already declared
 # at the top of this stage and nothing changed it, but hadolint (>=2.15.0) resets
@@ -59,32 +102,25 @@ RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/w
 # Drop it when upstream honours the first declaration again.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Compile both packages to static/vendor/. tsc is a compiler, not a bundler:
-# it preserves the UI's bare `@cplieger/web-terminal-engine` import and its relative
-# `./*.js` imports, which the served importmap and vendored dirs resolve at
-# runtime. The committed static/index.html supplies the scaffold + importmap +
-# the inline mount() call, so no app entry needs compiling.
-RUN mapfile -t ui_ts < <(find node_modules/@cplieger/web-terminal-ui/src -name '*.ts') && \
-    /tmp/package/lib/tsc \
-        --module ESNext --target ESNext --moduleResolution bundler \
-        --outDir static/vendor/cplieger-web-terminal-engine \
-        --rootDir node_modules/@cplieger/web-terminal-engine/src \
-        --skipLibCheck --strict \
-        node_modules/@cplieger/web-terminal-engine/src/*.ts && \
-    /tmp/package/lib/tsc \
-        --module ESNext --target ESNext --moduleResolution bundler \
-        --outDir static/vendor/cplieger-web-terminal-ui \
-        --rootDir node_modules/@cplieger/web-terminal-ui/src \
-        --skipLibCheck --strict \
-        "${ui_ts[@]}"
-
-# Concatenate the UI's CSS splits into the served bundle.
-RUN set -eu; \
-    : > static/style.css; \
-    while IFS= read -r line || [ -n "$line" ]; do \
-        case "$line" in ''|\#*) continue ;; esac; \
-        cat "node_modules/@cplieger/web-terminal-ui/css/${line}" >> static/style.css; \
-    done < node_modules/@cplieger/web-terminal-ui/css/MANIFEST
+# Compile both packages to static/vendor/, then assert the emit and bundle the CSS.
+#
+# tsc is a compiler, not a bundler: it preserves the UI's bare
+# `@cplieger/web-terminal-engine` import and its relative `./*.js` imports, which the
+# served importmap and vendored dirs resolve at runtime. The committed static/index.html
+# supplies the scaffold + importmap + the inline mount() call, so no app entry needs
+# compiling.
+#
+# All three steps live in scripts/ so this build and scripts/dev-build.sh cannot drift,
+# and so each refuses the failure a shell one-liner swallowed: an empty source list that
+# emits nothing and exits 0, a page importing a module tsc never wrote, and a truncated or
+# escaping CSS member replacing a working bundle. One RUN because they are one stage of
+# the build and hadolint's DL3059 objects to the split.
+RUN bash scripts/vendor-tsc.sh /tmp/package/lib/tsc engine \
+        node_modules/@cplieger/web-terminal-engine/src static/vendor/cplieger-web-terminal-engine && \
+    bash scripts/vendor-tsc.sh /tmp/package/lib/tsc ui \
+        node_modules/@cplieger/web-terminal-ui/src static/vendor/cplieger-web-terminal-ui && \
+    bash scripts/assert-emit.sh static/index.html static && \
+    bash scripts/css-bundle.sh node_modules/@cplieger/web-terminal-ui/css static/style.css
 
 # Monaspace Neon NF webfonts for the monospace terminal display (box-drawing +
 # icon glyphs that system monospace fonts render as tofu). Fetched from
@@ -111,15 +147,20 @@ ARG MONASPACE_BOLD_SHA256=45f56dceff8e569d61b6e3168fe208432e7bf0bc3e56e41b4d754c
 ARG MONASPACE_ITALIC_SHA256=3d77eb9a5ec9e32c5ac7ea49c4325e5d6c8e5fefda7317527de905130a88f3cf
 # repin: dep=githubnext/monaspace url=https://raw.githubusercontent.com/githubnext/monaspace/{version}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon/MonaspaceNeonNF-BoldItalic.woff2
 ARG MONASPACE_BOLDITALIC_SHA256=5dffc9465be18eb63263671f1f3ba266ede49043cb6b3edcd65ea993c909b3aa
-RUN mkdir -p static/vendor/fonts && \
+RUN set -eu; mkdir -p static/vendor/fonts && \
     for face in Regular Bold Italic BoldItalic; do \
-      curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 \
+      case "$face" in \
+        Regular)    face_sha="$MONASPACE_REGULAR_SHA256" ;; \
+        Bold)       face_sha="$MONASPACE_BOLD_SHA256" ;; \
+        Italic)     face_sha="$MONASPACE_ITALIC_SHA256" ;; \
+        BoldItalic) face_sha="$MONASPACE_BOLDITALIC_SHA256" ;; \
+        *) echo "ERROR font-sha-missing: no digest pinned for face $face" >&2; exit 1 ;; \
+      esac; \
+      curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
         -o "static/vendor/fonts/MonaspaceNeonNF-${face}.woff2" \
         "https://raw.githubusercontent.com/githubnext/monaspace/${MONASPACE_VERSION}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon/MonaspaceNeonNF-${face}.woff2"; \
-    done && \
-    printf '%s  static/vendor/fonts/MonaspaceNeonNF-Regular.woff2\n%s  static/vendor/fonts/MonaspaceNeonNF-Bold.woff2\n%s  static/vendor/fonts/MonaspaceNeonNF-Italic.woff2\n%s  static/vendor/fonts/MonaspaceNeonNF-BoldItalic.woff2\n' \
-      "$MONASPACE_REGULAR_SHA256" "$MONASPACE_BOLD_SHA256" "$MONASPACE_ITALIC_SHA256" "$MONASPACE_BOLDITALIC_SHA256" \
-      | sha256sum -c -
+      printf '%s  static/vendor/fonts/MonaspaceNeonNF-%s.woff2\n' "$face_sha" "$face" | sha256sum -c -; \
+    done
 
 # Wire-floor gate (cross-language compatibility): go.mod's engine module and
 # the ARG-pinned npm client version move INDEPENDENTLY (Renovate bumps them in
@@ -151,8 +192,11 @@ RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.
     go build -o /tmp/wirecheck-bin/wirecheck ./scripts/wirecheck && \
     /tmp/wirecheck-bin/wirecheck -manifest "$WIRE_MANIFEST"
 
-# Build the static binary with assets embedded via go:embed.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /web-terminal-server .
+# Build the static binary with assets embedded via go:embed. Both caches are mounted:
+# the wirecheck step above fills them, and without the mounts here that work is thrown
+# away and the shipped binary's compile redoes the whole module graph every build.
+RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /web-terminal-server .
 
 # --- Runtime: minimal Debian with a shell for the default WT_CMD ---
 FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
@@ -196,6 +240,11 @@ EXPOSE 7681
 # either can't break out of the config's quoted value or inject another curl
 # directive. Do NOT simplify to -u: that reintroduces both the argv exposure
 # and the injection vector.
+# The port is DERIVED from WT_ADDR rather than hardcoded, so an operator who
+# moves the listener keeps a working probe instead of an image that reports
+# unhealthy while serving. --max-time 4 sits strictly below --timeout=5s, so a
+# slow endpoint is reported by curl's exit code instead of being force-killed
+# mid-report by Docker; -S makes the reason visible in `docker inspect`.
 # DL3025 wants JSON notation, which cannot run this: the probe assembles a curl
 # config file on stdin through two command substitutions and a pipe, precisely so
 # the password never reaches argv. Exec form supports none of that, and adopting
@@ -203,9 +252,9 @@ EXPOSE 7681
 # forbids. This image also ships a shell entrypoint, so the distroless case the
 # rule guards does not arise here.
 # hadolint ignore=DL3025
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
     CMD u=$(printf '%s' "${WT_USERNAME:-admin}" | sed 's/[\\"]/\\&/g'); \
         p=$(printf '%s' "${WT_PASSWORD:-}" | sed 's/[\\"]/\\&/g'); \
-        printf 'user = "%s:%s"\n' "$u" "$p" | curl -sf -K - http://127.0.0.1:7681/healthz || exit 1
+        printf 'user = "%s:%s"\n' "$u" "$p" | curl -sfS --max-time 4 -K - "http://127.0.0.1:${WT_ADDR##*:}/healthz" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/web-terminal-server"]

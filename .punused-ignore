@@ -43,3 +43,16 @@ method (memInfo).Size
 method (memInfo).Mode
 method (memInfo).ModTime
 method (memInfo).Sys
+
+method (memInfo).IsDir
+
+# --- main.go's startup-stage error wrapper.
+#
+# errors.As and errors.Is reach Unwrap by type-asserting an anonymous
+# `interface{ Unwrap() error }`, so there is no call site for gopls to find and no
+# reference for punused to count. Deleting it would not fail the build: it would
+# silently break the chain, so stageOf's errors.As stops finding a *stageError
+# through fmt.Errorf's wrapper and every attributed startup failure reports
+# stage=unknown. TestStageOf's "attributed then re-wrapped" case is what catches
+# that, and it is the only thing that would.
+method (*stageError).Unwrap

@@ -1,36 +1,13 @@
 package main
 
-// The one server fact this app's client needs to know at boot.
-//
-// The front end is a committed static file with an inline module script; nothing
-// here templates it, and that is worth keeping — the CSP pins a sha256 of that
-// script, the static handler precomputes an ETag and a gzip body per file, and a
-// per-request rewrite would fight all three. So WT_PERSIST_SCROLLBACK is applied
-// ONCE at startup, by overlaying the one changed byte range over the embedded
-// tree before either the static handler or the CSP builder reads it. Both see the
-// same bytes, so the ETag, the gzip body and the script hash are all computed
-// over what the browser actually receives.
-//
-// Persistence is ON by default, here as in the sibling apps, because the defect it
-// fixes is universal: without it a reloaded or browser-discarded tab asks the
-// server for its whole retained scrollback and refills the buffer over the wire,
-// which is the normal case on a phone and reads as a fault rather than a reload.
-// An off-by-default entry in an env table is off for everyone in practice, and the
-// users who need it most are the least likely to go looking for a flag.
-//
-// The flag remains, as the opt-OUT, because enabling this DOES move something: up
-// to a thousand lines of WT_CMD's output sit in the browser's localStorage,
-// readable from that browser without reaching this server and outliving the tab.
-// Almost every way to read it also hands over a live root shell, so the snapshot
-// is rarely the weakest link — but not always: a laptop off the VPN, a stopped
-// container or an expired credential leaves the snapshot readable while the shell
-// is not. That is the case an operator with a shared device or a compliance
-// constraint is turning off, and the README says so where they will look.
-//
-// The resolved value is ALWAYS stamped, in either direction, rather than the page
-// carrying the default and being rewritten one way. That removes the question of
-// which direction the rewrite runs, and leaves index.html's committed value as
-// documentation of the default rather than a load-bearing input.
+// The one server fact this app's client needs at boot. Nothing templates the
+// committed static page, on purpose: the CSP pins a sha256 of its inline module
+// script and the static handler precomputes an ETag and a gzip body per file, so a
+// per-request rewrite would fight all three. The flag is applied ONCE at startup
+// over the embedded tree, before either reader sees it, and the resolved value is
+// ALWAYS stamped in either direction — so index.html's committed value documents
+// the default rather than deciding anything. Persistence is ON; the env var is the
+// opt-OUT, and README states what enabling it leaves in the browser.
 
 import (
 	"bytes"
@@ -56,12 +33,10 @@ const indexName = "index.html"
 // both read: the embedded tree with index.html's marker stamped to the resolved
 // value, or the tree unchanged when it already says that.
 //
-// The marker is verified on EVERY boot, in both spellings, whichever way the flag
-// is set. A build that lost it is malformed, and finding that out at startup is
-// much better than finding out on the first boot an operator flips the env var —
-// which could be months later, on a container whose whole purpose is then to
-// change the thing that silently cannot be changed. Same fail-loud posture as
-// buildCSPPolicy.
+// The marker is verified on EVERY boot, in both spellings, whichever way the flag is
+// set. A build that lost it is malformed, and startup is a much better place to find
+// that out than the first boot an operator flips the env var — months later, on a
+// container whose whole purpose is then to change something that cannot be changed.
 func applyPersistFlag(base fs.FS, enabled bool) (fs.FS, error) {
 	html, err := fs.ReadFile(base, indexName)
 	if err != nil {
@@ -88,15 +63,12 @@ func applyPersistFlag(base fs.FS, enabled bool) (fs.FS, error) {
 	}, nil
 }
 
-// overlayFS serves one replacement file over a base fs.FS and delegates
-// everything else.
-//
-// It implements fs.ReadDirFS as well as fs.FS because the static handler walks
-// the tree once at construction to precompute ETags and gzip bodies: the walk
-// enumerates through ReadDir (the base's answer, since the overlay adds no
-// entries and removes none) and reads content through Open (this type's answer
-// for the one overlaid name). That split is what makes a byte swap invisible to
-// everything downstream.
+// overlayFS serves one replacement file over a base fs.FS and delegates everything
+// else. It implements fs.ReadDirFS as well as fs.FS because the static handler walks
+// the tree once at construction: the walk enumerates through ReadDir (the base's
+// answer, since the overlay adds and removes no entries) and reads content through
+// Open (this type's answer for the one overlaid name). That split is what makes the
+// byte swap invisible downstream.
 type overlayFS struct {
 	base fs.FS
 	name string
@@ -114,11 +86,11 @@ func (o overlayFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	return fs.ReadDir(o.base, name)
 }
 
-// The three interfaces net/http drives this overlay through. Stated as
-// assertions because every method below exists only to satisfy one of them: the
-// caller holds the interface, never the concrete type, so a dropped method is
-// invisible to a reference search (see .punused-ignore) and would otherwise
-// surface as a 500 on one asset at runtime. Here it is a compile error.
+// The three interfaces net/http drives this overlay through. Stated as assertions
+// because every method below exists only to satisfy one of them: the caller holds
+// the interface, never the concrete type, so a dropped method is invisible to a
+// reference search (see .punused-ignore) and would surface as a 500 on one asset at
+// runtime. Here it is a compile error.
 var (
 	_ fs.ReadDirFS = overlayFS{}
 	_ fs.File      = (*memFile)(nil)

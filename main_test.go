@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -112,26 +113,34 @@ func TestLoadConfigErrors(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRejectionNamesWhatItRejected pins what envx v1.6.0's
-// *ParseError bought these two validators: the message names the value the
-// PARSER saw, not a second read of the environment. os.Getenv returns the value
-// untrimmed, so the old shape reported " lots " while the parse that failed saw
-// "lots" — one message disagreeing with itself about what was rejected.
+// TestLoadConfigRejectionNamesTheKeyAndNeverTheValue pins the confidentiality half of the
+// strict env validators, and it is the inverse of what this test used to assert.
 //
-// The out-of-range cases have no *ParseError (they parsed fine and are merely
-// out of bounds), so they name the parsed value instead. The duration case also
-// pins String(): %q on a time.Duration renders a rune literal, since its
-// underlying kind is int64.
-func TestLoadConfigRejectionNamesWhatItRejected(t *testing.T) {
+// These errors are rendered into main's ONE startup ERROR line, and a compose
+// interpolation mistake can put a credential on any variable (`WT_SCROLLBACK: ${TOKEN}`
+// resolves to a token that fails to parse as an int). Echoing the rejected value would
+// leave a durable, queryable copy of it in the log store (CWE-532), so a rejection names
+// the KEY and the accepted shape and nothing else. That is the same rule the WT_LOG_LEVEL
+// warning and envx's own value-free BoolStrict error already follow here.
+//
+// The out-of-range cases are the deliberate exception: those values PARSED, so the number
+// or duration is a bounds fact rather than an unknown string, and naming it is what makes
+// the message actionable. The duration case also pins String(): %q on a time.Duration
+// renders a rune literal, since its underlying kind is int64.
+func TestLoadConfigRejectionNamesTheKeyAndNeverTheValue(t *testing.T) {
+	// A value shaped like a credential, so a regression prints something obviously wrong.
+	const secretish = "glpat-AAAAAAAAAAAAAAAAAAAA"
 	tests := []struct {
 		name    string
 		env     map[string]string
 		want    string
 		notWant string
 	}{
-		{"unparseable int quotes the trimmed value", map[string]string{"WT_SCROLLBACK": "  lots\t"}, `"lots"`, `"  lots`},
+		{"unparseable int names the key only", map[string]string{"WT_SCROLLBACK": "  lots\t"}, "WT_SCROLLBACK must be an integer >= 0", "lots"},
+		{"unparseable int never leaks a secret-shaped value", map[string]string{"WT_SCROLLBACK": secretish}, "WT_SCROLLBACK must be an integer >= 0", secretish},
 		{"below-min int names the parsed number", map[string]string{"WT_SCROLLBACK": "-5"}, "got -5", `"-5"`},
-		{"unparseable duration quotes the trimmed value", map[string]string{"WT_IDLE_REAPER": " 5x "}, `"5x"`, `" 5x`},
+		{"unparseable duration names the key only", map[string]string{"WT_IDLE_REAPER": " 5x "}, "WT_IDLE_REAPER must be a non-negative Go duration", "5x"},
+		{"unparseable duration never leaks a secret-shaped value", map[string]string{"WT_IDLE_REAPER": secretish}, "WT_IDLE_REAPER must be a non-negative Go duration", secretish},
 		{"negative duration names the parsed duration", map[string]string{"WT_IDLE_REAPER": "-5s"}, `"-5s"`, ""},
 	}
 	for _, tt := range tests {
@@ -143,10 +152,10 @@ func TestLoadConfigRejectionNamesWhatItRejected(t *testing.T) {
 				t.Fatalf("loadConfig() = nil error, want a rejection for %v", tt.env)
 			}
 			if !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("error = %q, want it to contain %s", err, tt.want)
+				t.Errorf("error = %q, want it to contain %q", err, tt.want)
 			}
 			if tt.notWant != "" && strings.Contains(err.Error(), tt.notWant) {
-				t.Errorf("error = %q, must not contain %s (that is the untrimmed environment value)", err, tt.notWant)
+				t.Errorf("error = %q, must not contain %q: a rejected env value never reaches the log", err, tt.notWant)
 			}
 		})
 	}
@@ -540,7 +549,6 @@ func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 		name string
 		fsys fs.FS
 	}{
-		{"nil FS", nil},
 		{"missing index.html", fstest.MapFS{}},
 		{"only external scripts", fstest.MapFS{
 			"index.html": &fstest.MapFile{Data: []byte(`<html><body><script src="/vendor/x.js"></script></body></html>`)},
@@ -781,14 +789,19 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 		if !trustedContains(cfg.trustedProxies, "10.1.2.3") {
 			t.Error("kept net does not contain 10.1.2.3; want the 10.0.0.0/8 entry retained")
 		}
-		// A Warn line naming each malformed entry was emitted.
+		// A Warn line reporting the malformed COUNT was emitted, and it carries none of
+		// the rejected entries: a mis-expanded variable could put a credential in one, so
+		// the values never reach the log (CWE-532).
 		log := buf.String()
 		if log == "" {
-			t.Fatal("no slog output; want a Warn naming the malformed entries")
+			t.Fatal("no slog output; want a Warn reporting the malformed entry count")
+		}
+		if !strings.Contains(log, "invalid_count=2") {
+			t.Errorf("warn log %q does not report invalid_count=2", log)
 		}
 		for _, bad := range []string{"not-an-ip", "999.999.999.999"} {
-			if !strings.Contains(log, bad) {
-				t.Errorf("warn log %q does not name malformed entry %q", log, bad)
+			if strings.Contains(log, bad) {
+				t.Errorf("warn log %q names the rejected entry %q; malformed values must never be logged", log, bad)
 			}
 		}
 	})
@@ -868,8 +881,11 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 		if !allows(t, cfg.hostPolicy, "localhost:7681", "192.168.1.50:44444") {
 			t.Error("valid entry localhost missing from the allowlist")
 		}
-		if !strings.Contains(buf.String(), "http://term.example.com") {
-			t.Errorf("warn log %q does not name the malformed entry", buf.String())
+		if !strings.Contains(buf.String(), "invalid_count=1") {
+			t.Errorf("warn log %q does not report invalid_count=1", buf.String())
+		}
+		if strings.Contains(buf.String(), "http://term.example.com") {
+			t.Errorf("warn log %q names the rejected entry; malformed values must never be logged", buf.String())
 		}
 	})
 
@@ -1212,8 +1228,8 @@ func TestStaticHandlerETagAndRevalidation(t *testing.T) {
 	if !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) {
 		t.Errorf("ETag = %q, want a quoted opaque validator", etag)
 	}
-	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
-		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache")
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache, must-revalidate" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache, must-revalidate")
 	}
 
 	rec2 := httptest.NewRecorder()
@@ -1875,5 +1891,703 @@ func TestAttentionIconVariantsAreServed(t *testing.T) {
 				t.Errorf("attention variant %q is missing: %v", name, err)
 			}
 		}
+	}
+}
+
+// Startup-stage attribution. main used to render four different ERROR messages
+// ("invalid configuration", "static assets unavailable", "listen failed", "http
+// server exited") and exit in place, so there was no stable field a log query or
+// alert rule could key on, and each os.Exit skipped the deferred teardown and had
+// to hand-duplicate it — which is how the serve path came to omit cancelBase.
+// These tests pin the replacement: a stable VALUE per startup stage, always
+// present, and a run that RETURNS instead of exiting.
+
+func TestStageOf(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"nil error":                  {err: nil, want: stageUnknown},
+		"unattributed error":         {err: errors.New("boom"), want: stageUnknown},
+		"attributed":                 {err: atStage(stageListen, errors.New("boom")), want: stageListen},
+		"attributed then re-wrapped": {err: fmt.Errorf("outer: %w", atStage(stageServe, errors.New("boom"))), want: stageServe},
+		// The outermost attribution wins, which is what lets a caller re-attribute
+		// a failure it has reinterpreted.
+		"doubly attributed": {err: atStage(stageStatic, atStage(stageListen, errors.New("boom"))), want: stageStatic},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := stageOf(tc.err); got != tc.want {
+				t.Errorf("stageOf() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Attribution must not change what the operator reads: the wrapped text IS the
+// hint, and a stage wrapper that prefixed or reworded it would defeat the
+// consolidation it exists to make queryable.
+func TestAtStagePreservesTheMessageAndTheChain(t *testing.T) {
+	t.Parallel()
+	inner := errors.New("mount target is a file")
+	wrapped := fmt.Errorf("WT_WORKDIR is not a directory: %w", inner)
+	got := atStage(stageConfig, wrapped)
+
+	if got.Error() != wrapped.Error() {
+		t.Errorf("Error() = %q, want the wrapped text unchanged %q", got.Error(), wrapped.Error())
+	}
+	if !errors.Is(got, inner) {
+		t.Error("attribution broke the error chain; errors.Is no longer reaches the cause")
+	}
+}
+
+// The stage values are the log surface, so they are pinned as literals here:
+// renaming one is a breaking change to an operator's query and must fail a test
+// rather than pass silently.
+func TestStageValuesAreStable(t *testing.T) {
+	t.Parallel()
+	for got, want := range map[string]string{
+		stageConfig:  "config",
+		stageStatic:  "static",
+		stageListen:  "listen",
+		stageServe:   "serve",
+		stageUnknown: "unknown",
+	} {
+		if got != want {
+			t.Errorf("stage value = %q, want %q", got, want)
+		}
+	}
+}
+
+// The load-bearing property, and the reason main was restructured: a startup
+// failure RETURNS from run, attributed, rather than calling os.Exit past the
+// pending defers. This test can only pass if that holds — an os.Exit here kills
+// the test binary — and the config stage is the one failure a test can drive
+// without binding a port or breaking the embedded static tree.
+//
+// Not parallel: t.Setenv forbids it, and run installs the process-global slog
+// handler, which is restored below so the rest of the package keeps its own.
+func TestRunReturnsAnAttributedConfigFailureInsteadOfExiting(t *testing.T) {
+	prior := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prior) })
+
+	file := filepath.Join(t.TempDir(), "notadir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	setWTEnv(t, map[string]string{"WT_WORKDIR": file})
+
+	err := run()
+	if err == nil {
+		t.Fatal("run() = nil error, want error when WT_WORKDIR is a regular file")
+	}
+	if got := stageOf(err); got != stageConfig {
+		t.Errorf("run() stage = %q, want %q", got, stageConfig)
+	}
+	// The operator hint rides inside the error, because main renders it once.
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("run() error = %q, want it to mention %q", err, "not a directory")
+	}
+}
+
+// TestLoadConfigWorkDirNamesTheShapeItRejected pins that the three work-dir failures keep
+// three distinct remedies. One message for all three used to tell an operator whose mount
+// is present but unreadable to add a mount that is already there.
+//
+// The unreadable case needs a directory the process cannot stat through, so it is skipped
+// as root: root traverses a 0000 parent, which makes the case describe the container
+// rather than the rule.
+func TestLoadConfigWorkDirNamesTheShapeItRejected(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "no-such-dir")
+
+	regular := filepath.Join(t.TempDir(), "notadir")
+	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		path string
+		want string
+		skip bool
+	}{
+		"absent":       {path: absent, want: "does not exist"},
+		"regular file": {path: regular, want: "not a directory"},
+		"unreadable":   {path: unreadableChildPath(t), want: "not readable", skip: os.Geteuid() == 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if tc.skip {
+				t.Skip("running as root: a 0000 parent is traversable, so this case cannot fail closed")
+			}
+			setWTEnv(t, map[string]string{"WT_WORKDIR": tc.path})
+			_, err := loadConfig()
+			if err == nil {
+				t.Fatalf("loadConfig() with WT_WORKDIR=%q = nil error, want an error", tc.path)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("loadConfig() with WT_WORKDIR=%q error = %q, want it to mention %q", tc.path, err, tc.want)
+			}
+		})
+	}
+}
+
+// unreadableChildPath returns a path whose PARENT denies traversal, so os.Stat fails with
+// a permission error rather than fs.ErrNotExist.
+func unreadableChildPath(t *testing.T) string {
+	t.Helper()
+	parent := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	child := filepath.Join(parent, "workdir")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatalf("Mkdir child: %v", err)
+	}
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	return child
+}
+
+// TestStaticCacheControl covers the policy FUNCTION's two branches. The wiring into
+// webhttp.StaticHandler is pinned separately by TestStaticHandlerETagAndRevalidation,
+// which asserts the non-font value on a served response and therefore fails if the
+// WithStaticCacheControl option is dropped and the library default returns.
+//
+// Fonts carry no `immutable`: the @font-face URLs come from the vendored UI's own CSS
+// under fixed names, so the bytes change under one filename on a Monaspace bump and a
+// reload must be able to revalidate against the content-hash ETag.
+func TestStaticCacheControl(t *testing.T) {
+	t.Parallel()
+	const (
+		fontPolicy  = "public, max-age=2592000"
+		assetPolicy = "no-cache, must-revalidate"
+	)
+	for name, tc := range map[string]struct {
+		asset string
+		want  string
+	}{
+		"font":                {asset: "vendor/fonts/MonaspaceNeonNF-Regular.woff2", want: fontPolicy},
+		"index":               {asset: "index.html", want: assetPolicy},
+		"vendored js":         {asset: "vendor/cplieger-web-terminal-ui/index.js", want: assetPolicy},
+		"font-like sibling":   {asset: "vendor/fonts-notes.txt", want: assetPolicy},
+		"root of the tree":    {asset: "", want: assetPolicy},
+		"icon beside the app": {asset: "favicon.svg", want: assetPolicy},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := staticCacheControl(tc.asset); got != tc.want {
+				t.Errorf("staticCacheControl(%q) = %q, want %q", tc.asset, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSecurityHeadersCarryTheHardenedSet pins the three headers this app sets over
+// webhttp's SecurityHeaders defaults. The terminal renders clickable OSC 8 hyperlinks
+// straight out of an arbitrary WT_CMD's output, so a session can be induced to open an
+// attacker page; COOP and the tightened Referrer-Policy make the vendored UI's
+// rel="noopener noreferrer" independent of the Renovate-bumped UI pin.
+//
+// Dropping any one option leaves the response either header-free (COOP,
+// Permissions-Policy) or on webhttp's looser strict-origin-when-cross-origin default,
+// and no other test in this package would notice.
+func TestSecurityHeadersCarryTheHardenedSet(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", rec.Code)
+	}
+	for header, want := range map[string]string{
+		"Cross-Origin-Opener-Policy": "same-origin",
+		"Referrer-Policy":            "same-origin",
+		"Permissions-Policy":         "camera=(), microphone=(), geolocation=()",
+		"X-Content-Type-Options":     "nosniff",
+		"X-Frame-Options":            "DENY",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("GET / header %s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+// TestWSAttachLogRecordsEveryUpgradeAttempt pins the /ws audit record. The access logger
+// skips admitted upgrades (WithSkipUpgrades) and neither the engine's WebSocketHandler nor
+// the per-session Handler logs an attach, so without this middleware the request that
+// PRESENTS the session capability token is the only request to this server with no record
+// at all — a leaked id could be replayed with nothing to show an operator (CWE-778).
+//
+// It also pins that the record TRUNCATES the token: the whole point is an audit trail that
+// is not itself a credential store.
+//
+// Not parallel: it swaps the process-global slog handler.
+func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef"
+
+	for name, tc := range map[string]struct {
+		headers map[string]string
+		want    bool
+	}{
+		"upgrade attempt": {
+			headers: map[string]string{"Upgrade": "websocket", "Connection": "Upgrade"},
+			want:    true,
+		},
+		// A comma-separated Connection is what a proxy sends; the token match must not
+		// require the header to be exactly "upgrade".
+		"upgrade attempt behind a proxy": {
+			headers: map[string]string{"Upgrade": "websocket", "Connection": "keep-alive, Upgrade"},
+			want:    true,
+		},
+		// A malformed handshake still presented the token, so it still needs a record.
+		"upgrade header without connection": {
+			headers: map[string]string{"Upgrade": "websocket"},
+			want:    false,
+		},
+		"plain GET on /ws": {headers: nil, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			var reached atomic.Bool
+			mw := wsAttachLog(nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				reached.Store(true)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, terminal.WSPath+"?session="+token, nil)
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			mw.ServeHTTP(httptest.NewRecorder(), req)
+
+			if !reached.Load() {
+				t.Error("wsAttachLog did not call the next handler; it must observe, never gate")
+			}
+			logged := strings.Contains(buf.String(), wsAttachMsg)
+			if logged != tc.want {
+				t.Errorf("wsAttachLog logged %q = %v, want %v (log: %s)", wsAttachMsg, logged, tc.want, buf.String())
+			}
+			if strings.Contains(buf.String(), token) {
+				t.Errorf("wsAttachLog logged the full session token; it must bind the id through terminal.LogID (log: %s)", buf.String())
+			}
+		})
+	}
+}
+
+// TestWSAttachLogIsWiredIntoTheChain pins the middleware's PLACE in newHandler, which the
+// unit test above cannot: it calls wsAttachLog directly, so dropping the entry from
+// webhttp.Chain would leave that test green and the audit record gone.
+//
+// It also pins the placement relative to the host gate. A request with a Host the
+// allowlist rejects must still leave a record, because a rebinding probe against an
+// unauthenticated PTY is exactly the event an operator needs afterwards.
+//
+// Not parallel: it swaps the process-global slog handler.
+func TestWSAttachLogIsWiredIntoTheChain(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	var ready webhttp.Ready
+	ready.Set(true)
+	cfg := config{hostPolicy: hostPolicyFor(t, "term.example.com")}
+	h := newTestHandler(t, cfg, &ready, nil)
+
+	req := httptest.NewRequest(http.MethodGet, terminal.WSPath+"?session=deadbeefdeadbeef", nil)
+	req.Host = "attacker.example.net"
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET %s with a disallowed Host = %d, want 403", terminal.WSPath, rec.Code)
+	}
+	if !strings.Contains(buf.String(), wsAttachMsg) {
+		t.Errorf("a refused /ws attach left no %q record; wsAttachLog must sit OUTSIDE the host gate (log: %s)", wsAttachMsg, buf.String())
+	}
+}
+
+// TestPathUnderAnyMatchesWholeSegments pins the guard's SCOPE at the unit the chain
+// cannot show cheaply. pathUnderAny makes two claims nothing else checks: it matches on
+// whole segments, and it accepts a prefix written with or without a trailing slash.
+//
+// A regression to a bare strings.HasPrefix keeps every row of TestCanonicalPathGuard
+// green — those rows only ever send in-scope spellings — while //api/sessionsfoo starts
+// being answered 400 instead of falling through to the static catch-all.
+func TestPathUnderAnyMatchesWholeSegments(t *testing.T) {
+	t.Parallel()
+	prefixes := []string{healthzPath, terminal.SessionsPath}
+	for name, tc := range map[string]struct {
+		clean string
+		want  bool
+	}{
+		"the probe itself":       {clean: healthzPath, want: true},
+		"the exact create/list":  {clean: terminal.SessionsPath, want: true},
+		"the subtree root":       {clean: terminal.SessionsPath + "/", want: true},
+		"a session id":           {clean: terminal.SessionsPath + "/abc123", want: true},
+		"the SSE stream":         {clean: terminal.SessionsPath + "/events", want: true},
+		"a deeper session route": {clean: terminal.SessionsPath + "/abc123/pinned-title", want: true},
+		// The two shapes a careless prefix test gets wrong: a longer sibling NAME.
+		"a longer sibling of the probe":    {clean: healthzPath + "extra", want: false},
+		"a longer sibling of the sessions": {clean: terminal.SessionsPath + "foo", want: false},
+		"the parent of the sessions":       {clean: "/api", want: false},
+		"the static root":                  {clean: "/", want: false},
+		"a static asset":                   {clean: "/index.html", want: false},
+		"the terminal socket":              {clean: terminal.WSPath, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := pathUnderAny(tc.clean, prefixes); got != tc.want {
+				t.Errorf("pathUnderAny(%q, %v) = %v, want %v", tc.clean, prefixes, got, tc.want)
+			}
+		})
+	}
+
+	// The engine names the same scope two ways, so the verdicts must agree: a prefix
+	// spelled with a trailing slash must not silently narrow the guard.
+	for _, clean := range []string{terminal.SessionsPath, terminal.SessionsPath + "/x", "/api", "/"} {
+		bare := pathUnderAny(clean, []string{terminal.SessionsPath})
+		slashed := pathUnderAny(clean, []string{terminal.SessionsSubtreePath})
+		if bare != slashed {
+			t.Errorf("pathUnderAny(%q) = %v for SessionsPath but %v for SessionsSubtreePath; the two constants must name one scope", clean, bare, slashed)
+		}
+	}
+}
+
+// TestCanonicalPathGuardRefusalEnvelope pins what the refusal BODY carries, which the
+// status-code rows do not reach.
+//
+// Two properties. A refused control-plane call must correlate with its access-log line,
+// so the envelope carries a request id. And the refusal must not echo the caller's own
+// request target back: net/http accepts up to MaxHeaderBytes (1 MiB by default) of
+// request line, so reflecting the path would turn a one-line refusal into a
+// caller-sized response body, and the sender already has the value.
+func TestCanonicalPathGuardRefusalEnvelope(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+
+	// A distinctive, long, obviously-attacker-chosen segment: if any part of the request
+	// target is reflected, this is what shows up.
+	const marker = "zzmarkerzz-0123456789abcdef"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "//api/sessions/"+marker, nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GET //api/sessions/%s = %d, want 400", marker, rec.Code)
+	}
+	var envelope webhttp.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("refusal body is not a webhttp.ErrorResponse: %v (body: %s)", err, rec.Body.String())
+	}
+	if envelope.Code != "non_canonical_path" {
+		t.Errorf("refusal code = %q, want %q", envelope.Code, "non_canonical_path")
+	}
+	if envelope.Error != canonicalPathRefusal {
+		t.Errorf("refusal message = %q, want the canonicalPathRefusal const %q", envelope.Error, canonicalPathRefusal)
+	}
+	if envelope.RequestID == "" {
+		t.Error("refusal carries no request_id; a refused call must correlate with its access-log line")
+	}
+	if strings.Contains(rec.Body.String(), marker) {
+		t.Errorf("refusal body echoes the caller's request target: %s", rec.Body.String())
+	}
+}
+
+// TestCanonicalPathGuardRefusesTheSideEffect pins the guard on the route that motivates
+// it. Every other guard row is a GET; POST /api/sessions forks a PTY, and the guard exists
+// because a 307 there is read as success by a client without -L — a caller that believes
+// it created a session when nothing ran.
+//
+// The zero-hit assertion means "refused" only because the canonical spelling is asserted
+// to reach the stub in the same test; otherwise it would also pass on an unreachable route.
+func TestCanonicalPathGuardRefusesTheSideEffect(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	var restHit atomic.Bool
+	h, err := newHandler(&config{}, stubHandler{}, stubHandler{hit: &restHit}, stubHandler{}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "//api/sessions", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST //api/sessions = %d, want 400", rec.Code)
+	}
+	if restHit.Load() {
+		t.Error("POST //api/sessions reached the session REST handler; the guard must refuse before the side effect")
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Errorf("POST //api/sessions carries Location %q; a redirect is a success status to a client without -L", loc)
+	}
+
+	// The canonical spelling still creates: the zero above is a refusal, not an
+	// unreachable route.
+	restHit.Store(false)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, terminal.SessionsPath, nil))
+	if !restHit.Load() {
+		t.Errorf("POST %s did not reach the session REST handler (status %d); the guard must pass a canonical request through", terminal.SessionsPath, rec.Code)
+	}
+}
+
+// TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly pins both halves of the WT_LOG_LEVEL
+// contract, neither of which anything checked.
+//
+// The level must actually be INSTALLED — a parse whose result is dropped is invisible
+// today — and the unparseable warning must name the KEY and carry no copy of the VALUE. A
+// compose interpolation mistake is what puts a credential on this key (CWE-532), and this
+// app's own comment claims the posture without a test behind it.
+//
+// Not parallel: it replaces the process-global logger, and t.Setenv forbids it anyway.
+func TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly(t *testing.T) {
+	// A value shaped like a credential, so a regression prints something unmistakable.
+	const secretish = "glpat-BBBBBBBBBBBBBBBBBBBB"
+	for name, tc := range map[string]struct {
+		value     string
+		wantLevel slog.Level
+		wantWarn  bool
+	}{
+		"debug":            {value: "debug", wantLevel: slog.LevelDebug, wantWarn: false},
+		"warn":             {value: "warn", wantLevel: slog.LevelWarn, wantWarn: false},
+		"unset":            {value: "", wantLevel: slog.LevelInfo, wantWarn: false},
+		"secret-shaped":    {value: secretish, wantLevel: slog.LevelInfo, wantWarn: true},
+		"ordinary garbage": {value: "verbose", wantLevel: slog.LevelInfo, wantWarn: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prev := slog.Default()
+			t.Cleanup(func() { slog.SetDefault(prev) })
+			t.Setenv("WT_LOG_LEVEL", tc.value)
+
+			// setupLogging installs its own handler over slogx, so capture by swapping the
+			// default afterwards would lose the warning. Redirect stderr instead.
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			realStderr := os.Stderr
+			os.Stderr = w
+			setupLogging()
+			installed := slog.Default()
+			os.Stderr = realStderr
+			_ = w.Close()
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("read captured stderr: %v", err)
+			}
+			_ = r.Close()
+
+			if !installed.Enabled(t.Context(), tc.wantLevel) {
+				t.Errorf("WT_LOG_LEVEL=%q: installed logger is not enabled at %v; the parsed level was dropped", tc.value, tc.wantLevel)
+			}
+			// One level below the boundary must be off, or "enabled" proves nothing.
+			if tc.wantLevel > slog.LevelDebug && installed.Enabled(t.Context(), tc.wantLevel-4) {
+				t.Errorf("WT_LOG_LEVEL=%q: installed logger is enabled BELOW %v, so the level is not in force", tc.value, tc.wantLevel)
+			}
+
+			warned := strings.Contains(string(out), "unparseable WT_LOG_LEVEL")
+			if warned != tc.wantWarn {
+				t.Errorf("WT_LOG_LEVEL=%q: warned = %v, want %v (stderr: %s)", tc.value, warned, tc.wantWarn, out)
+			}
+			if tc.value != "" && strings.Contains(string(out), tc.value) {
+				t.Errorf("WT_LOG_LEVEL=%q: the rejected value reached the log: %s", tc.value, out)
+			}
+		})
+	}
+}
+
+// TestIsWebSocketUpgradeRequiresBothListTokens pins the attach-record predicate at the
+// unit. Both header tokens are required, each may arrive as a repeated field line or a
+// comma list, matching is case- and whitespace-insensitive, and a token SUBSTRING must not
+// match. A divergence here is silent: it drops the audit record for a request that
+// presented a session capability token, which is the one thing wsAttachLog exists for.
+func TestIsWebSocketUpgradeRequiresBothListTokens(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		headers map[string][]string
+		want    bool
+	}{
+		"both, plain": {
+			headers: map[string][]string{"Upgrade": {"websocket"}, "Connection": {"Upgrade"}},
+			want:    true,
+		},
+		"comma list from a proxy": {
+			headers: map[string][]string{"Upgrade": {"websocket"}, "Connection": {"keep-alive, Upgrade"}},
+			want:    true,
+		},
+		"repeated field lines": {
+			headers: map[string][]string{"Upgrade": {"websocket"}, "Connection": {"keep-alive", "Upgrade"}},
+			want:    true,
+		},
+		"padded and mixed case": {
+			headers: map[string][]string{"Upgrade": {"  WebSocket  "}, "Connection": {" UPGRADE "}},
+			want:    true,
+		},
+		"upgrade only":    {headers: map[string][]string{"Upgrade": {"websocket"}}, want: false},
+		"connection only": {headers: map[string][]string{"Connection": {"Upgrade"}}, want: false},
+		"neither":         {headers: nil, want: false},
+		// A substring must not match, or an unrelated protocol negotiation would be
+		// recorded as a terminal attach.
+		"upgrade token is a superstring":    {headers: map[string][]string{"Upgrade": {"websocket-v2"}, "Connection": {"Upgrade"}}, want: false},
+		"connection token is a superstring": {headers: map[string][]string{"Upgrade": {"websocket"}, "Connection": {"upgrader"}}, want: false},
+		"a different protocol":              {headers: map[string][]string{"Upgrade": {"h2c"}, "Connection": {"Upgrade"}}, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, terminal.WSPath, nil)
+			for k, vals := range tc.headers {
+				for _, v := range vals {
+					req.Header.Add(k, v)
+				}
+			}
+			if got := isWebSocketUpgrade(req); got != tc.want {
+				t.Errorf("isWebSocketUpgrade(%v) = %v, want %v", tc.headers, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCrossOriginProtectionGatesUnsafeMethods pins the CSRF layer, which nothing reached:
+// no test in this package sent an Origin header, so the whole entry could be deleted from
+// webhttp.Chain with the suite green.
+//
+// The boundary is exactly what the chain comment states: http.CrossOriginProtection
+// returns early for GET, HEAD and OPTIONS as safe methods, so the layer governs the
+// state-changing session REST calls and never the /ws handshake, which is a GET. The
+// same-origin case is asserted alongside the cross-origin one, because a handler that
+// refused every request would satisfy the negative test alone.
+func TestCrossOriginProtectionGatesUnsafeMethods(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	var restHit atomic.Bool
+	h, err := newHandler(&config{}, stubHandler{}, stubHandler{hit: &restHit}, stubHandler{}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+
+	post := func(origin string) (int, bool) {
+		restHit.Store(false)
+		req := httptest.NewRequest(http.MethodPost, terminal.SessionsPath, nil)
+		req.Host = "term.example.com"
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, restHit.Load()
+	}
+
+	code, reached := post("https://attacker.example.net")
+	if code != http.StatusForbidden {
+		t.Errorf("cross-origin POST %s = %d, want 403", terminal.SessionsPath, code)
+	}
+	if reached {
+		t.Error("cross-origin POST reached the session REST handler; CrossOriginProtection must refuse it")
+	}
+
+	// Same-origin must pass, or the assertion above is satisfied by a layer that refuses
+	// everything.
+	restHit.Store(false)
+	req := httptest.NewRequest(http.MethodPost, terminal.SessionsPath, nil)
+	req.Host = "term.example.com"
+	req.Header.Set("Origin", "http://term.example.com")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if !restHit.Load() {
+		t.Errorf("same-origin POST %s did not reach the REST handler (status %d); the CSRF layer must admit it", terminal.SessionsPath, rec.Code)
+	}
+}
+
+// TestNoDiagnosticRoutesOnThisSurface pins the route table's shape. The engine's mount
+// contract is that only its documented set appears, and this app adds exactly /healthz and
+// the static root, so no profiling or engine-internal path may answer on what is an
+// unauthenticated remote shell by default.
+//
+// The assertion is the POSITIVE observable — the probe resolves to the static catch-all —
+// because ServeMux reports a SUBTREE registration by its own pattern: a handler registered
+// at "/debug/" answers /debug/pprof while a pattern comparison still reads as a miss.
+func TestNoDiagnosticRoutesOnThisSurface(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	h := newTestHandler(t, config{}, &ready, nil)
+
+	for _, path := range []string{
+		"/debug/pprof/", "/debug/pprof/cmdline", "/debug/vars", "/metrics",
+		"/api/tools", "/api/health", "/api/kiro-cli/rescan",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		// The static handler owns "/", so an unregistered path is its 404 — never a 200
+		// from a diagnostic handler, and never a 405 from one that exists.
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404: something is answering on a path this surface must not expose", path, rec.Code)
+		}
+	}
+}
+
+// TestSessionSurfaceIsNeverCacheable pins that every response on the session surface
+// refuses storage. The id in a session URL is the /ws attach capability, so a cached
+// response — or a cached 404 whose KEY carries the id — leaves it readable from a shared
+// cache after the session is gone.
+//
+// The header comes from the libraries (webhttp.ReadinessHandler, and the engine's own
+// no-store wrapper over its REST mux and SSE stream), so this is a synchronizing check
+// against them rather than a restatement: a library regression or a consumer override
+// fails here on the bump PR.
+func TestSessionSurfaceIsNeverCacheable(t *testing.T) {
+	var ready webhttp.Ready
+	ready.Set(true)
+	h, err := newHandler(&config{}, stubHandler{}, terminal.NewSessionManager(
+		func(string) *terminal.Handler { return terminal.NewHandler([]string{"/bin/true"}) },
+	).RESTHandler(), stubHandler{}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, healthzPath},
+		{http.MethodGet, terminal.SessionsPath},
+		{http.MethodGet, terminal.SessionsPath + "/does-not-exist"},
+		{http.MethodDelete, terminal.SessionsPath + "/does-not-exist"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		cc := rec.Header().Get("Cache-Control")
+		if !strings.Contains(cc, "no-store") {
+			t.Errorf("%s %s (status %d) Cache-Control = %q, want it to carry no-store: the session id is an attach capability", tc.method, tc.path, rec.Code, cc)
+		}
+	}
+}
+
+// TestWarnIfPID1StaysSilentUnderAnInit pins the half of the PID-1 guard a test can reach:
+// with an init present this process is not PID 1, so nothing is warned. It is what
+// regresses if the condition is ever inverted.
+//
+// Not parallel: it replaces the process-global logger.
+func TestWarnIfPID1StaysSilentUnderAnInit(t *testing.T) {
+	if os.Getpid() == 1 {
+		t.Skip("the test binary IS pid 1 here, so the silent case is unreachable")
+	}
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	warnIfPID1()
+
+	if buf.Len() != 0 {
+		t.Errorf("warnIfPID1() warned while not running as PID 1: %s", buf.String())
 	}
 }

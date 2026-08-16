@@ -1,6 +1,6 @@
 // Command web-terminal-server is a thin, generic web terminal: it runs a
 // configured command in a PTY and serves the @cplieger/web-terminal-ui front
-// end over HTTP + WebSocket, using the github.com/cplieger/web-terminal-engine engine.
+// end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v3.
 //
 // SECURITY: this is a remote shell. Anyone who can reach the listen address
 // and pass auth (if any) gets an interactive process running WT_CMD with this
@@ -50,24 +50,18 @@ const (
 // the guard only protects the probe if it guards the path the probe calls.
 const healthzPath = "/healthz"
 
-// applyIntEnv parses an integer env var into *dst via envx.IntStrict, leaving
-// it unchanged when the var is unset or empty. It rejects a value below min
-// or a non-integer.
+// applyIntEnv parses an integer env var into *dst via envx.IntStrict, leaving it
+// unchanged when the var is unset or empty, and rejects a non-integer or a value below
+// min.
 //
-// Each rejection names what it actually rejected. A non-integer reads its value
-// off envx's *ParseError (v1.6.0), never from a second os.Getenv: that returns
-// the value UNTRIMMED, so it could report " 5x " while the parse that failed saw
-// "5x". A below-min value has no ParseError — it parsed fine — so the number
-// itself is the honest thing to name.
+// A rejection names the KEY and the accepted shape, never the value. This error is
+// rendered into main's one startup ERROR line, and a compose interpolation mistake can
+// put a credential on any variable, so echoing it would leave a durable queryable copy
+// in the log store (CWE-532). A below-min value already parsed, so the int itself is safe.
 func applyIntEnv(key string, minVal int, dst *int) error {
 	n, ok, err := envx.IntStrict(key)
 	if err != nil {
-		var perr *envx.ParseError
-		raw := ""
-		if errors.As(err, &perr) {
-			raw = perr.Value
-		}
-		return fmt.Errorf("%s must be an integer >= %d, got %q", key, minVal, raw)
+		return fmt.Errorf("%s must be an integer >= %d", key, minVal)
 	}
 	if ok && n < minVal {
 		return fmt.Errorf("%s must be an integer >= %d, got %d", key, minVal, n)
@@ -78,22 +72,15 @@ func applyIntEnv(key string, minVal int, dst *int) error {
 	return nil
 }
 
-// applyDurationEnv parses a Go duration env var into *dst via
-// envx.DurationStrict, leaving it unchanged when unset or empty. It rejects a
-// negative or unparseable duration.
-//
-// Same split as applyIntEnv: an unparseable value comes off the *ParseError, a
-// negative one names the parsed duration. String() is deliberate — %q on a
-// time.Duration renders a rune literal, since its underlying kind is int64.
+// applyDurationEnv parses a Go duration env var into *dst via envx.DurationStrict,
+// leaving it unchanged when unset or empty, and rejects a negative or unparseable
+// duration. Same name-only rejection as applyIntEnv, for the same reason. String() is
+// deliberate on the negative arm: %q on a time.Duration renders a rune literal, since its
+// underlying kind is int64, and a duration that already parsed cannot be a secret.
 func applyDurationEnv(key string, dst *time.Duration) error {
 	d, ok, err := envx.DurationStrict(key)
 	if err != nil {
-		var perr *envx.ParseError
-		raw := ""
-		if errors.As(err, &perr) {
-			raw = perr.Value
-		}
-		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, raw)
+		return fmt.Errorf("%s must be a non-negative Go duration", key)
 	}
 	if ok && d < 0 {
 		return fmt.Errorf("%s must be a non-negative Go duration, got %q", key, d.String())
@@ -105,21 +92,11 @@ func applyDurationEnv(key string, dst *time.Duration) error {
 }
 
 // applyBoolEnv parses a boolean env var into *dst via envx.BoolStrict, leaving it
-// unchanged when the var is unset or empty.
-//
-// Strict rather than "anything non-empty is true": this flag decides whether
-// terminal output is written to browser storage, so an operator who typed
-// WT_PERSIST_SCROLLBACK=flase deserves a startup error rather than a container
-// that quietly persists. Accepted spellings are envx's (true/1/yes/on and
-// false/0/no/off, case-insensitive).
-//
-// The library's error is returned verbatim, unlike applyIntEnv's and
-// applyDurationEnv's rewordings, and the difference is deliberate on both sides:
-// BoolStrict carries no fragment of the value (there is no parse error to wrap,
-// and a boolean key is one an operator could wire to a secret by mistake), which
-// is also this app's own posture everywhere it reports a bad env value — see the
-// field-name-only WT_LOG_LEVEL warning in main. It already names the key and the
-// accepted vocabulary, so rewording it here could only lose information.
+// unchanged when the var is unset or empty. Strict rather than "anything non-empty is
+// true": this flag decides whether terminal output is written to browser storage, so an
+// operator who typed WT_PERSIST_SCROLLBACK=flase deserves a startup error rather than a
+// container that quietly persists. The library's error is returned verbatim — it names
+// the key and the accepted vocabulary already, and carries no fragment of the value.
 func applyBoolEnv(key string, dst *bool) error {
 	v, ok, err := envx.BoolStrict(key)
 	if err != nil {
@@ -131,16 +108,13 @@ func applyBoolEnv(key string, dst *bool) error {
 	return nil
 }
 
-// parseTrustedProxies reads a comma-separated list of CIDRs / bare IPs from the
-// named env var into the trusted-proxy set the access log's client-IP resolver
-// consults (webhttp.WithClientIP -> ClientIP). It delegates the CIDR/bare-IP
-// parsing to the shared webhttp.ParseCIDRs helper.
+// parseTrustedProxies reads a comma-separated list of CIDRs / bare IPs from the named
+// env var into the trusted-proxy set the access log's client-IP resolver consults.
 //
-// It is intentionally LENIENT: a malformed entry is logged (named) at Warn and
-// skipped, and the valid subset is used, rather than aborting startup — one typo
-// in an operator's proxy list should not disable proxy awareness entirely. An
-// unset or empty var yields nil, i.e. "trust nothing", so ClientIP ignores
-// X-Forwarded-For and logs the spoof-proof socket peer.
+// Intentionally LENIENT: a malformed entry is logged and skipped and the valid subset
+// used, so one typo in an operator's proxy list cannot disable proxy awareness
+// entirely. It never fails open — unset yields nil, "trust nothing", which makes
+// ClientIP ignore X-Forwarded-For and log the unspoofable socket peer.
 func parseTrustedProxies(key string) []*net.IPNet {
 	v := os.Getenv(key)
 	if v == "" {
@@ -148,41 +122,33 @@ func parseTrustedProxies(key string) []*net.IPNet {
 	}
 	nets, invalid := webhttp.ParseCIDRs(strings.Split(v, ","))
 	if len(invalid) > 0 {
-		slog.Warn("ignoring malformed "+key+" entries",
-			"invalid", invalid,
+		// Count-only: a compose interpolation mistake can put a credential on any
+		// variable, and echoing the rejected entries would leave a durable copy in the
+		// log store (CWE-532). The hint is a FIXED string for the same reason.
+		slog.Warn("ignoring malformed "+key+" entries; using the valid proxy set",
+			"invalid_count", len(invalid),
 			"hint", "each entry must be a CIDR (e.g. 10.0.0.0/8) or a bare IP (e.g. 192.168.1.5)")
 	}
 	return nets
 }
 
-// parseAllowedHosts reads the comma-separated WT_ALLOWED_HOSTS list of exact
-// hostnames / IPs this server answers for into a webhttp.HostPolicy — the
-// shared exact-match Host allowlist that closes the DNS-rebinding hole
-// same-origin checks alone leave open (a rebinding attack makes Origin and
-// Host AGREE, so CrossOriginProtection admits it; only an exact-Host check
-// breaks that chain, CWE-346). The library owns the mechanism
-// (webhttp.CanonicalHost canonicalization, X-Forwarded-Host ignored, the
-// loopback peer+Host carve-out that keeps the image's own healthcheck and
-// same-host curls working under any allowlist); this parser owns the app
-// policy: the carve-out is enabled, the 403 names WT_ALLOWED_HOSTS, and
-// malformed entries are logged (named, like parseTrustedProxies) and dropped
-// per ParseHostList's drop-and-report contract.
-//
-// An unset or all-blank var yields an INACTIVE policy — "any Host accepted",
-// the backward-compatible default; main warns when that leaves the
-// unauthenticated posture open to rebinding. Any non-blank entry engages the
-// gate, so a var whose entries are ALL malformed (a pasted URL, a lone
-// ":7681") yields an active EMPTY policy: deny-all except the loopback
-// carve-out, failing closed rather than silently unprotected — warned here by
-// name, since every browser request would otherwise 403 with no hint why.
+// parseAllowedHosts reads the comma-separated WT_ALLOWED_HOSTS list of exact hostnames
+// / IPs this server answers for into a webhttp.HostPolicy. It closes the DNS-rebinding
+// hole a same-origin check alone leaves open: rebinding makes Origin and Host AGREE, so
+// CrossOriginProtection admits it (CWE-346). Unset yields an INACTIVE policy, the
+// backward-compatible default run warns about; entries that are ALL malformed yield an
+// active EMPTY policy — deny-all but the loopback carve-out, warned by name here since
+// every browser request would otherwise 403 with no hint why.
 func parseAllowedHosts(key string) *webhttp.HostPolicy {
 	policy, invalid := webhttp.ParseHostList(strings.Split(os.Getenv(key), ","),
 		webhttp.WithLoopbackExempt(),
 		webhttp.WithHostAllowlistError("host_not_allowed",
 			"host not allowed; add it to WT_ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
+		// Count-only, like parseTrustedProxies: a mis-expanded variable could put a
+		// credential in an entry, so the rejected values never reach the log.
 		slog.Warn("dropping malformed "+key+" entries; they cannot match any browser-sent Host",
-			"invalid", invalid,
+			"invalid_count", len(invalid),
 			"hint", "use bare hostnames or IPs only (no scheme, path, or CIDR), e.g. localhost,192.168.1.5,term.example.com; a lone port like :7681 belongs in WT_ADDR")
 	}
 	if policy.Active() && policy.Size() == 0 {
@@ -195,16 +161,12 @@ func parseAllowedHosts(key string) *webhttp.HostPolicy {
 // config holds the resolved server settings parsed from the WT_* environment.
 type config struct {
 	hostPolicy *webhttp.HostPolicy
-	// scrollback is the operator's retained-history depth, or nil when they set
-	// nothing — the handler is then built WITHOUT WithScrollbackCapacity and
-	// inherits the engine's default. This app holds no opinion on the depth: it
-	// is a sizing decision the engine documents at
-	// terminal.DefaultScrollbackCapacity, and three consumers each carrying a
-	// copy is how they drift apart.
-	//
-	// A POINTER so "unset" is the ZERO VALUE, which matters because tests build
-	// config{} by hand: 0 is a legal depth meaning "retain nothing", so an int
-	// sentinel would have made every bare config{} silently disable scrollback.
+	// scrollback is the operator's retained-history depth, or nil when they set nothing —
+	// the handler is then built WITHOUT WithScrollbackCapacity and inherits the engine's
+	// default, since the depth is shared with the sibling apps and a copy per app is how
+	// three consumers drift. A POINTER so "unset" is the ZERO VALUE: 0 is a legal depth
+	// meaning "retain nothing", so an int sentinel would silently disable scrollback in
+	// every config{} a test builds by hand.
 	scrollback     *int
 	addr           string
 	workDir        string
@@ -214,16 +176,15 @@ type config struct {
 	trustedProxies []*net.IPNet
 	idleReaper     time.Duration
 	// persistScrollback lets the browser keep each session's recent scrollback in
-	// localStorage, so a reloaded or browser-discarded tab resumes with a delta
-	// instead of refilling its whole buffer over the wire (the visible symptom on
-	// iOS, which evicts backgrounded tabs). ON by default; WT_PERSIST_SCROLLBACK is
-	// the opt-out, and static_persist.go carries what enabling it puts where.
+	// localStorage, so a reloaded or browser-discarded tab resumes with a delta instead of
+	// refilling its whole buffer over the wire (the visible symptom on iOS, which evicts
+	// backgrounded tabs). ON by default; static_persist.go carries the rest.
 	persistScrollback bool
 }
 
-// loadConfig parses and validates the WT_* environment into a config. It
-// returns an error rather than exiting so the caller owns the exit path (no
-// os.Exit while a defer is pending).
+// loadConfig parses and validates the WT_* environment into a config. It returns an
+// error rather than exiting because nothing below main may exit: run owns every failure
+// path and main owns the single exit.
 func loadConfig() (config, error) {
 	c := config{
 		addr:           envx.String("WT_ADDR", defaultAddr),
@@ -269,29 +230,87 @@ func loadConfig() (config, error) {
 		c.scrollback = &capacity
 	}
 	if c.workDir != "" {
-		// WT_WORKDIR is operator-supplied configuration (the directory the
-		// operator wants the shell to run in), not untrusted request input, so
-		// an arbitrary absolute path is expected and correct here.
+		// WT_WORKDIR is operator-supplied configuration, not untrusted request input, so an
+		// arbitrary absolute path is expected here.
 		fi, err := os.Stat(c.workDir) //nolint:gosec // G703 -- operator-controlled config path, not user input
-		if err != nil {
-			return config{}, fmt.Errorf("WT_WORKDIR missing: %w", err)
-		}
-		// Reject a non-directory up front: the engine sets cmd.Dir to this
-		// path, so a regular file would pass startup and only fail when the
-		// PTY child can't spawn on the first client connect.
-		if !fi.IsDir() {
+		switch {
+		// Three shapes with three remedies, kept apart because one message for all
+		// three tells an operator with an unreadable mount to add a mount that is
+		// already there.
+		case errors.Is(err, fs.ErrNotExist):
+			return config{}, fmt.Errorf("WT_WORKDIR does not exist: %q", c.workDir)
+		case err != nil:
+			return config{}, fmt.Errorf("WT_WORKDIR is not readable: %w", err)
+		// The engine sets cmd.Dir to this path, so a regular file would pass startup and
+		// fail only when the PTY child cannot spawn on the first client connect.
+		case !fi.IsDir():
 			return config{}, fmt.Errorf("WT_WORKDIR is not a directory: %q", c.workDir)
 		}
 	}
 	return c, nil
 }
 
+// main is the process's ONLY exit site. Everything else lives in run, which
+// reports failure by returning an error, so no startup branch can exit past a
+// pending defer and skip the deferred teardown.
 func main() {
-	// WT_LOG_LEVEL is parsed here, not in loadConfig: the level must be known
-	// BEFORE the handler installs so every later record (loadConfig errors
-	// included) emits at the configured level, and the parse-failure warning
-	// emits AFTER Setup through the configured handler (the slogx contract).
-	// A bad value is diagnosable-not-fatal: warn and run at info.
+	if err := run(); err != nil {
+		// Rendered once, here: the failure branches in run carry their operator hint
+		// inside the returned error, so a startup failure produces exactly one ERROR
+		// line. stage is what a log query keys on, and a stable VALUE beats prose names:
+		// prose is rewritten by any edit to the message, a stage token is not.
+		slog.Error("web-terminal-server exited with error", "stage", stageOf(err), "error", err)
+		os.Exit(1)
+	}
+}
+
+// The startup stages a failure can be attributed to. Values, not messages: these
+// are the strings an operator's log query or alert rule matches, so changing one
+// is a breaking change to the log surface.
+const (
+	stageConfig = "config" // the WT_* environment is invalid
+	stageStatic = "static" // the embedded static tree or its CSP is unusable
+	stageListen = "listen" // the listener could not bind
+	stageServe  = "serve"  // the HTTP server exited with an error
+	// stageUnknown is emitted for a failure nobody attributed, so the field is
+	// ALWAYS present: an absent field would make a query distinguish "no stage"
+	// from "no match", and a new failure path that forgets to attribute itself
+	// shows up as an explicit unknown rather than as silence.
+	stageUnknown = "unknown"
+)
+
+// stageError attributes a startup failure to a stage without changing what the
+// error says. It carries no message of its own precisely so the wrapped text stays
+// the operator's hint, unchanged.
+type stageError struct {
+	err   error
+	stage string
+}
+
+func (e *stageError) Error() string { return e.err.Error() }
+
+func (e *stageError) Unwrap() error { return e.err }
+
+// atStage attributes err to a stage.
+func atStage(stage string, err error) error {
+	return &stageError{stage: stage, err: err}
+}
+
+// stageOf reports the stage a failure was attributed to, or stageUnknown.
+func stageOf(err error) string {
+	var se *stageError
+	if errors.As(err, &se) {
+		return se.stage
+	}
+	return stageUnknown
+}
+
+// setupLogging installs the slog handler. WT_LOG_LEVEL is parsed here, not in
+// loadConfig: the level must be known BEFORE the handler installs so every later
+// record (loadConfig errors included) emits at the configured level, and the
+// parse-failure warning emits AFTER Setup through the configured handler (the
+// slogx contract). A bad value is diagnosable-not-fatal: warn and run at info.
+func setupLogging() {
 	logLevel, logLevelOK := slogx.ParseLevel(envx.String("WT_LOG_LEVEL", ""), slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: logLevel})
 	if !logLevelOK {
@@ -300,14 +319,22 @@ func main() {
 		slog.Warn("unparseable WT_LOG_LEVEL; using the info default",
 			"hint", "use debug, info, warn, or error")
 	}
+}
+
+// run is the composition root: it wires the session manager, the route table and
+// the HTTP server, then blocks on the signal-driven lifecycle. Keeping the body
+// here rather than in main is what lets the deferred teardown run on every
+// failure path.
+func run() error {
+	setupLogging()
 
 	cfg, err := loadConfig()
 	if err != nil {
-		slog.Error("invalid configuration", "error", err)
-		os.Exit(1)
+		return atStage(stageConfig, fmt.Errorf("invalid configuration: %w", err))
 	}
 
 	warnIfExposed(cfg.addr, cfg.password)
+	warnIfPID1()
 
 	// DNS rebinding rides the victim's BROWSER, so it reaches even a loopback
 	// or LAN bind — "keep it loopback" does not cover it. WT_PASSWORD blocks
@@ -318,14 +345,8 @@ func main() {
 			"hint", "set WT_ALLOWED_HOSTS to the exact hostnames/IPs you browse to (e.g. localhost,192.168.1.5,term.example.com), or set WT_PASSWORD")
 	}
 
-	// Each session gets its own PTY-backed handler; the factory scopes the
-	// handler's logger to the session id for per-session log correlation.
-	// The id is bound through terminal.LogID: it doubles as the /ws attach +
-	// resume capability token, so logging it whole would put a session-access
-	// credential into aggregated logs (CWE-532) — and WT_PASSWORD is optional,
-	// so in the documented unauthenticated posture the token alone is enough
-	// to attach. LogID is the engine's own definition of how much of it may be
-	// logged (8-byte prefix + ellipsis), test-pinned there.
+	// Each session gets its own PTY-backed handler; sessionFactory carries what the
+	// per-session logger may say about the session id.
 	mgrOpts := []terminal.ManagerOption{
 		terminal.WithManagerLogger(slog.Default()),
 	}
@@ -334,42 +355,38 @@ func main() {
 	}
 	mgr := terminal.NewSessionManager(sessionFactory(&cfg), mgrOpts...)
 
-	// webhttp.Ready is the shared serving-state flag (zero value = not ready);
-	// main owns its lifecycle, flipping it true after bind and false on the
-	// shutdown signal. It is passed straight to webhttp.ReadinessHandler, so no
-	// local adapter is needed.
+	// webhttp.Ready is the shared serving-state flag (zero value = not ready). run owns
+	// its lifecycle, flipping it true after bind and false on the shutdown signal.
 	var ready webhttp.Ready
 
 	handler, err := newHandler(&cfg, mgr.WebSocketHandler(), mgr.RESTHandler(), mgr.EventsHandler(), &ready)
 	if err != nil {
-		slog.Error("static assets unavailable", "error", err)
-		os.Exit(1)
+		// The remedy rides inside the error because main renders exactly one ERROR line.
+		// This stage is a BUILD defect rather than a runtime setting, which is the one
+		// thing an operator reading it needs to know: no env change can fix it.
+		return atStage(stageStatic, fmt.Errorf("static assets unavailable: %w"+
+			" (a build defect, not a setting: the embedded static/index.html must carry at least one inline <script>,"+
+			" exactly one inline <style>, and exactly one wt-persist-scrollback meta marker."+
+			" Rebuild the image, or run scripts/dev-build.sh for a local tree."+
+			" The container will crash-loop under its restart policy until it is rebuilt)", err))
 	}
 
-	// webhttp.NewServer supplies the streaming-safe defaults: ReadHeaderTimeout
-	// 10s, IdleTimeout 120s, MaxHeaderBytes 1 MiB, and ReadTimeout/WriteTimeout
-	// left unset. Leaving Read/WriteTimeout unset is required, not incidental:
-	// either would cap the lifetime of the hijacked /ws WebSocket stream.
-	//
-	// WithSlogErrorLog routes net/http's OWN connection-level lines — above all
-	// "http: Accept error: ...; retrying", the trace of an exhausted fd budget
-	// that no request-scoped line reports — into slog at Error instead of the
-	// level-less standard logger no level-based log rule can match. Error is
-	// this app's policy call: the process exists only to serve the terminal, so
-	// an accept loop that cannot accept is an outage, not a degradation. The
-	// option resolves slog.Default() as NewServer applies it, so the slogx.Setup
-	// at the top of main must already have run — it has. It replaces the
-	// hand-rolled slog.NewLogLogger recipe three consumers had each written out.
+	// webhttp.NewServer supplies the streaming-safe defaults: ReadHeaderTimeout 10s,
+	// IdleTimeout 120s, MaxHeaderBytes 1 MiB, and Read/WriteTimeout left unset — required,
+	// since either would cap the lifetime of the hijacked /ws stream. WithSlogErrorLog
+	// routes net/http's own connection-level lines, above all the "Accept error" trace of
+	// an exhausted fd budget that no request-scoped line reports, into slog at Error: the
+	// process exists only to serve the terminal, so an accept loop that cannot accept is
+	// an outage. It resolves slog.Default() as applied, so setupLogging must precede it.
 	srv := webhttp.NewServer(handler,
 		webhttp.WithSlogErrorLog(slog.LevelError),
 	)
 
-	// BaseContext hands every request a context main can cancel on shutdown:
-	// the always-open /api/sessions/events SSE handler returns only on
-	// r.Context().Done(), and srv.Shutdown does not interrupt an active
-	// stream, so cancelling baseCtx is what unblocks the drain instead of
-	// holding it for the full grace window whenever a browser tab is open.
-	// (Ported from web-terminal-kiro, which grew this for exactly this reason.)
+	// BaseContext hands every request a context run can cancel on shutdown: the
+	// always-open /api/sessions/events SSE handler returns only on r.Context().Done()
+	// and srv.Shutdown never interrupts an active stream, so cancelling baseCtx is what
+	// unblocks the drain instead of holding it for the full grace window whenever a
+	// browser tab is open.
 	baseCtx, cancelBase := context.WithCancel(context.Background())
 	defer cancelBase()
 	srv.BaseContext = func(net.Listener) context.Context { return baseCtx }
@@ -380,10 +397,7 @@ func main() {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.addr)
 	if err != nil {
-		slog.Error("listen failed", "addr", cfg.addr, "error", err)
-		stop()
-		cancelBase()
-		os.Exit(1) //nolint:gocritic // stop() and cancelBase() called explicitly above; the defers are no-op safety nets
+		return atStage(stageListen, fmt.Errorf("listen on %s: %w", cfg.addr, err))
 	}
 
 	// The effective retained-history depth, resolved for the log: an operator
@@ -399,13 +413,11 @@ func main() {
 		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
 	ready.Set(true)
 
-	// webhttp.Run serves on the pre-bound listener and, on ctx cancellation,
-	// runs the pre-drain hook, drains within the grace window, then runs the
-	// teardown (session manager shutdown). The pre-drain hook flips readiness
-	// false and cancels in-flight request contexts before the drain starts, so
-	// /healthz reports 503 during the drain window and the open SSE streams
-	// unblock (see the BaseContext comment above). A runtime serve failure
-	// returns a non-nil error.
+	// webhttp.Run serves on the pre-bound listener and, on ctx cancellation, runs the
+	// pre-drain hook, drains within the grace window, then runs the teardown. The
+	// pre-drain hook flips readiness false and cancels in-flight request contexts
+	// before the drain starts, so /healthz reports 503 during the window and the open
+	// SSE streams unblock (see BaseContext above).
 	if err := webhttp.Run(ctx, srv, ln, func(context.Context) { mgr.Shutdown() },
 		webhttp.WithShutdownGrace(5*time.Second),
 		webhttp.WithPreDrain(func(context.Context) {
@@ -413,277 +425,250 @@ func main() {
 			cancelBase()
 			slog.Info("shutting down", "cause", context.Cause(ctx))
 		})); err != nil {
-		slog.Error("http server exited", "error", err)
+		// webhttp.Run does NOT run its teardown on a fatal serve error (it returns
+		// before the graceful sequence), so this is the only mgr.Shutdown on this
+		// path rather than a duplicate of the deferred one.
 		mgr.Shutdown()
-		stop()
-		os.Exit(1)
+		return atStage(stageServe, fmt.Errorf("http server exited: %w", err))
 	}
 	slog.Info("web-terminal-server stopped")
+	return nil
 }
 
-// newHandler assembles the HTTP handler: the route mux (terminal WebSocket,
-// session REST API, status SSE, health, static files) wrapped in the middleware
-// chain via webhttp.Chain. Middleware, outermost first: request logging
-// (webhttp.Logging) -> panic recovery -> security headers -> host allowlist
-// (if configured) -> failed-auth throttle (if configured) -> basic auth
-// (if configured) -> cross-origin protection -> canonical-path guard ->
-// routes. The session handlers are
-// passed in (rather than a manager constructed here) so tests can exercise the
-// routing and middleware with stubs, without a real PTY. ready gates /healthz
-// so load balancers see
-// the server as unavailable during startup and graceful shutdown. It returns an
-// error if the embedded static assets can't be opened or the CSP can't be built
-// from index.html.
+// newHandler assembles the HTTP handler: the route mux (terminal WebSocket, session
+// REST API, status SSE, health, static files) wrapped in the middleware chain via
+// webhttp.Chain, outermost first — logging, panic recovery, security headers, host
+// allowlist, failed-auth throttle, basic auth, cross-origin protection,
+// canonical-path guard, routes. The session handlers are passed in rather than
+// constructed here so a test can exercise routing and middleware with stubs and no
+// real PTY. ready gates /healthz. It returns an error when the embedded static assets
+// cannot be opened or the CSP cannot be built from index.html.
 func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready) (http.Handler, error) {
 	mux := http.NewServeMux()
-	// The engine owns its route topology: MountSessionRoutes wires exactly its
-	// documented set — /ws, /api/sessions (+ subtree), /api/sessions/events —
-	// and nothing else, so no engine-internal route can appear on this network
-	// surface unannounced. The create gate rides webhttp's shared
-	// session-create preset (burst 6, 1/s refill, standard 429 envelope), so a
-	// bare (possibly unauthenticated) caller cannot fork PTY processes without
-	// bound and this app cannot drift from web-terminal-kiro on tuning, path,
-	// or envelope: the topology lives in the engine, the throttle policy in
-	// webhttp, and this app just composes the two.
+	// The engine owns its route topology: MountSessionRoutes wires exactly its documented
+	// set — /ws, /api/sessions (+ subtree), /api/sessions/events — so no engine-internal
+	// route can reach this network surface unannounced. The create gate rides webhttp's
+	// shared session-create preset (burst 6, 1/s refill), so a bare and possibly
+	// unauthenticated caller cannot fork PTY processes without bound.
 	terminal.MountSessionRoutes(mux, ws, rest, events,
 		terminal.WithCreateGate(webhttp.SessionCreateRateLimit(terminal.SessionsPath)))
-	// Serving-state gate for a load balancer: 200 {"status":"ok"} when ready,
-	// 503 {"status":"unready",...} during startup/shutdown. main owns the flag
-	// lifecycle (set true after bind, false on shutdown); *webhttp.Ready
-	// satisfies webhttp.ReadinessChecker directly, so it is passed straight in.
-	// This /healthz readiness gate is deliberately DISTINCT from a process
-	// liveness marker: this app has no health-library file-marker, so /healthz
-	// is its sole health endpoint (also the Docker HEALTHCHECK target).
+	// Serving-state gate for a load balancer: 200 when ready, 503 during startup and
+	// shutdown. run owns the flag lifecycle. This app has no health-library file marker,
+	// so /healthz is its sole health endpoint and the Docker HEALTHCHECK target.
 	mux.Handle(healthzPath, webhttp.ReadinessHandler(ready))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
 	}
-	// Apply the one server fact the front end reads (WT_PERSIST_SCROLLBACK) BEFORE
-	// either consumer below sees the tree, so the static handler's ETag and gzip
-	// body and the CSP's script hash are all computed over the bytes the browser
-	// actually receives. Fails loud on a build that lost the marker.
+	// Apply the one server fact the front end reads BEFORE either consumer below sees the
+	// tree, so the static handler's ETag and gzip body and the CSP's script hash are all
+	// computed over the bytes the browser receives. Fails loud on a lost marker.
 	sub, err = applyPersistFlag(sub, cfg.persistScrollback)
 	if err != nil {
 		return nil, fmt.Errorf("apply WT_PERSIST_SCROLLBACK: %w", err)
 	}
-	// webhttp.StaticHandler supplies the embedded-static mechanism this app
-	// used to hand-roll: per-file content-hash ETags (embed.FS reports a zero
-	// ModTime, so http.FileServer alone emits no validator and every load
-	// re-downloads the bundle), precomputed gzip for assets that shrink, and
-	// Vary: Accept-Encoding. The default "no-cache" policy is this app's
-	// policy: the vendored asset paths are stable (not content-hashed), so
-	// every load revalidates (cheap 304) rather than trusting a TTL that would
-	// serve stale JS after an engine/UI version bump.
-	staticSrv, err := webhttp.StaticHandler(sub)
+	// webhttp.StaticHandler supplies the embedded-static mechanism this app used to
+	// hand-roll: per-file content-hash ETags (embed.FS reports a zero ModTime, so
+	// http.FileServer alone emits no validator and every load re-downloads the bundle),
+	// precomputed gzip, and Vary: Accept-Encoding. The cache POLICY stays this app's.
+	staticSrv, err := webhttp.StaticHandler(sub, webhttp.WithStaticCacheControl(staticCacheControl))
 	if err != nil {
 		return nil, err
 	}
 	mux.Handle("/", staticSrv)
 
-	// Build the CSP once from the embedded index.html so the sha256 tokens
-	// pinned in script-src always match the inline scripts the browser runs
-	// (no hand-maintained hash constant). FAIL LOUD: a malformed build —
-	// missing/unreadable index.html or zero inline scripts — aborts startup
-	// here rather than silently dropping the script-src hardening.
+	// Build the CSP once from the embedded index.html so the sha256 tokens pinned in
+	// script-src always match the inline scripts the browser runs. FAIL LOUD: a
+	// malformed build aborts startup here rather than silently dropping the hardening.
 	cspPolicy, err := buildCSPPolicy(sub)
 	if err != nil {
 		return nil, fmt.Errorf("build CSP: %w", err)
 	}
 
-	// basicAuth is app policy, applied only when a password is configured. As a
-	// webhttp.Middleware it slots into the Chain just inside the security
-	// headers (so a 401 still carries them) and outside cross-origin protection;
-	// a nil entry is skipped by Chain when no password is set.
-	//
-	// The failed-auth throttle in front of it is built from the SAME gate, so
-	// the two read one verdict about one parse of the Authorization header (see
-	// basicAuthGate). Both are left nil in the unauthenticated posture: with no
-	// WT_PASSWORD there are no credentials to fail, so there is nothing to
-	// throttle, and Chain skips a nil entry. That is deliberately how "inert"
-	// is expressed — the middleware and its token bucket are not CONSTRUCTED at
-	// all, rather than built and then bypassed by a predicate that always
-	// returns false. It mirrors how basicAuth itself has always expressed
-	// "absent", it leaves no live bucket in a process that can never draw from
-	// it, and it makes the no-auth path byte-identical to before this control
-	// existed instead of merely behaviourally equal.
+	// basicAuth is app policy, applied only when a password is configured: as a
+	// webhttp.Middleware it slots into the Chain just inside the security headers, so a
+	// 401 still carries them. The throttle in front of it is built from the SAME gate, so
+	// the two read one verdict about one parse of the Authorization header. Both stay nil
+	// without WT_PASSWORD — nothing is CONSTRUCTED rather than built and then bypassed by
+	// a predicate that always returns false, and Chain skips a nil entry.
 	var authMW, authThrottleMW webhttp.Middleware
 	if cfg.password != "" {
 		gate := newBasicAuthGate(cfg.username, cfg.password)
-		// webhttp.FailedAuthRateLimit (burst 10, one token per 6s, code
-		// "too_many_auth_failures") bounds the guessing RATE against the single
-		// static WT_PASSWORD. Without it every route sits behind a credential
-		// check that answers in microseconds and nothing above it counts
-		// attempts: SessionCreateRateLimit is further in AND only gates POST
-		// /api/sessions, so a wrong password never reaches it, and a guessing
-		// run against a remote shell proceeds as fast as the network allows.
-		// Ten immediate attempts still absorb an operator retrying a rotated
-		// credential by hand; sustained guessing drops to ten a minute.
-		//
-		// Only a request the gate is about to REFUSE draws a token, so a valid
-		// credential is never throttled — not even mid-flood, which is what
-		// keeps the baked healthcheck (it sends WT_USERNAME/WT_PASSWORD) and a
-		// legitimate browser working while an attacker is being throttled.
+		// webhttp.FailedAuthRateLimit (burst 10, one token per 6s) bounds the guessing
+		// RATE against the single static WT_PASSWORD. Without it every route sits behind
+		// a credential check answering in microseconds and nothing above it counts
+		// attempts: SessionCreateRateLimit is further in AND gates only POST
+		// /api/sessions, so a wrong password never reaches it. Only a request the gate is
+		// about to REFUSE draws a token, so a valid credential is never throttled, which
+		// is what keeps the baked healthcheck and a real browser working mid-flood.
 		authThrottleMW = webhttp.FailedAuthRateLimit(
 			func(r *http.Request) bool { return !gate.presentsValidCredentials(r) },
 			"too many failed authentication attempts; check the credentials in WT_USERNAME/WT_PASSWORD")
 		authMW = gate.middleware
 	}
 
-	// Assemble the stack with webhttp.Chain (first listed = outermost) rather
-	// than hand-nesting. Order matches the fleet canonical Logging -> Recoverer
-	// -> SecurityHeaders, with the app's basic-auth and cross-origin layers
-	// innermost:
-	//   - webhttp.Logging sits outermost so its access line records the final
-	//     status, including a Recoverer-written 500. WithClientIP adds the
-	//     spoof-proof "client_ip" attribute, resolved against the operator's
-	//     WT_TRUSTED_PROXIES set (cfg.trustedProxies). With that set empty/unset
-	//     — the default — no X-Forwarded-For is honored and the attribute is the
-	//     socket peer host (the direct client on loopback, or the fronting
-	//     proxy), spoof-safe. Behind a reverse proxy, set WT_TRUSTED_PROXIES to
-	//     the proxy's CIDR(s) so the access log shows the real client.
-	//     ProbeLogLevel(healthzPath) keeps the routine Docker-probe line at
-	//     Debug and surfaces a failing probe at Warn/Error, and WithSkipUpgrades
-	//     drops the line a completed /ws upgrade would emit at socket close
-	//     while keeping every handshake refusal (rationale at the option).
-	//   - webhttp.Recoverer turns a downstream panic into a logged 500; inside
-	//     Logging so the recovered request logs its 500, not the default 200.
-	//   - webhttp.SecurityHeaders applies nosniff + the app's hash-pinned CSP
-	//     (preserved byte-for-byte via WithCSP) plus the library baseline
-	//     X-Frame-Options: DENY and Referrer-Policy (consistent with the CSP's
-	//     frame-ancestors 'none' — this UI is never framed).
-	//   - cfg.hostPolicy.Middleware — the WT_ALLOWED_HOSTS exact-host check
-	//     (see parseAllowedHosts for the DNS-rebinding rationale). Placed
-	//     before basicAuth so an unauthorized host is rejected 403 before any
-	//     credential evaluation, and before CrossOriginProtection because
-	//     rebinding makes Origin and Host agree, so the origin check alone
-	//     cannot reject it. An inactive policy (env unset/blank) collapses to
-	//     a pass-through per the library's off-contract.
-	//   - authThrottleMW (when configured) — the failed-auth token bucket,
-	//     placed directly in FRONT of basicAuth so a credential flood is
-	//     answered 429 before the gate answers 401. It sits INSIDE Logging on
-	//     purpose: slog is this app's only observability channel (no metrics
-	//     endpoint), and it already refuses to silence refusals anywhere else
-	//     in this stack, so the 429 must be greppable with its request id and
-	//     client_ip. Outside Logging it would additionally suppress the
-	//     one-line-per-attempt access flood, at the price of a throttle that
-	//     fires invisibly on a remote shell — the wrong half of that trade
-	//     here. It stays inside the host gate so a disallowed Host is a 403
-	//     that never spends a token: a rebinding probe is not a credential
-	//     attempt, and letting it drain the bucket would let an attacker
-	//     throttle the real operator.
-	//   - basicAuth (when configured) then http.CrossOriginProtection guard the
-	//     routes — with ONE gap worth stating, because the wording used to
-	//     imply otherwise: CrossOriginProtection.Check returns early for GET,
-	//     HEAD and OPTIONS as safe methods, and a WebSocket handshake is a GET.
-	//     So this layer never inspects the /ws upgrade, and the cross-origin
-	//     gate on the terminal socket is entirely the engine's — coder/
-	//     websocket's same-origin default, widened only by an explicit engine
-	//     origin policy. Do not treat the CSRF middleware as covering /ws.
-	//   - canonicalPathGuard is INNERMOST, wrapping the mux directly: it must
-	//     see the path the mux is about to route, and nothing above it needs
-	//     the verdict. Being last also means an unauthenticated or
-	//     cross-origin caller is answered 401/403 and never learns anything
-	//     about route spelling. Its scope is deliberately narrow — see the
-	//     function for which prefixes and why the static mount is excluded.
-	//
-	// /healthz logging: the every-30s HEALTHCHECK probe rides the
-	// fleet-standard ProbeLogLevel — healthy probes at Debug (out of the
-	// shipped stream, visible under WT_LOG_LEVEL=debug), a failing probe
-	// (the drain-window 503) at Warn/Error. Replaces the WithSkipPaths
-	// idiom, which hid the failure signal along with the noise (and before
-	// that the app-side accessLog's unconditional Debug line).
+	// Assembled with webhttp.Chain, first listed = outermost, nil entries skipped. The
+	// order is the fleet canonical Logging -> Recoverer -> SecurityHeaders with this app's
+	// auth and cross-origin layers innermost. Recoverer sits inside Logging so a recovered
+	// request logs its 500 rather than the default 200. WithClientIP resolves the
+	// spoof-proof client_ip against cfg.trustedProxies; unset, no X-Forwarded-For is
+	// honoured and the attribute is the socket peer. ProbeLogLevel keeps the HEALTHCHECK
+	// line at Debug and raises a FAILING probe to Warn/Error, which a path skip hid.
 	handler := webhttp.Chain(mux,
 		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.ProbeLogLevel(healthzPath), webhttp.WithClientIP(cfg.trustedProxies...),
-			// Every /api/sessions/{id}... route embeds the FULL session id — the
-			// /ws attach capability token the engine itself declares
-			// log-sensitive (session_manager.go logID). Their access lines are
-			// KEPT, with the recorded path rewritten to the route template the
-			// mux actually matched, so a live token never reaches log-read
-			// consumers; a path under the subtree that routes nowhere records
-			// "/api/sessions/(unmatched)" rather than the raw path. The
-			// exact-path create/list lines and the /api/sessions/events SSE line
-			// are their own registered patterns, so they keep their real path.
-			//
-			// The prefix comes from the engine, which DECLARES these routes and
-			// already treats the id as a credential, and the template comes from
-			// r.Pattern -- so a route the engine adds in a future version logs
-			// correctly with no change here. This replaced a local transform that
-			// re-derived the engine's route table by string-parsing the path.
-			// web-terminal-kiro had written the same transform independently and
-			// the two had already DIVERGED on the unmatched case (it returned the
-			// empty string, indistinguishable from a broken policy; this one
-			// returned an "(unmapped)" marker), which is why the decision now
-			// lives once in webhttp instead of once per app.
+			// Every /api/sessions/{id}... route embeds the FULL session id, the /ws attach
+			// capability token the engine itself declares log-sensitive. Those access lines are
+			// KEPT, with the recorded path rewritten to the route template the mux matched, so a
+			// live token never reaches a log-read consumer; a path under the subtree that routes
+			// nowhere records "(unmatched)". The prefix comes from the engine, which DECLARES
+			// these routes, and the template from r.Pattern, so a route added later logs
+			// correctly with no change here.
 			webhttp.WithTemplatePathsUnder(terminal.SessionsSubtreePath),
-			// A COMPLETED /ws upgrade gets no access line. The handshake ends the
-			// HTTP exchange rather than completing it (coder/websocket records 101
-			// through the ResponseWriter, then hijacks), so the only line that
-			// could be emitted arrives when the socket finally closes — hours
-			// later, carrying a session-length duration and a status net/http
-			// never sent, describing a response that no longer exists.
-			//
-			// WithSkipUpgrades reads that fact from the RESPONSE (a recorded 101,
-			// or a hijack taken with nothing recorded) instead of predicting from
-			// the request which /ws calls will upgrade, so every handshake
-			// REFUSAL on the same route KEEPS its record with its real status,
-			// duration, request id and client_ip: the uniform 426 that makes /ws
-			// unprobeable, a 400 on a malformed Sec-WebSocket-Key, the
-			// CrossOriginProtection 403, the basicAuth 401. Those are the lines
-			// an operator greps when a browser cannot attach, which is why this
-			// is not WithSkipPaths("/ws") — a path skip is decided before the
-			// handler runs and would take the refusals with it.
-			//
-			// It covers upgrades only, deliberately: /api/sessions/events is an
-			// ordinary 200 that streams, so its line is still emitted at stream
-			// close and still tells the truth about the status that was sent.
+			// A COMPLETED /ws upgrade gets no access line: the handshake ends the HTTP exchange
+			// rather than completing it, so the only line emittable arrives at socket close,
+			// hours later, carrying a session-length duration and a status net/http never sent.
+			// WithSkipUpgrades reads that off the RESPONSE, so every handshake REFUSAL keeps its
+			// record — the uniform 426, a malformed-key 400, the CrossOriginProtection 403, the
+			// basicAuth 401 — which is why this is not WithSkipPaths("/ws"): a path skip is
+			// decided before the handler runs and would take the refusals with it.
 			webhttp.WithSkipUpgrades(),
 		),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
-		webhttp.SecurityHeaders(webhttp.WithCSP(cspPolicy)),
+		// One record per /ws UPGRADE attempt, outside the host gate so a rejected Host
+		// still leaves one. See wsAttachLog: without it the request that PRESENTS the
+		// session capability token is the only request here with no record at all.
+		wsAttachLog(cfg.trustedProxies),
+		webhttp.SecurityHeaders(
+			webhttp.WithCSP(cspPolicy),
+			// COOP severs window.opener for any cross-origin page a session opens. The
+			// terminal renders clickable OSC 8 hyperlinks straight out of untrusted child
+			// output — WT_CMD is arbitrary — so a session can be induced to open an attacker
+			// page; the vendored UI already sets rel="noopener noreferrer", and this header
+			// plus the tightened Referrer-Policy make that guarantee independent of the
+			// Renovate-bumped UI pin. COOP and the Permissions-Policy features are
+			// secure-context-gated, so inert on a plain-HTTP LAN bind; Referrer-Policy is not.
+			webhttp.WithCOOP("same-origin"),
+			webhttp.WithReferrerPolicy("same-origin"),
+			webhttp.WithPermissionsPolicy("camera=(), microphone=(), geolocation=()"),
+		),
+		// The exact-Host check (rationale at parseAllowedHosts) precedes basicAuth so a
+		// disallowed host never reaches credential evaluation, and precedes
+		// CrossOriginProtection because rebinding makes Origin and Host agree, so the
+		// origin check alone cannot reject it. An inactive policy is a pass-through.
 		cfg.hostPolicy.Middleware(),
+		// Directly in FRONT of basicAuth, so a credential flood is answered 429 before the
+		// gate answers 401 — but INSIDE Logging, because slog is this app's only
+		// observability channel and a throttle that fires invisibly on a remote shell is
+		// the wrong trade, and inside the host gate, so a rebinding probe cannot drain the
+		// bucket and throttle the real operator.
 		authThrottleMW,
 		authMW,
+		// ONE gap worth stating: CrossOriginProtection.Check returns early for GET, HEAD
+		// and OPTIONS as safe methods, and a WebSocket handshake is a GET. So this layer
+		// never inspects the /ws upgrade, and the cross-origin gate on the terminal socket
+		// is entirely the engine's (coder/websocket's same-origin default, widened only by
+		// an explicit engine origin policy). Do not read this as covering /ws.
 		http.NewCrossOriginProtection().Handler,
+		// Innermost, wrapping the mux directly: it must see the path the mux is about to
+		// route, and nothing above it needs the verdict. Being last also means an
+		// unauthenticated or cross-origin caller is answered 401/403 and learns nothing
+		// about route spelling.
 		canonicalPathGuard(healthzPath, terminal.SessionsPath),
 	)
 	return handler, nil
 }
 
-// sessionFactory returns the per-session handler factory the session manager
-// calls for each new session: a PTY-backed handler scoped to cfg's command,
-// scrollback, and workdir, with a logger carrying the session id for
-// correlation.
-//
-// The id is bound through terminal.LogID rather than raw: it doubles as the
-// /ws attach + resume capability token, so logging it whole would put a
-// session-access credential into aggregated logs (CWE-532) — and WT_PASSWORD
-// is optional, so in the documented unauthenticated posture the token alone is
-// enough to attach. LogID is the engine's own definition of how much of a
-// session id may be logged (8-byte prefix + ellipsis), test-pinned there.
-//
-// Extracted from main so that boundary is reachable from a test; it was inline
-// (and logging the full id) until an audit found the leak.
+// staticCacheControl is the per-asset Cache-Control policy handed to
+// webhttp.StaticHandler, which supplies the ETag and gzip mechanism (asset paths arrive
+// normalized, with no leading slash). Everything but the fonts revalidates on every load:
+// the vendored asset paths are stable rather than content-hashed, so a TTL there would
+// serve stale JS after an engine/UI bump. Fonts get 30 days but NOT `immutable`,
+// deliberately — their @font-face URLs use fixed names, so the bytes change under one
+// filename on a Monaspace bump and a reload must still revalidate against the ETag.
+func staticCacheControl(assetPath string) string {
+	if strings.HasPrefix(assetPath, "vendor/fonts/") {
+		return "public, max-age=2592000"
+	}
+	return "no-cache, must-revalidate"
+}
+
+// wsAttachMsg is the /ws attach record's message, named so a test can pin it without a
+// second copy of the literal drifting from this one.
+const wsAttachMsg = "terminal attach attempt"
+
+// wsAttachLog records one line per /ws UPGRADE attempt. The access logger skips admitted
+// streams (WithSkipUpgrades) and neither the engine's WebSocketHandler nor the per-session
+// Handler logs an attach, so without this the request that PRESENTS the session capability
+// token is the only request to this server with no record at all: a leaked id could be
+// replayed with nothing to show an operator afterwards (CWE-778). Logged at request start,
+// so a rejected Host or an unknown-session close is recorded too, and the caller-chosen
+// session param is bound through terminal.LogID rather than logged raw.
+func wsAttachLog(trustedProxies []*net.IPNet) webhttp.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == terminal.WSPath && isWebSocketUpgrade(r) {
+				slog.Info(wsAttachMsg,
+					"session", terminal.LogID(r.URL.Query().Get("session")),
+					"client_ip", webhttp.ClientIP(r, trustedProxies...),
+					"request_id", webhttp.RequestIDFromContext(r.Context()))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// isWebSocketUpgrade is wsAttachLog's ATTEMPT predicate, a different question from the
+// access log's: that one asks whether a request ENDED as a stream, after the fact. This
+// asks whether a request is trying to attach, BEFORE the handshake runs, because the
+// session capability token is in the query string and every attempt that looks like an
+// attach must leave its audit record even when the handshake is malformed. An outcome
+// cannot replace it: by then the request that presented the token may already be refused.
+func isWebSocketUpgrade(r *http.Request) bool {
+	return headerHasToken(r, "Upgrade", "websocket") &&
+		headerHasToken(r, "Connection", "upgrade")
+}
+
+// headerHasToken reports whether a comma-separated header names token, case-insensitively.
+func headerHasToken(r *http.Request, name, token string) bool {
+	for _, v := range r.Header.Values(name) {
+		for opt := range strings.SplitSeq(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(opt), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sessionFactory returns the per-session handler factory the session manager calls for
+// each new session: a PTY-backed handler scoped to cfg's command, scrollback and workdir.
+// The id is bound through terminal.LogID rather than raw because it doubles as the /ws
+// attach and resume capability token, so logging it whole would put a session-access
+// credential into aggregated logs (CWE-532) — and WT_PASSWORD is optional, so in the
+// documented unauthenticated posture the token alone is enough to attach.
 func sessionFactory(cfg *config) func(string) *terminal.Handler {
 	return func(id string) *terminal.Handler {
-		// terminal.WithInputTitle is deliberately NOT set. It names a session after
-		// the first line typed into it, which fits a session-per-conversation agent
-		// shell (web-terminal-kiro enables it) and not a general-purpose terminal:
-		// here a session is a shell you run many unrelated commands in, so the
-		// engine's foreground-process/cwd ladder is the better automatic label and
-		// the shell's own OSC title is usually meaningful. A user who wants a fixed
-		// name renames the tab (PUT /api/sessions/{id}/pinned-title), which
-		// outranks every automatic source.
+		// terminal.WithInputTitle is deliberately NOT set. It names a session after the
+		// first line typed into it, which fits a session-per-conversation agent shell and
+		// not a general-purpose terminal: here a session is a shell you run many unrelated
+		// commands in, so the engine's foreground-process/cwd ladder is the better
+		// automatic label and the shell's own OSC title is usually meaningful. A user who
+		// wants a fixed name renames the tab, which outranks every automatic source.
 		opts := []terminal.Option{
 			terminal.WithLogger(slog.Default().With("session", terminal.LogID(id))),
-			// Keep the colours an arbitrary WT_CMD paints legible on the UI's
-			// near-black background. A program picks a palette SLOT (SGR 34 for
-			// blue) and cannot know what RGB this terminal resolves it to, so the
-			// terminal is the only layer that can hold a legibility floor. 4.5 is
-			// the WCAG AA floor for body text and VS Code's default for its
-			// integrated terminal. Backgrounds and default foregrounds are never
-			// touched, so a consumer's own theme keeps control of --bg and --text.
+			// The engine logs the child's full argv at process start. WT_CMD is
+			// operator-supplied and whitespace-split, and the README's own guidance sends
+			// complex invocations through it, so an argv carrying a token is plausible —
+			// once per SESSION into aggregated logs (CWE-532). The startup line stays the
+			// one authoritative record of what this container runs.
+			terminal.WithCommandLogValue("[redacted]"),
+			// Keep the colours an arbitrary WT_CMD paints legible on the UI's near-black
+			// background. A program picks a palette SLOT (SGR 34 for blue) and cannot know
+			// what RGB this terminal resolves it to, so the terminal is the only layer that
+			// can hold a legibility floor. 4.5 is the WCAG AA floor for body text.
+			// Backgrounds and default foregrounds are never touched, so a consumer's own
+			// theme keeps control of --bg and --text.
 			terminal.WithMinimumContrast(4.5),
 		}
 		// Omitted, not defaulted, when the operator said nothing: the engine's
@@ -699,15 +684,28 @@ func sessionFactory(cfg *config) func(string) *terminal.Handler {
 	}
 }
 
-// warnIfExposed logs a prominent warning when the server is reachable beyond
-// the loopback interface without authentication — i.e. an unauthenticated
-// remote shell. Bind loopback (the default) or set WT_PASSWORD, or front it
-// with an authenticating reverse proxy.
+// warnIfPID1 reports that no container init is present, which is detectable here in one
+// comparison. Orphan reaping is the init's job, not this server's: whatever WT_CMD runs can
+// fork a child that outlives its own parent, the kernel reparents that orphan onto PID 1,
+// and os/exec waits only for children this process started — so with the server AT PID 1
+// every orphan stays a zombie for the container's lifetime, and the engine's session reaping
+// makes it worse, since each descendant it kills is another status only PID 1 can collect.
+// Warn rather than fatal: the container still serves a terminal, and the fix is one flag.
+func warnIfPID1() {
+	if os.Getpid() != 1 {
+		return
+	}
+	slog.Warn("running as PID 1 with no container init; processes orphaned by a session will accumulate as zombies for the container's lifetime",
+		"hint", "start the image with `docker run --init`, or set `init: true` on the compose service")
+}
+
+// warnIfExposed logs a prominent warning when the server is reachable beyond the
+// loopback interface without authentication, which is an unauthenticated remote shell.
 //
-// Classification is webhttp.ClassifyBind's classify-the-unsplit-input recipe:
-// a WT_ADDR that is not host:port (a portless "127.0.0.1", a bare hostname)
-// is read as a bare host and classified anyway, so a portless loopback stays
-// silent and everything unrecognized warns (fail-public).
+// Classification follows webhttp.ClassifyBind's classify-the-unsplit-input recipe: a
+// WT_ADDR that is not host:port (a portless "127.0.0.1", a bare hostname) is read as a
+// bare host and classified anyway, so a portless loopback stays silent and everything
+// unrecognized warns. Fail-public.
 func warnIfExposed(addr, password string) {
 	class := webhttp.ClassifyBind(addr)
 	if class == webhttp.BindInvalid {
@@ -731,34 +729,21 @@ func warnIfExposed(addr, password string) {
 }
 
 // basicAuthGate holds the two constant-time verifiers for the single
-// operator-configured Basic credential pair and answers the one question two
-// layers of this stack both need answered: does this request present valid
-// credentials?
-//
-// It exists because that question is now asked twice and the two answers must
-// never disagree. The 401 gate (middleware) refuses a request presenting
-// anything else; the failed-auth throttle in front of it must draw a token from
-// exactly the requests the gate is about to refuse and from no others. A second,
-// independent parse of the Authorization header would be free to drift — one
-// side reading a missing header as a failure while the other did not would
-// either charge the healthcheck a token or leave a guessing run unthrottled.
-// There is one parse here and both callers read its verdict.
-//
-// Both verifiers are built ONCE (newBasicAuthGate), pre-hashing the configured
-// credentials, so per-request work hashes only what the client sent.
+// operator-configured Basic credential pair and answers the one question two layers of
+// this stack both need: does this request present valid credentials? One parse, because a
+// second independent parse of the Authorization header would be free to drift — one side
+// reading a missing header as a failure while the other did not would either charge the
+// healthcheck a token or leave a guessing run unthrottled.
 type basicAuthGate struct {
 	verifyUser webhttp.StaticTokenVerifier
 	verifyPass webhttp.StaticTokenVerifier
 }
 
-// newBasicAuthGate builds the gate for the configured credential pair, hashing
-// both values once via webhttp's static-token verifiers (SHA-256 digests
-// compared in constant time) so a wrong username or password can't be timed.
-//
-// An empty configured username or password fails CLOSED — the verifier rejects
-// every presented value, including the empty string — so the open-endpoint case
-// is only ever the explicit one: newHandler builds no gate at all when no
-// password is configured.
+// newBasicAuthGate builds the gate for the configured credential pair, hashing both
+// values ONCE via webhttp's static-token verifiers (SHA-256 digests compared in constant
+// time) so per-request work hashes only what the client sent. An empty configured
+// username or password fails CLOSED — the verifier rejects every presented value — so
+// the open-endpoint case is only ever the explicit one where newHandler builds no gate.
 func newBasicAuthGate(username, password string) *basicAuthGate {
 	return &basicAuthGate{
 		verifyUser: webhttp.NewStaticTokenVerifier(username),
@@ -766,16 +751,10 @@ func newBasicAuthGate(username, password string) *basicAuthGate {
 	}
 }
 
-// presentsValidCredentials reports whether r carries HTTP Basic credentials
-// matching the configured pair. It is the shared predicate behind both the 401
-// gate and the failed-auth throttle's "did this attempt fail?" question, so
-// those two can never classify the same request differently.
-//
-// A request with no Authorization header, a non-Basic scheme, or an
-// undecodable value reports false — the same answer as wrong credentials.
-// That is the right reading for both callers: the gate must refuse it, and the
-// throttle must count it, because an unauthenticated flood is precisely the
-// thing being bounded.
+// presentsValidCredentials reports whether r carries HTTP Basic credentials matching the
+// configured pair. A request with no Authorization header, a non-Basic scheme, or an
+// undecodable value reports false, the same answer as wrong credentials — right for both
+// callers, since the gate must refuse it and the throttle must count it.
 func (g *basicAuthGate) presentsValidCredentials(r *http.Request) bool {
 	u, p, ok := r.BasicAuth()
 	// Evaluate BOTH verifications before combining: no short-circuit may
@@ -801,69 +780,33 @@ func (g *basicAuthGate) middleware(next http.Handler) http.Handler {
 	})
 }
 
-// canonicalPathGuard returns middleware that refuses a request whose path is
-// not the spelling http.ServeMux will route, but only when the path the mux
-// WOULD route it as falls under one of prefixes. Every other request passes
-// through untouched.
-//
-// # What it prevents
-//
-// ServeMux cleans the request path before it selects a pattern, and answers a
-// 307 with a Location when the cleaned path differs — before any handler runs,
-// so no registered pattern can intercept it. To a browser that is invisible.
-// To a client that does NOT follow redirects, a 307 is a SUCCESS: this image's
-// baked HEALTHCHECK is `curl -sf` with no -L, so a probe sent to //healthz or
-// /./healthz would exit 0 having never invoked the readiness gate — reporting
-// a container healthy without ever asking it. The same shape lies to any
-// scripted caller of the session API: a POST that never created a session, a
-// DELETE that never closed one, each answered 307 and read as success.
-//
-// # Why the scope is narrow
-//
-// The static mount is deliberately NOT guarded. This app serves a browser
-// bundle from "/", where ServeMux's cleaning redirect and http.FileServer's
-// directory redirect are legitimate and wanted: a browser follows them, and
-// refusing them would break relative-path asset loads that work today for no
-// gain, since a static GET has no side effect a missed redirect could hide.
-// The guarded prefixes are exactly the two surfaces whose callers are machines
-// that may not follow redirects and whose requests mean something:
-//
-//   - healthzPath — the readiness probe, the motivating case above.
-//   - terminal.SessionsPath ("/api/sessions") — a segment prefix, so it also
-//     covers the REST subtree (/api/sessions/{id}, .../title) and the SSE
-//     stream (/api/sessions/events). It comes from the engine, which owns
-//     that route table, so a route the engine adds under it is covered with
-//     no change here.
-//
-// /ws is deliberately outside the scope too. A WebSocket client cannot be
-// fooled into believing a 3xx handshake succeeded (the protocol makes it a
-// failure), so there is nothing to prevent — and the engine answers a uniform
-// 426 there specifically to keep /ws unprobeable, which an app-shaped 400 on
-// some spellings and not others would undo.
-//
-// # Refusal policy
-//
-// The status, code, and body are this app's, not the library's: a 400 in the
-// same webhttp.WriteError envelope its host-allowlist 403 and rate-limit 429
-// use, with a code in the same snake_case taxonomy. 400 because the request
-// target is malformed, not absent (404 would deny a route that exists) and not
-// unauthorized (403 would imply a permission). The message names the fix
-// without echoing the received path back into the response.
+// canonicalPathRefusal is the guard's response message, a const so a test can pin the
+// wording without a second copy of the literal drifting from this one (the same reason
+// wsAttachMsg is one). It names the remedy AND why a refusal beats a redirect, and echoes
+// no part of the request: net/http accepts up to MaxHeaderBytes (1 MiB by default) of
+// request line, so reflecting the path would make the body caller-sized.
+const canonicalPathRefusal = "request path is not canonical; send the route path exactly, without empty, dot, or dot-dot segments " +
+	"(this route refuses rather than redirecting, because a redirect is a success status to a client without -L)"
+
+// canonicalPathGuard refuses a request whose path is not the spelling http.ServeMux
+// will route, when the path the mux WOULD route it as falls under one of prefixes.
+// ServeMux answers 307 when the cleaned path differs, and to a curl without -L a 307 is
+// a SUCCESS: this image's HEALTHCHECK would exit 0 having never consulted readiness,
+// and a scripted POST would create no session yet read as success. Out of scope on
+// purpose: the static mount, where a browser follows the redirect and a GET hides no
+// side effect, and /ws, where a 3xx handshake already fails and the engine's uniform
+// 426 keeps the route unprobeable. The refusal is a 400 — the target is malformed.
 func canonicalPathGuard(prefixes ...string) webhttp.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// EscapedPath is the value ServeMux itself cleans, so this verdict
-			// is exactly "would the mux answer a 307 here?" — no wider. The
-			// decoded r.URL.Path was the available alternative and would also
-			// refuse encoded dot segments (%2e%2e), which ServeMux does NOT
-			// redirect: that would invent a refusal for requests that reach
-			// the handler and work today, on routes where nothing traverses a
-			// filesystem path. Refuse what the redirect would have answered,
-			// and nothing else.
+			// EscapedPath is the value ServeMux itself cleans, so this verdict is exactly
+			// "would the mux answer a 307 here?" and no wider. The decoded r.URL.Path was
+			// the alternative and would also refuse encoded dot segments (%2e%2e), which
+			// ServeMux does NOT redirect — inventing a refusal for requests that reach the
+			// handler and work today, on routes where nothing traverses a filesystem path.
 			clean, canonical := webhttp.CanonicalRequestPath(r.URL.EscapedPath())
 			if !canonical && pathUnderAny(clean, prefixes) {
-				webhttp.WriteError(w, r, http.StatusBadRequest, "non_canonical_path",
-					"request path is not canonical; send the route path exactly, without empty, dot, or dot-dot segments")
+				webhttp.WriteError(w, r, http.StatusBadRequest, "non_canonical_path", canonicalPathRefusal)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -871,47 +814,29 @@ func canonicalPathGuard(prefixes ...string) webhttp.Middleware {
 	}
 }
 
-// pathUnderAny reports whether clean equals one of prefixes or sits beneath it.
-//
-// It matches on whole path segments, so a prefix can never match a longer
-// sibling name (/api/sessionsfoo is not under /api/sessions), and it accepts a
-// prefix written with or without a trailing slash so the engine's SessionsPath
-// and SessionsSubtreePath constants name the same scope.
-//
-// The CLEANED path is what it tests, deliberately: the raw path of a
-// non-canonical request carries the wrong prefix by construction (//healthz has
-// no /healthz prefix), so scoping on the raw spelling would let every attack
-// spelling escape the guard. The cleaned path is where the request would have
-// landed, which is the route whose semantics are at stake.
+// pathUnderAny reports whether clean equals one of prefixes or sits beneath it. It
+// matches whole path segments, so a prefix can never match a longer sibling name
+// (/api/sessionsfoo is not under /api/sessions), and a prefix is NORMALIZED so the
+// engine's SessionsPath and SessionsSubtreePath name one scope — the exact path included,
+// which a trailing-slash prefix used to miss, silently dropping the create route. It tests
+// the CLEANED path deliberately: a non-canonical request carries the wrong prefix by
+// construction, so scoping on the raw spelling would let every attack spelling escape.
 func pathUnderAny(clean string, prefixes []string) bool {
 	for _, p := range prefixes {
-		if clean == p || strings.HasPrefix(clean, strings.TrimSuffix(p, "/")+"/") {
+		root := strings.TrimSuffix(p, "/")
+		if clean == root || strings.HasPrefix(clean, root+"/") {
 			return true
 		}
 	}
 	return false
 }
 
-// cspTemplate is the Content-Security-Policy applied to every response, with two
-// %s placeholders: the script-src hash tokens and the style-src hash token. Both
-// are computed once at server construction from the embedded index.html (see
-// buildCSPPolicy), so an index.html edit — including a pure-whitespace prettier
-// reformat of an inline script or style — is tracked automatically without
-// hand-editing a constant. Directives other than script-src/style-src are fixed:
-//
-//	style-src 'self' <hash>    index.html's single inline loading-overlay
-//	                           <style> is hash-pinned like the inline scripts,
-//	                           so an injected style block cannot obscure or
-//	                           spoof the terminal UI. The terminal renderer
-//	                           itself needs no relaxation: it styles via CSSOM
-//	                           property setters, which style-src does not
-//	                           govern, and neither the UI nor the engine
-//	                           template emits a style= attribute (which a hash
-//	                           would NOT cover anyway — style-src-attr governs
-//	                           those and needs 'unsafe-hashes')
-//	img-src 'self' data:        favicon/icon data URIs
-//	connect-src 'self'          same-origin HTTP + the /ws WebSocket PTY
-//	frame-ancestors 'none'      blocks clickjacking of the interactive terminal
+// cspTemplate is the Content-Security-Policy applied to every response, with two %s
+// placeholders: the script-src hash tokens and the style-src hash token. Both are
+// computed once at construction from the embedded index.html, so an index.html edit is
+// tracked without hand-editing a constant. style-src is hash-pinned rather than
+// 'unsafe-inline' because the renderer needs no relaxation: it styles via CSSOM property
+// setters, which style-src does not govern, and nothing emits a style= attribute.
 const cspTemplate = "default-src 'self'; " +
 	"script-src 'self' %s; " +
 	"style-src 'self' %s; " +
@@ -919,27 +844,15 @@ const cspTemplate = "default-src 'self'; " +
 	"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; " +
 	"form-action 'none'"
 
-// buildCSPPolicy reads index.html from sub, hashes every inline <script> in it
-// (via webhttp.InlineScriptHashes) plus its single inline <style> block (via
-// webhttp.InlineStyleHashes) — both the byte-precise scanners that hash exactly
-// the content a browser hashes — and assembles the full CSP string.
-// Called once at server construction (newHandler). It FAILS LOUD — returning
-// an error rather than degrading to 'unsafe-inline' — when sub is nil,
-// index.html can't be read, the file holds no inline scripts, or it does not hold
-// exactly one inline style block: a valid build always embeds index.html with its
-// two inline scripts (the importmap and the module bootstrap) and its one
-// loading-overlay style, so a failure here means a malformed build, which should
-// abort startup with a clear message rather than silently drop the hardening or
-// serve a hash set that would block the browser's import-map and break ES module
-// loading.
-//
-// style-src was 'unsafe-inline' until webhttp gained InlineStyleHashes: the block
-// was always hashable, but only script hashing was shared, so this server kept the
-// relaxation while its web-terminal-kiro sibling hash-pinned the same page shape.
+// buildCSPPolicy reads index.html from sub, hashes every inline <script> in it plus its
+// single inline <style> block with webhttp's byte-precise scanners, and assembles the full
+// CSP string. Called once at construction, with an FS its one caller already validated:
+// newHandler returns on both fs.Sub's error and applyPersistFlag's, so a nil guard here
+// would be unreachable. It FAILS LOUD rather than degrading to 'unsafe-inline' when
+// index.html cannot be read, holds no inline script, or holds other than exactly one
+// inline style block — a valid build embeds two scripts and one style, so that is a
+// malformed build.
 func buildCSPPolicy(sub fs.FS) (string, error) {
-	if sub == nil {
-		return "", errors.New("buildCSPPolicy: nil static FS")
-	}
 	html, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
 		return "", fmt.Errorf("buildCSPPolicy: read index.html: %w", err)
