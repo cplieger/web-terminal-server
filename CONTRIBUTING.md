@@ -12,20 +12,31 @@ workflows, or `LICENSE`.
 
 ## Architecture
 
-- `main.go` is the whole server: env parsing (`WT_*`), `terminal.NewSessionManager`
+- `main.go` is the server: env parsing (`WT_*`), `terminal.NewSessionManager`
   (a per-session `terminal.NewHandler` factory), a `ServeMux` mounting
   `/ws?session=<id>`, the session REST API `/api/sessions` (+`/`) behind a create
   rate limit, the status SSE `/api/sessions/events`, `/healthz`, and the embedded
   static front end at `/` (the engine's `/debug/*` routes are intentionally **not**
   exposed). Middleware (outermost first): request logging (one structured slog
-  line per request, with a spoof-safe `client_ip`), panic recovery, security
-  headers (`X-Content-Type-Options: nosniff` + a Content-Security-Policy whose
-  `script-src` pins a sha256 of each inline `<script>` in the embedded
-  `index.html`, computed at construction and fail-loud on a malformed embed),
-  the `WT_ALLOWED_HOSTS` host allowlist, optional HTTP Basic auth, and
-  `http.CrossOriginProtection`. The logging wrapper's response recorder
-  implements `Unwrap()` so the WebSocket hijack reaches the real
-  `ResponseWriter`.
+  line per request, with a spoof-safe `client_ip`), panic recovery, the `/ws`
+  attach record, security headers (`nosniff`, a Content-Security-Policy whose
+  `script-src` and `style-src` pin a sha256 of each inline block in the embedded
+  `index.html`, computed at construction and fail-loud on a malformed embed, plus
+  COOP, `Referrer-Policy: same-origin` and a `Permissions-Policy`), the
+  `WT_ALLOWED_HOSTS` host allowlist, the failed-auth throttle, optional HTTP Basic
+  auth, `http.CrossOriginProtection`, and the canonical-path guard innermost. The
+  logging wrapper's response recorder implements `Unwrap()` so the WebSocket hijack
+  reaches the real `ResponseWriter`.
+- `static_persist.go` is the second production file, and it holds the one
+  invariant most likely to trip a contributor. `WT_PERSIST_SCROLLBACK` has to reach
+  an inline module script in a COMMITTED, embedded file, and nothing here templates:
+  the CSP pins a sha256 of that script and `webhttp.StaticHandler` precomputes an
+  ETag and a gzip body per file, so a per-request rewrite would fight all three. The
+  flag is applied ONCE at startup, over the embedded tree, BEFORE either the static
+  handler or the CSP builder reads it. Do not move that overlay after either
+  consumer, and do not reach for templating: the failure mode is a blank terminal
+  with a console CSP violation. The marker is verified on every boot in both
+  spellings and a build that lost it aborts startup.
 - The browser bundle is **not** authored here. It is the engine + UI packages
   compiled to `static/vendor/` at build time; only `static/index.html` (the
   scaffold + importmap + inline `createTerminal(root, { features: presetTabbed() })` call) is committed, which is enough
@@ -33,6 +44,40 @@ workflows, or `LICENSE`.
 
 Keep the server thin: terminal behavior belongs in the engine or the UI
 package, not here.
+
+## Conventions
+
+- Go module is domain-rooted (`github.com/cplieger/web-terminal-server`), built
+  `CGO_ENABLED=0`. Formatting is gofumpt + gci (enforced by the synced
+  `.golangci.yaml`); run `gofmt`/`golangci-lint fmt` before committing.
+- **Nothing below `main` may exit.** `run()` reports every failure by returning an
+  attributed error and `main` is the only `os.Exit`, which is what lets the deferred
+  teardown run on every path. Each failure site tags itself with `atStage`, and
+  `main` renders one `ERROR` line carrying that `stage`. The stage VALUES are the
+  log surface an operator queries, pinned by `TestStageValuesAreStable`, so renaming
+  one is a breaking change. Do not reintroduce an `os.Exit` in `run`, and do not
+  drop the error return on a path that looks terminal: the duplicated teardown that
+  omission requires is the defect this shape removed.
+- **A rejected environment value never reaches the log.** Warnings and startup
+  errors name the variable and the accepted shape, never the value, because a
+  compose interpolation mistake is what puts a credential on a variable. The same
+  rule covers the session id, which is the `/ws` attach capability: it is logged
+  only through `terminal.LogID`.
+- slog-only observability (one structured line per request), with UTC
+  timestamps via `slogx` (its `UTCTime` `ReplaceAttr`, so the image needs no `TZ`
+  and embeds no `time/tzdata`); no Prometheus endpoint.
+- Dockerfile follows the shared `cplieger/ci` conventions: `# check=error=true`, native
+  per-arch builds (no QEMU/xx), `GOTOOLCHAIN=auto`, cache-mounted `go mod
+  download` and `go build`. The `# renovate:` ARGs track tool and package versions,
+  and every build-time download is verified against a recorded sha256 — a `# repin:`
+  marker above each digest ARG is what lets a bot recompute it, so keep the marker
+  on the line directly above its ARG.
+- The three build steps shared with `scripts/dev-build.sh` live in
+  `scripts/vendor-tsc.sh`, `scripts/assert-emit.sh` and `scripts/css-bundle.sh`.
+  Change them there rather than inlining a copy: the copies had already drifted
+  once, and each script refuses a failure a shell one-liner swallowed (an empty
+  source list that emits nothing and exits 0, a page importing a module tsc never
+  wrote, a truncated CSS member replacing a working bundle).
 
 ## Local development
 
@@ -97,17 +142,24 @@ published engine. The Dockerfile must never see a `go.work`: it does
 `COPY . ./`, and a `replace` pointing at a path absent from the build context
 would break the in-container build, which is why `.dockerignore` excludes it.
 
-## Conventions
+## Running checks
 
-- Go module is domain-rooted (`github.com/cplieger/web-terminal-server`), built
-  `CGO_ENABLED=0`. Formatting is gofumpt + gci (enforced by the synced
-  `.golangci.yaml`); run `gofmt`/`golangci-lint fmt` before committing.
-- slog-only observability (one structured line per request), with UTC
-  timestamps via `slogx` (its `UTCTime` `ReplaceAttr`, so the image needs no `TZ`
-  and embeds no `time/tzdata`); no Prometheus endpoint.
-- Dockerfile follows the shared `cplieger/ci` conventions: `# check=error=true`, native
-  per-arch builds (no QEMU/xx), `GOTOOLCHAIN=auto`, layer-cached `go mod
-  download`. The `# renovate:` ARGs track tool and package versions.
+The same battery CI runs, from the repo root:
+
+```sh
+go build ./... && go vet ./...
+go test -count=1 -race ./...
+golangci-lint run
+hadolint Dockerfile
+shellcheck scripts/*.sh
+bash scripts/run-cdp.sh          # real-browser display checks (see below)
+bash scripts/smoke.sh            # needs a built image; see .github/workflows/smoke.yml
+```
+
+`go test` covers the env parsing, the CSP contract, the middleware chain, the
+canonical-path guard and the wire-floor gate — including tests that read the
+shipped `Dockerfile` as text, so deleting the gate's build step fails the suite
+rather than shipping an incompatible client.
 
 ## Commits and PRs
 

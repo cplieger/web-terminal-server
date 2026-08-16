@@ -55,46 +55,66 @@ process runs as the container user (root by default); restrict it with a
 non-root `WT_CMD` target, a read-only root filesystem, dropped capabilities,
 and a scoped work directory as your threat model requires.
 
+## What it does
+
+It starts one command per terminal tab in a real PTY and streams that terminal
+to a browser: full VT screen buffer, scrollback, mouse, colours and clickable
+hyperlinks, driven by touch on a phone as well as a keyboard on a desktop. Tabs
+live on the server, so closing the page does not kill what is running, and
+reopening it reattaches to the same terminals from any device.
+
+It is deliberately thin. The terminal itself is two shared libraries (the engine
+and its reference UI); this repo is one Go file that starts the PTY, serves the
+bundled front end, and applies the security posture described above.
+
 ## Run
 
+```yaml
+services:
+  web-terminal-server:
+    image: ghcr.io/cplieger/web-terminal-server
+    # Required, not optional: reaps the processes your command orphans. See below.
+    init: true
+    restart: unless-stopped
+    # Published to loopback only. There is no built-in auth unless WT_PASSWORD is
+    # set, and loopback alone does not stop DNS rebinding — see the security
+    # section above for the proxy, bind, WT_PASSWORD and WT_ALLOWED_HOSTS setup.
+    ports:
+      - "127.0.0.1:7681:7681"
+    environment:
+      WT_PASSWORD: changeme
+      WT_WORKDIR: /work
+    volumes:
+      - ./:/work
+```
+
+Or as a one-shot run:
+
 ```sh
-docker run --rm -p 127.0.0.1:7681:7681 \
+docker run --rm --init -p 127.0.0.1:7681:7681 \
   -e WT_PASSWORD=changeme \
   -v "$PWD":/work -e WT_WORKDIR=/work \
   ghcr.io/cplieger/web-terminal-server
 ```
 
-Open <http://127.0.0.1:7681>. The example binds the published port to loopback
-and sets a password; adjust for your environment.
+Open <http://127.0.0.1:7681>. Both examples bind the published port to loopback
+and set a password; adjust for your environment.
 
-## Configuration reference
+**`--init` / `init: true` is required, not cosmetic.** Whatever `WT_CMD` runs can
+fork a child that outlives its own parent, and the kernel reparents that orphan
+onto PID 1. This server waits only for the processes it started itself, so with no
+init it is PID 1 and every orphan stays a zombie for the container's lifetime.
+Docker's `--init` puts a small reaper there instead, which owns nothing anything
+else is waiting on. The server logs a warning at startup when it finds itself
+running as PID 1.
 
-All configuration is via environment variables. Where the binary and image
-defaults differ, the Default column shows them as binary / image.
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `WT_ADDR` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. | `127.0.0.1:7681` / `:7681` |
-| `WT_LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
-| `WT_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
-| `WT_WORKDIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
-| `WT_SCROLLBACK` | Lines of history the server retains per session — how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer — asking for less server history would cost the phone more. | `100000` |
-| `WT_PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off — see [Persisted scrollback](#persisted-scrollback). | `true` |
-| `WT_IDLE_REAPER` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
-| `WT_USERNAME` | Basic-auth username (only used when `WT_PASSWORD` is set). | `admin` |
-| `WT_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
-| `WT_ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). Loopback requests are always admitted, so the image healthcheck keeps working. | _(unset)_ |
-| `WT_TRUSTED_PROXIES` | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). | _(unset → socket peer)_ |
-
-Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/{id}/pinned-title` (name a terminal; `PUT` to set, `DELETE` to go back to the automatic name), `/api/sessions/events` (status SSE), `/healthz` (readiness).
-
-### Naming terminals
+## Naming terminals
 
 Each terminal tab is labelled automatically: whatever is running in it (the foreground command), or the directory it sits in when the shell is idle, or the window title the program set for itself. Right-click a tab (press `F2`, or double-click it) to type your own name instead, which then sticks for the life of that terminal and shows on every device you have the page open on. The same menu offers **Use automatic name** to remove it again.
 
 Names live on the server, not in your browser, so they survive a reload and are the same in every window.
 
-### Persisted scrollback
+## Persisted scrollback
 
 On by default. Set `WT_PERSIST_SCROLLBACK=false` to turn it off.
 
@@ -131,11 +151,100 @@ server numbers its output from the beginning again. If that session is already g
 — which is what a restart usually leaves — the restore is discarded outright rather
 than shown behind a “Session ended” banner.
 
-### Client IP logging
+## Configuration reference
+
+All configuration is via environment variables. Where the binary and image
+defaults differ, the Default column shows them as binary / image.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `WT_ADDR` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. The baked healthcheck derives its port from this value and probes `127.0.0.1`, so changing the port is safe but pinning the bind to one non-loopback interface makes the container report `unhealthy` while serving normally. | `127.0.0.1:7681` / `:7681` |
+| `WT_LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
+| `WT_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
+| `WT_WORKDIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
+| `WT_SCROLLBACK` | Lines of history the server retains per session — how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer — asking for less server history would cost the phone more. This is the terminal engine's own variable, shared verbatim with every app built on it, which is why this server holds no default of its own. | `100000` |
+| `WT_PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off — see [Persisted scrollback](#persisted-scrollback). | `true` |
+| `WT_IDLE_REAPER` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
+| `WT_USERNAME` | Basic-auth username (only used when `WT_PASSWORD` is set). | `admin` |
+| `WT_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
+| `WT_ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). The carve-out needs loopback on **both** ends — a loopback client address _and_ a loopback `Host` — so the image healthcheck and a same-host `curl` keep working while a forged loopback `Host` from a remote peer does not. Any other name you browse to must be listed. Malformed entries are dropped with a warning; a list whose entries are **all** malformed fails closed, rejecting every non-loopback request. | _(unset)_ |
+| `WT_TRUSTED_PROXIES` | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). | _(unset → socket peer)_ |
+
+Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/{id}/pinned-title` (name a terminal; `PUT` to set, `DELETE` to go back to the automatic name), `/api/sessions/events` (status SSE), `/healthz` (readiness).
+
+### Volumes
+
+| Mount | Description |
+| --- | --- |
+| _(any path)_ | Nothing is required. Mount whatever the command needs to reach and point `WT_WORKDIR` at it; the examples above mount the current directory at `/work`. |
+
+### Ports
+
+| Port | Description |
+| --- | --- |
+| `7681` | HTTP + WebSocket. Serves the UI, the session API and the terminal socket. Change the listen address with `WT_ADDR`; the healthcheck follows it. |
+
+## Startup failures
+
+A startup failure produces exactly one `ERROR` line, `web-terminal-server exited
+with error`. The remedy is in its `error` field, and a `stage` field names which
+step failed:
+
+| `stage` | What failed |
+| --- | --- |
+| `config` | The `WT_*` environment is invalid: a missing or unreadable `WT_WORKDIR`, an unparseable `WT_PERSIST_SCROLLBACK` or `WT_SCROLLBACK`. |
+| `static` | The embedded front end or its Content-Security-Policy is unusable. A build defect, not a setting: no environment change fixes it. |
+| `listen` | The address in `WT_ADDR` could not be bound. |
+| `serve` | The HTTP server exited with an error while running. |
+| `unknown` | A failure nothing attributed. |
+
+Key log queries and alert rules on `stage` rather than on the message text: the
+values are a stable contract with a test behind them, the prose is not.
+
+A rejected environment value is never echoed into that line. Only the variable's
+name and the accepted shape appear, because a compose interpolation mistake is
+what puts a credential on a variable in the first place.
+
+## Client IP logging
 
 The access log records a `client_ip` per request. By default (`WT_TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `WT_TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `WT_TRUSTED_PROXIES=10.0.0.0/8,192.0.2.10`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
 
-A terminal that successfully attaches (the `/ws` WebSocket handshake) gets no line: the handshake ends the HTTP exchange, so the line could only be written when the socket finally closes, reporting a session-long duration and a status the server never sent. A handshake that is _refused_ is logged with its real status — a rejected `Host`, a cross-origin request, missing credentials, a plain HTTP request with no upgrade headers — so that is what to grep when a browser cannot attach.
+A terminal that successfully attaches (the `/ws` WebSocket handshake) gets no line: the handshake ends the HTTP exchange, so the line could only be written when the socket finally closes, reporting a session-long duration and a status the server never sent. Every attach ATTEMPT is recorded separately, before the handshake runs, with a truncated session id, the client IP and the request id — that record is the audit trail for a socket that presents a session credential. A handshake that is _refused_ is also logged with its real status — a rejected `Host`, a cross-origin request, missing credentials, a plain HTTP request with no upgrade headers — so that is what to grep when a browser cannot attach.
+
+The session id in `/ws?session=<id>` is a **capability**: holding it is enough to attach to that terminal. This server keeps it out of its own logs (the access log records the route template for session paths, and the attach record truncates the id), but a fronting reverse proxy logs full request URIs by default and would capture it in the clear. Drop or redact the `/ws` query string in the proxy's own access log.
+
+## Healthcheck
+
+The image ships a `HEALTHCHECK` that probes `/healthz` on loopback every 30s,
+after a 15s start period. `/healthz` answers `200 {"status":"ok"}` once the
+listener is bound and `503` during startup and the graceful-shutdown drain, so a
+load balancer stops sending traffic while the server is draining.
+
+Two details worth knowing. The probe derives its port from `WT_ADDR`, so moving
+the listener keeps it working. And when `WT_PASSWORD` is set the probe
+authenticates with `WT_USERNAME`/`WT_PASSWORD` through a curl config file on
+stdin rather than a command-line flag, so the password never appears in the
+container's process list.
+
+It is a readiness signal, not liveness: nothing restarts the container on an
+unhealthy state, so a problem surfaces as `unhealthy` in `docker ps` without a
+restart loop.
+
+## Dependencies
+
+| Dependency | Source |
+| --- | --- |
+| Debian trixie-slim | Base image, pinned by digest. `apt-get upgrade` runs at build time so security updates ship with each release. |
+| `github.com/cplieger/web-terminal-engine` | The Go PTY/VT session engine and its TypeScript browser renderer. |
+| `@cplieger/web-terminal-ui` | The touch-first browser UI served to the client. |
+| `github.com/cplieger/webhttp` | Server HTTP plumbing: access logging, middleware chain, security headers, static serving, rate limiting. |
+| `github.com/cplieger/envx`, `slogx` | Typed environment parsing and the fleet-standard slog setup. |
+| Monaspace Neon NF | The terminal webfont, fetched at build time and digest-verified per face. |
+| Go toolchain, TypeScript compiler | Build-time only, both digest-verified per architecture. |
+
+Every version is pinned, and every build-time download is checked against a
+recorded sha256, so a compromised registry cannot change what the image contains.
+Updates arrive as automated pull requests and ship through a fresh image build.
 
 ## Related projects
 
