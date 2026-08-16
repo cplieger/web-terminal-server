@@ -9,8 +9,8 @@
 // The compatibility RULE is the engine's (terminal.WirePairIncompatibility —
 // the same verdict its runtime handshake reaches, so this gate can never
 // disagree with the close-4002 refusal). This program supplies the Go side
-// from the engine's public constants; the client side arrives as flags the
-// Dockerfile's wire-floor gate extracts from the vendored artifact.
+// from the engine's public constants; the client side is read from the vendored
+// artifact's own published wire-compatibility manifest.
 //
 // Without the gate a declared-incompatible pairing builds green, deploys,
 // answers /healthz healthy, and then refuses every session at first connect
@@ -18,8 +18,8 @@
 // the build instead.
 //
 // Exit 0: the pairing is declared-compatible. Exit 1: a declared floor is
-// violated. Exit 2: usage error (a missing, malformed, or non-positive
-// -client-rev / -client-min-server flag).
+// violated. Exit 2: usage error — the client revisions could not be resolved, so
+// the gate itself is broken and no pin should move.
 package main
 
 import (
@@ -32,25 +32,28 @@ import (
 	"github.com/cplieger/web-terminal-engine/v3/terminal"
 )
 
+// usageErrMsg is the one line every exit-2 path prints last, so the broken-gate case is
+// greppable in a build log and cannot be mistaken for a compatibility verdict. A const
+// because three call sites emit it and a fourth (the test) pins it.
+const usageErrMsg = "ERROR wire-floor-gate-usage: the client wire revisions are unusable — pass -manifest <engine-pkg>/wire-compatibility.json (the extraction is broken — fix the gate, do not bump a pin)"
+
 // readManifest resolves the client half from the engine artifact's own published
 // manifest, via the engine's exported decoder.
 //
-// Preferred over the -client-* flags because the alternative was scraping the
-// vendored TypeScript with sed in the Dockerfile, which is the practice the
-// engine published this manifest to end (web/src/wire-manifest.ts: it "breaks
-// silently on any reformat"). The DECODING is the engine's — it owns the format,
-// its schema check and its unusable-revisions check. What stays here is the
-// POLICY: every failure is the usage error's exit 2, never a compatibility
-// verdict, because a manifest the gate cannot read means the gate is broken and
-// no pin should move. An unknown schema is named separately since its remedy is
-// the opposite one: bump this gate.
+// This is the ONLY input path. A hand-typed revision was the alternative and it is worse
+// than no input at all: it is a second, unverifiable source for the one program whose job
+// is to be trusted about whether the gate or a pin is at fault. The DECODING is the
+// engine's — it owns the format, its schema check and its unusable-revisions check. What
+// stays here is the POLICY: every failure is exit 2, never a compatibility verdict,
+// because a manifest the gate cannot read means the gate is broken. An unknown schema is
+// named separately since its remedy is the opposite one: bump this gate.
 func readManifest(path string, stderr io.Writer) (clientRev, clientMinServer int, ok bool) {
 	m, err := terminal.ReadWireManifest(path)
 	if err != nil {
 		if errors.Is(err, terminal.ErrWireManifestSchema) {
-			fmt.Fprintf(stderr, "wirecheck: %s: the manifest format moved ahead of this gate (fix the gate, do not bump a pin): %v\n", path, err)
+			fmt.Fprintf(stderr, "ERROR wire-floor-gate-usage: %s: the manifest format moved ahead of this gate (fix the gate, do not bump a pin): %v\n", path, err)
 		} else {
-			fmt.Fprintf(stderr, "wirecheck: cannot read the engine's wire-compatibility manifest at %s (fix the gate, do not bump a pin): %v\n", path, err)
+			fmt.Fprintf(stderr, "ERROR wire-floor-gate-usage: cannot read the engine's wire-compatibility manifest at %s (fix the gate, do not bump a pin): %v\n", path, err)
 		}
 		return 0, 0, false
 	}
@@ -58,16 +61,26 @@ func readManifest(path string, stderr io.Writer) (clientRev, clientMinServer int
 }
 
 func main() {
-	manifest := flag.String("manifest", "", "path to the vendored engine artifact's wire-compatibility.json (preferred over the -client-* flags)")
-	clientRev := flag.Int("client-rev", 0, "client WIRE_PROTOCOL_VERSION from the vendored npm artifact")
-	clientMinServer := flag.Int("client-min-server", 0, "client MIN_SUPPORTED_SERVER_WIRE_VERSION from the vendored npm artifact")
-	flag.Parse()
-	rev, minServer := *clientRev, *clientMinServer
-	if *manifest != "" {
-		var ok bool
-		if rev, minServer, ok = readManifest(*manifest, os.Stderr); !ok {
-			os.Exit(2)
+	// ContinueOnError so -h and a genuine parse error are distinguishable: help is a
+	// success, an unknown flag is a broken gate. flag's ExitOnError default collapses
+	// both into status 2 with no line saying which happened.
+	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
+	manifest := flag.String("manifest", "", "path to the vendored engine artifact's wire-compatibility.json")
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
 		}
+		fmt.Fprintln(os.Stderr, usageErrMsg)
+		os.Exit(2)
+	}
+	if *manifest == "" {
+		fmt.Fprintln(os.Stderr, usageErrMsg)
+		os.Exit(2)
+	}
+	rev, minServer, ok := readManifest(*manifest, os.Stderr)
+	if !ok {
+		fmt.Fprintln(os.Stderr, usageErrMsg)
+		os.Exit(2)
 	}
 	os.Exit(run(rev, minServer, os.Stdout, os.Stderr))
 }
@@ -75,14 +88,14 @@ func main() {
 // run performs the wire-floor gate against the engine's exported constants and
 // returns the process exit code main hands to os.Exit — the contract the
 // Dockerfile consumes: 0 declared-compatible, 1 floor violated (fail the
-// build), 2 usage error (missing/non-positive flag values).
+// build), 2 usage error (revisions the manifest could not supply).
 //
-// The flags are validated here rather than left to the engine's comparator so
+// The revisions are validated here rather than left to the engine's comparator so
 // a missing extraction is reported as the usage error it is (exit 2, "fix the
 // gate") instead of a compatibility verdict (exit 1, "bump a pin").
 func run(clientRev, clientMinServer int, stdout, stderr io.Writer) int {
 	if clientRev <= 0 || clientMinServer <= 0 {
-		fmt.Fprintln(stderr, "wirecheck: -client-rev and -client-min-server are required positive integers")
+		fmt.Fprintln(stderr, usageErrMsg)
 		return 2
 	}
 	if reason := terminal.WirePairIncompatibility(

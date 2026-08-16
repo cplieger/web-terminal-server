@@ -12,6 +12,9 @@ node_modules/
 # only static/index.html is committed so go:embed has content).
 static/vendor/
 static/style.css
+# scripts/css-bundle.sh assembles into a mktemp sibling and renames only on
+# success, so a SIGKILLed run leaves one behind.
+static/style.css.*
 
 # Local-dev workspace file (resolves the unpublished engine from ../vterm)
 go.work

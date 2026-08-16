@@ -94,20 +94,43 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/")
 echo "$body" | grep -qiE 'term|<!doctype html|<html' || fail "/ body does not look like the UI scaffold"
 echo "[smoke] PASS  / (authenticated) = 200, serves scaffold"
 
-# 2b. The scaffold references importmap JS + CSS + font assets the build
-#     assembles into static/vendor/ and static/style.css. A scaffold-only
-#     check passes even when those 404, leaving the user on a permanent
-#     "Loading..." overlay (mount() throws on the failed module import).
-for asset in \
-  /style.css \
-  /vendor/cplieger-web-terminal-ui/index.js \
-  /vendor/cplieger-web-terminal-ui/presets.js \
-  /vendor/cplieger-web-terminal-engine/index.js \
-  /vendor/fonts/MonaspaceNeonNF-Regular.woff2; do
+# 2b. The scaffold references importmap JS + CSS + font assets the build assembles into
+#     static/vendor/ and static/style.css. A scaffold-only check passes even when those
+#     404, leaving the user on a permanent "Loading..." overlay (mount() throws on the
+#     failed module import).
+#
+#     The JS list is DERIVED from the importmap in the page we just fetched, not
+#     hardcoded: a library that moves a module (presets.js exists only because the UI keeps
+#     its presets at src/presets.ts today) would otherwise be silently unchecked here, and
+#     an importmap entry added upstream would never be probed at all. The literal list
+#     below is only for assets the importmap cannot name — the stylesheet and the preloaded
+#     font.
+importmap_targets=$(printf '%s' "$body" | sed -n '/<script type="importmap">/,/<\/script>/p' | grep -o '"/[^"]*"' | tr -d '"' || true)
+[ -n "$importmap_targets" ] || fail "no importmap module paths found in the served page (the page lost its importmap, or the extraction is broken)"
+for asset in $importmap_targets /style.css /vendor/fonts/MonaspaceNeonNF-Regular.woff2; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}${asset}")
   [ "$code" = "200" ] || fail "bundle asset ${asset} = $code, want 200 (UI bundle incomplete)"
 done
-echo "[smoke] PASS  importmap-referenced bundle assets served (CSS, engine+UI JS, font)"
+echo "[smoke] PASS  every importmap module the served page names is reachable, plus CSS + font"
+
+# 2c. The hardened response headers. They are set once in the middleware chain, so one
+#     probe covers every route, and each is a control an operator can lose to a refactor
+#     without any functional symptom: the CSP hash pinning that stops injected script in a
+#     page driving a root shell, and the COOP/Referrer-Policy pair that keeps a clicked
+#     OSC 8 hyperlink from reaching back through window.opener.
+headers=$(curl -s -D - -o /dev/null -u "admin:${PASSWORD}" "${BASE}/")
+for expected in \
+  'content-security-policy:.*script-src' \
+  'x-content-type-options: *nosniff' \
+  'x-frame-options: *DENY' \
+  'referrer-policy: *same-origin' \
+  'cross-origin-opener-policy: *same-origin' \
+  'permissions-policy: *camera=()'; do
+  printf '%s' "$headers" | grep -qiE "$expected" || fail "response is missing a hardened header matching /${expected}/"
+done
+printf '%s' "$headers" | grep -qi "content-security-policy:.*'unsafe-inline'" \
+  && fail "the CSP carries 'unsafe-inline'; the inline script and style must stay hash-pinned"
+echo "[smoke] PASS  hardened headers served (hash-pinned CSP, nosniff, DENY, COOP, Referrer-Policy, Permissions-Policy)"
 
 # 3. /ws authenticated but WITHOUT upgrade headers -> not a 200/101. The engine
 #    (v3, multi-session) answers every non-upgrade GET /ws with Accept's own

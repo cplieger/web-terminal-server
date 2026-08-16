@@ -1,14 +1,20 @@
 # Extend gitleaks' default ruleset and allowlist one known false positive.
 #
-# The container HEALTHCHECK probes /healthz with basic auth:
+# gitleaks scans git HISTORY, and commit 5c9a69b (2026-06-30) carried an earlier
+# healthcheck that passed credentials with `curl -u`:
 #   curl -sf -u "${WT_USERNAME:-admin}:${WT_PASSWORD:-}" http://127.0.0.1:7681/healthz
-# gitleaks' curl-auth-user rule flags the -u argument, but it is shell
-# parameter expansion (the WT_USERNAME/WT_PASSWORD env vars resolved at
-# runtime), not an embedded credential. Allowlist that exact reference.
+# Its curl-auth-user rule flags that -u argument, but it is shell parameter
+# expansion (the WT_USERNAME/WT_PASSWORD env vars resolved at runtime), not an
+# embedded credential. The CURRENT Dockerfile no longer uses -u at all: it feeds a
+# curl config file on stdin (`-K -`) so the password never reaches argv, which
+# also splits the two expansions across separate lines. So this allowlist exists
+# ONLY for the historical commit, and removing it makes the scan fail on history
+# rather than on the tree. Verified 2026-08: with useDefault alone the scan
+# reports exactly that one hit, and nothing in the working tree.
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "Dockerfile healthcheck curl -u references WT_USERNAME/WT_PASSWORD env vars, not a real secret"
+description = "historical Dockerfile healthcheck curl -u referenced WT_USERNAME/WT_PASSWORD env vars, not a real secret"
 regexTarget = "line"
 regexes = ['''\$\{WT_USERNAME:-admin\}:\$\{WT_PASSWORD:-\}''']

@@ -20,6 +20,13 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.json">
+<!-- The first frame is gated on this fetch: createTerminal awaits
+     document.fonts.load('14px "Monaspace Neon NF"') before its first resize, and nothing
+     else requests the file — the @font-face rule in the bundled page.css is never
+     render-triggered. crossorigin is mandatory even same-origin, or the font downloads
+     twice into a separate cache partition. Regular only: it is the face the metrics
+     measurement uses, and preloading all four would spend bandwidth before first paint. -->
+<link rel="preload" href="/vendor/fonts/MonaspaceNeonNF-Regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/style.css">
 <!-- [html-validate-disable-next no-style-tag -- brand token for the loading overlay] -->
 <style>
