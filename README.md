@@ -69,24 +69,8 @@ bundled front end, and applies the security posture described above.
 
 ## Run
 
-```yaml
-services:
-  web-terminal-server:
-    image: ghcr.io/cplieger/web-terminal-server
-    # Required, not optional: reaps the processes your command orphans. See below.
-    init: true
-    restart: unless-stopped
-    # Published to loopback only. There is no built-in auth unless WT_PASSWORD is
-    # set, and loopback alone does not stop DNS rebinding — see the security
-    # section above for the proxy, bind, WT_PASSWORD and WT_ALLOWED_HOSTS setup.
-    ports:
-      - "127.0.0.1:7681:7681"
-    environment:
-      WT_PASSWORD: changeme
-      WT_WORKDIR: /work
-    volumes:
-      - ./:/work
-```
+[`compose.yaml`](compose.yaml) in this repo is a working example: loopback-bound,
+password set, a work directory mounted, and `init: true`. Copy it and adjust.
 
 Or as a one-shot run:
 
