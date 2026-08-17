@@ -1,4 +1,4 @@
-# Extend gitleaks' default ruleset and allowlist one known false positive.
+# Extend gitleaks' default ruleset and allowlist two known false positives.
 #
 # gitleaks scans git HISTORY, and commit 5c9a69b (2026-06-30) carried an earlier
 # healthcheck that passed credentials with `curl -u`:
@@ -18,3 +18,23 @@ useDefault = true
 description = "historical Dockerfile healthcheck curl -u referenced WT_USERNAME/WT_PASSWORD env vars, not a real secret"
 regexTarget = "line"
 regexes = ['''\$\{WT_USERNAME:-admin\}:\$\{WT_PASSWORD:-\}''']
+
+# Go test fixtures are synthetic placeholders, and the generic-api-key rule keys on
+# the IDENTIFIER next to a value ("token", "apiKey"), so a fake session id named for
+# what it is reads as a credential. Commit c07e3fb carries
+# `const token = "0123456789abcdef..."` in main_test.go, a fake /ws session id whose
+# whole job is to prove wsAttachLog TRUNCATES it. It is 32 sequential hex digits and
+# authenticates nothing. The tree was already renamed to `sessionID` (bf9e102) to get
+# the working-tree gate green, which is why this entry looks unnecessary and is not:
+# history is immutable, so the full-history scan reports that commit forever.
+#
+# `targetRules` is load-bearing, do not simplify it to a bare `paths` entry. Measured
+# with gitleaks 8.30.1 against a test file holding both a fake PAT and a fixture: the
+# rule-scoped form reports the PAT and drops the fixture, while a blanket path
+# allowlist (what the other repos in the fleet still carry) reports neither. Scoping to
+# the one low-precision heuristic rule keeps every provider rule live over test files,
+# so a credential genuinely pasted into a test is still caught.
+[[allowlists]]
+description = "generic-api-key over Go test fixtures: synthetic placeholders named token/key, not credentials"
+targetRules = ["generic-api-key"]
+paths = ['''_test\.go$''']
