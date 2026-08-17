@@ -8,8 +8,8 @@ github.com/cplieger/runesafe v1.4.1 h1:yRlSpbjPVVRHqlWflwx1mXKH4eudbTqbga3/CAZTS
 github.com/cplieger/runesafe v1.4.1/go.mod h1:YLZBsc8mkP/AdmRml6BcsHgUeQm6hZZ7YLcjpY91Nzo=
 github.com/cplieger/slogx v1.6.1 h1:f9C3LeGPD6uxAU096O7ggUcvmon8vFmG6WMkscMI6rU=
 github.com/cplieger/slogx v1.6.1/go.mod h1:BMgRBOiufqGP7GRx2iz6wykZ2c9tBk570g9MPs5ejNQ=
-github.com/cplieger/web-terminal-engine/v4 v4.0.0 h1:J0ORy/XcL/Y/ntG6YL3Rxp6b5C2DzPx51Pc2aj5KRRk=
-github.com/cplieger/web-terminal-engine/v4 v4.0.0/go.mod h1:1x4HEEHcpNJq3Hem2BC7bqmknWd7BHiwbHc3AC+H8ZI=
+github.com/cplieger/web-terminal-engine/v4 v4.0.1 h1:7wLAJ0wcWoDf3MLB2pUJru5j6CBpUfV2sUB4LmPUWKE=
+github.com/cplieger/web-terminal-engine/v4 v4.0.1/go.mod h1:1x4HEEHcpNJq3Hem2BC7bqmknWd7BHiwbHc3AC+H8ZI=
 github.com/cplieger/webhttp v1.23.1 h1:516SQtv8ARg5MjdqigF8/AXJttWt3LqmKd4rOLXm2bs=
 github.com/cplieger/webhttp v1.23.1/go.mod h1:zamKuC9sws/0ql2zKMroo0bCLUCqvNkgJpK2Ot5GwRo=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
