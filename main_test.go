@@ -1860,8 +1860,8 @@ func TestCanonicalPathGuard(t *testing.T) {
 // from a NAMING CONVENTION rather than a map it can validate: it inserts -input,
 // -done or -alert after the filename's `favicon` token. Nothing in the library can
 // check the files exist, because they live here — the dot's colour is the app's
-// theme, so the assets are a per-app artifact of
-// web-terminal-ui/scripts/gen-attention-icons.py.
+// theme, so the assets are a per-app artifact of the fleet's
+// .kiro/scripts/gen-attention-icons.py.
 //
 // So the failure mode of breaking the promise is a BLANK tab icon, not a missing
 // dot, and this test is what stands between a renamed icon and that.
