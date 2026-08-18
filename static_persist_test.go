@@ -11,7 +11,7 @@ import (
 	"github.com/cplieger/webhttp/v2"
 )
 
-// WT_PERSIST_SCROLLBACK is the one server fact the static front end reads, and it
+// PERSIST_SCROLLBACK is the one server fact the static front end reads, and it
 // reaches the page by a startup byte swap rather than a template. What the tests
 // below hold is that the swap is invisible to everything downstream: the CSP hash,
 // the ETag and the gzip body are all derived from the SERVED bytes, and a build
@@ -246,13 +246,13 @@ func TestApplyBoolEnvRejectsANonBoolean(t *testing.T) {
 	// Strict rather than "non-empty is true": this flag decides whether terminal
 	// output is written to browser storage, so a typo must be a startup error
 	// rather than a container that quietly persists.
-	t.Setenv("WT_PERSIST_SCROLLBACK", "flase")
+	t.Setenv("PERSIST_SCROLLBACK", "flase")
 	dst := false
-	err := applyBoolEnv("WT_PERSIST_SCROLLBACK", &dst)
+	err := applyBoolEnv("PERSIST_SCROLLBACK", &dst)
 	if err == nil {
 		t.Fatal("applyBoolEnv accepted \"flase\"")
 	}
-	if !strings.Contains(err.Error(), "WT_PERSIST_SCROLLBACK") {
+	if !strings.Contains(err.Error(), "PERSIST_SCROLLBACK") {
 		t.Errorf("error %q does not name the key", err)
 	}
 	// The value is deliberately NOT echoed — this app reports a bad env value by
@@ -269,7 +269,8 @@ func TestApplyBoolEnvRejectsANonBoolean(t *testing.T) {
 
 func TestApplyBoolEnvLeavesTheDefaultWhenUnset(t *testing.T) {
 	var dst bool
-	if err := applyBoolEnv("WT_PERSIST_SCROLLBACK_ABSENT", &dst); err != nil {
+	// A name nothing sets, not a knob: it exists only to exercise the unset arm.
+	if err := applyBoolEnv("PERSIST_SCROLLBACK_ABSENT", &dst); err != nil {
 		t.Fatalf("applyBoolEnv(unset): %v", err)
 	}
 	if dst {
@@ -277,8 +278,8 @@ func TestApplyBoolEnvLeavesTheDefaultWhenUnset(t *testing.T) {
 	}
 	// An empty value is "unset" too, so a compose entry left blank keeps the
 	// default rather than failing the boot.
-	t.Setenv("WT_PERSIST_SCROLLBACK", "")
-	if err := applyBoolEnv("WT_PERSIST_SCROLLBACK", &dst); err != nil {
+	t.Setenv("PERSIST_SCROLLBACK", "")
+	if err := applyBoolEnv("PERSIST_SCROLLBACK", &dst); err != nil {
 		t.Fatalf("applyBoolEnv(empty): %v", err)
 	}
 	if dst {
@@ -288,9 +289,9 @@ func TestApplyBoolEnvLeavesTheDefaultWhenUnset(t *testing.T) {
 
 func TestApplyBoolEnvAcceptsTheUsualSpellings(t *testing.T) {
 	for _, raw := range []string{"true", "TRUE", "1", "yes", "on"} {
-		t.Setenv("WT_PERSIST_SCROLLBACK", raw)
+		t.Setenv("PERSIST_SCROLLBACK", raw)
 		var dst bool
-		if err := applyBoolEnv("WT_PERSIST_SCROLLBACK", &dst); err != nil {
+		if err := applyBoolEnv("PERSIST_SCROLLBACK", &dst); err != nil {
 			t.Fatalf("applyBoolEnv(%q): %v", raw, err)
 		}
 		if !dst {
@@ -298,9 +299,9 @@ func TestApplyBoolEnvAcceptsTheUsualSpellings(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{"false", "0", "no", "off"} {
-		t.Setenv("WT_PERSIST_SCROLLBACK", raw)
+		t.Setenv("PERSIST_SCROLLBACK", raw)
 		dst := true
-		if err := applyBoolEnv("WT_PERSIST_SCROLLBACK", &dst); err != nil {
+		if err := applyBoolEnv("PERSIST_SCROLLBACK", &dst); err != nil {
 			t.Fatalf("applyBoolEnv(%q): %v", raw, err)
 		}
 		if dst {
@@ -313,7 +314,10 @@ func TestPersistScrollbackDefaultsOn(t *testing.T) {
 	// The default is the whole point of the flag's existence being an opt-OUT: an
 	// off-by-default entry in an env table is off for everyone in practice, and the
 	// users who need this most are the least likely to go looking for it.
-	t.Setenv("WT_CMD", "/bin/true")
+	t.Setenv("SESSION_CMD", "/bin/true")
+	// Cleared explicitly: the key is bare, so an ambient value would make the
+	// default this asserts unobservable.
+	t.Setenv("PERSIST_SCROLLBACK", "")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig(): %v", err)
@@ -324,14 +328,14 @@ func TestPersistScrollbackDefaultsOn(t *testing.T) {
 }
 
 func TestPersistScrollbackHonoursTheOptOut(t *testing.T) {
-	t.Setenv("WT_CMD", "/bin/true")
-	t.Setenv("WT_PERSIST_SCROLLBACK", "false")
+	t.Setenv("SESSION_CMD", "/bin/true")
+	t.Setenv("PERSIST_SCROLLBACK", "false")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig(): %v", err)
 	}
 	if cfg.persistScrollback {
-		t.Error("WT_PERSIST_SCROLLBACK=false did not turn it off")
+		t.Error("PERSIST_SCROLLBACK=false did not turn it off")
 	}
 }
 
@@ -339,9 +343,9 @@ func TestPersistScrollbackRejectsAMalformedOptOut(t *testing.T) {
 	// A typo must abort startup rather than silently leaving the default on: an
 	// operator who wrote "flase" was trying to turn this OFF, and the whole reason
 	// they were reaching for the knob is that they did not want the storage.
-	t.Setenv("WT_CMD", "/bin/true")
-	t.Setenv("WT_PERSIST_SCROLLBACK", "flase")
+	t.Setenv("SESSION_CMD", "/bin/true")
+	t.Setenv("PERSIST_SCROLLBACK", "flase")
 	if _, err := loadConfig(); err == nil {
-		t.Fatal("loadConfig() accepted WT_PERSIST_SCROLLBACK=flase")
+		t.Fatal("loadConfig() accepted PERSIST_SCROLLBACK=flase")
 	}
 }

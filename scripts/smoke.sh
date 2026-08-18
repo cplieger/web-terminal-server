@@ -10,7 +10,7 @@
 #   2. /          returns 200 and serves the UI scaffold (embedded static FS)
 #   3. /ws        speaks WebSocket (a plain GET without upgrade headers is
 #                 rejected, proving the engine handler is mounted)
-#   4. with WT_PASSWORD set, every route (incl. /healthz and /ws) returns 401
+#   4. with AUTH_PASSWORD set, every route (incl. /healthz and /ws) returns 401
 #      without credentials and 200 with them (Basic-auth middleware is wired)
 #
 # Usage:  scripts/smoke.sh [IMAGE]
@@ -54,7 +54,7 @@ fi
 echo "[smoke] starting container $CONTAINER on :${HOST_PORT} (auth enabled)"
 docker run -d --name "$CONTAINER" \
   -p "127.0.0.1:${HOST_PORT}:7681" \
-  -e WT_PASSWORD="$PASSWORD" \
+  -e AUTH_PASSWORD="$PASSWORD" \
   "$IMAGE" >/dev/null
 
 # Wait for readiness via the authenticated /healthz (max ~30s).

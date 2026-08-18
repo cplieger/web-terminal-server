@@ -12,7 +12,7 @@ workflows, or `LICENSE`.
 
 ## Architecture
 
-- `main.go` is the server: env parsing (`WT_*`), `terminal.NewSessionManager`
+- `main.go` is the server: env parsing, `terminal.NewSessionManager`
   (a per-session `terminal.NewHandler` factory), a `ServeMux` mounting
   `/ws?session=<id>`, the session REST API `/api/sessions` (+`/`) behind a create
   rate limit, the status SSE `/api/sessions/events`, `/healthz`, and the embedded
@@ -23,12 +23,12 @@ workflows, or `LICENSE`.
   `script-src` and `style-src` pin a sha256 of each inline block in the embedded
   `index.html`, computed at construction and fail-loud on a malformed embed, plus
   COOP, `Referrer-Policy: same-origin` and a `Permissions-Policy`), the
-  `WT_ALLOWED_HOSTS` host allowlist, the failed-auth throttle, optional HTTP Basic
+  `ALLOWED_HOSTS` host allowlist, the failed-auth throttle, optional HTTP Basic
   auth, `http.CrossOriginProtection`, and the canonical-path guard innermost. The
   logging wrapper's response recorder implements `Unwrap()` so the WebSocket hijack
   reaches the real `ResponseWriter`.
 - `static_persist.go` is the second production file, and it holds the one
-  invariant most likely to trip a contributor. `WT_PERSIST_SCROLLBACK` has to reach
+  invariant most likely to trip a contributor. `PERSIST_SCROLLBACK` has to reach
   an inline module script in a COMMITTED, embedded file, and nothing here templates:
   the CSP pins a sha256 of that script and `webhttp.StaticHandler` precomputes an
   ETag and a gzip body per file, so a per-request rewrite would fight all three. The
@@ -169,7 +169,8 @@ rather than shipping an incompatible client.
 
 Branch from `main`, keep changes focused, open a PR. Conventional Commits;
 git-cliff parses them for the changelog and the version bump
-(`feat: add WT_ENV passthrough`, `fix: clamp scrollback to a sane minimum`).
+(`feat: add an environment passthrough`,
+`fix: clamp scrollback to a sane minimum`).
 
 ## Conduct & security
 

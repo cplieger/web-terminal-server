@@ -11,11 +11,11 @@ services:
 
     environment:
       # Set this. Without it every route, including the terminal WebSocket, is unauthenticated.
-      WT_PASSWORD: "your-terminal-password"
+      AUTH_PASSWORD: "your-terminal-password"
       # Exact hostnames this server answers for: the DNS-rebinding guard. Loopback is always admitted.
-      WT_ALLOWED_HOSTS: "localhost,term.example.com"
+      ALLOWED_HOSTS: "localhost,term.example.com"
       # Working directory for the shell. Must exist in the container.
-      WT_WORKDIR: "/work"
+      WORK_DIR: "/work"
 
     ports:
       # Loopback only. A shell behind basic auth still does not belong on an untrusted network;

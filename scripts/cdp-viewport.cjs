@@ -12,7 +12,7 @@
 // controls and legacy 0x00-prefixed binary controls.
 //
 // Baseline setup: a server on the emitter, reachable from the browser:
-//   WT_ADDR=:7681 WT_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server-bin
+//   LISTEN_ADDR=:7681 SESSION_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server-bin
 //
 // Zero deps. Exit 0 = PASS, non-zero = FAIL. Usage: node scripts/cdp-viewport.cjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";

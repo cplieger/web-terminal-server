@@ -22,37 +22,37 @@ Published as a multi-arch (amd64 + arm64) container image on **GHCR** (`ghcr.io/
 ## ⚠️ Security: this is a remote shell
 
 Anyone who can reach the server **and pass auth (if configured)** gets an
-interactive process running `WT_CMD` with this server's privileges. Treat it
+interactive process running `SESSION_CMD` with this server's privileges. Treat it
 like exposing SSH.
 
 - **The binary binds `127.0.0.1` by default.** Reachable only from the same
-  host until you change `WT_ADDR`.
+  host until you change `LISTEN_ADDR`.
 - **The container image binds `:7681`** (it has to, to be reachable via a
   published port) and so is **unauthenticated and network-exposed by default**.
   Before exposing it beyond a trusted host, do **one** of:
-  - set `WT_PASSWORD` (enables HTTP Basic auth on every route, including the
+  - set `AUTH_PASSWORD` (enables HTTP Basic auth on every route, including the
     WebSocket handshake), and/or
   - front it with an authenticating reverse proxy (Caddy + forward-auth,
     oauth2-proxy, Authentik, …), and/or
   - keep the published port bound to loopback / a private network only.
 - The server logs a loud warning at startup when it is listening on a
-  non-loopback address without `WT_PASSWORD` set.
+  non-loopback address without `AUTH_PASSWORD` set.
 - Each session's recent output (200 lines) is kept in the browser's `localStorage` by default so a
   reloaded tab does not refill over the wire. It is readable from that browser without
-  passing `WT_PASSWORD` and outlives the tab; set `WT_PERSIST_SCROLLBACK=false` on a
+  passing `AUTH_PASSWORD` and outlives the tab; set `PERSIST_SCROLLBACK=false` on a
   shared device or where storing command output at rest is unacceptable. See
   [Persisted scrollback](#persisted-scrollback).
 - **DNS rebinding reaches even loopback binds** through your own browser: an
   attacker's page makes its hostname resolve to this server, and same-origin
-  checks then pass because `Origin` and `Host` agree. Set `WT_ALLOWED_HOSTS`
+  checks then pass because `Origin` and `Host` agree. Set `ALLOWED_HOSTS`
   to the exact hostnames you browse to (rejects every other `Host`), or set
-  `WT_PASSWORD` (the attacker's page cannot present credentials). The server
+  `AUTH_PASSWORD` (the attacker's page cannot present credentials). The server
   warns at startup when neither is set.
 
 Built-in Basic auth is a convenience for simple setups; a reverse proxy with
 real identity is the recommended posture for anything internet-facing. The
 process runs as the container user (root by default); restrict it with a
-non-root `WT_CMD` target, a read-only root filesystem, dropped capabilities,
+non-root `SESSION_CMD` target, a read-only root filesystem, dropped capabilities,
 and a scoped work directory as your threat model requires.
 
 ## What it does
@@ -76,15 +76,15 @@ Or as a one-shot run:
 
 ```sh
 docker run --rm --init -p 127.0.0.1:7681:7681 \
-  -e WT_PASSWORD=changeme \
-  -v "$PWD":/work -e WT_WORKDIR=/work \
+  -e AUTH_PASSWORD=changeme \
+  -v "$PWD":/work -e WORK_DIR=/work \
   ghcr.io/cplieger/web-terminal-server
 ```
 
 Open <http://127.0.0.1:7681>. Both examples bind the published port to loopback
 and set a password; adjust for your environment.
 
-**`--init` / `init: true` is required, not cosmetic.** Whatever `WT_CMD` runs can
+**`--init` / `init: true` is required, not cosmetic.** Whatever `SESSION_CMD` runs can
 fork a child that outlives its own parent, and the kernel reparents that orphan
 onto PID 1. This server waits only for the processes it started itself, so with no
 init it is PID 1 and every orphan stays a zombie for the container's lifetime.
@@ -100,7 +100,7 @@ Names live on the server, not in your browser, so they survive a reload and are 
 
 ## Persisted scrollback
 
-On by default. Set `WT_PERSIST_SCROLLBACK=false` to turn it off.
+On by default. Set `PERSIST_SCROLLBACK=false` to turn it off.
 
 What it does: the browser keeps the newest 200 lines of each session, so a reload
 asks the server only for what was printed while the page was gone. Without it the
@@ -114,9 +114,9 @@ fresh-load case.
 What it stores, which is the reason there is a switch at all: up to 200 lines of
 each session's output, in this origin's `localStorage`, and at most about 1 MB in
 total across every session. That is readable from that
-browser without reaching this server and without passing `WT_PASSWORD`, and it
+browser without reaching this server and without passing `AUTH_PASSWORD`, and it
 outlives the tab that produced it — an entry is deleted when you close its
-terminal, and otherwise after seven days. `WT_CMD` decides what ends up in there.
+terminal, and otherwise after seven days. `SESSION_CMD` decides what ends up in there.
 
 Most ways to read it also hand over a live shell, so the snapshot is rarely the
 weakest thing available. The exception worth knowing is a window where the snapshot
@@ -142,31 +142,39 @@ defaults differ, the Default column shows them as binary / image.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `WT_ADDR` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. The baked healthcheck derives its port from this value and probes `127.0.0.1`, so changing the port is safe but pinning the bind to one non-loopback interface makes the container report `unhealthy` while serving normally. | `127.0.0.1:7681` / `:7681` |
-| `WT_LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
-| `WT_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
-| `WT_WORKDIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
-| `WT_SCROLLBACK` | Lines of history the server retains per session — how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer — asking for less server history would cost the phone more. This is the terminal engine's own variable, shared verbatim with every app built on it, which is why this server holds no default of its own. | `100000` |
-| `WT_PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off — see [Persisted scrollback](#persisted-scrollback). | `true` |
-| `WT_IDLE_REAPER` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
-| `WT_USERNAME` | Basic-auth username (only used when `WT_PASSWORD` is set). | `admin` |
-| `WT_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
-| `WT_ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). The carve-out needs loopback on **both** ends — a loopback client address _and_ a loopback `Host` — so the image healthcheck and a same-host `curl` keep working while a forged loopback `Host` from a remote peer does not. Any other name you browse to must be listed. Malformed entries are dropped with a warning; a list whose entries are **all** malformed fails closed, rejecting every non-loopback request. | _(unset)_ |
-| `WT_TRUSTED_PROXIES` | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). | _(unset → socket peer)_ |
+| `LISTEN_ADDR` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. The baked healthcheck derives its port from this value and probes `127.0.0.1`, so changing the port is safe but pinning the bind to one non-loopback interface makes the container report `unhealthy` while serving normally. | `127.0.0.1:7681` / `:7681` |
+| `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
+| `SESSION_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
+| `WORK_DIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
+| `SCROLLBACK` | Lines of history the server retains per session — how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer — asking for less server history would cost the phone more. This is the terminal engine's own variable, shared verbatim with every app built on it, which is why this server holds no default of its own. | `100000` |
+| `PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off — see [Persisted scrollback](#persisted-scrollback). | `true` |
+| `IDLE_TIMEOUT` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
+| `AUTH_USERNAME` | Basic-auth username (only used when `AUTH_PASSWORD` is set). | `admin` |
+| `AUTH_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
+| `ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). The carve-out needs loopback on **both** ends — a loopback client address _and_ a loopback `Host` — so the image healthcheck and a same-host `curl` keep working while a forged loopback `Host` from a remote peer does not. Any other name you browse to must be listed. Malformed entries are dropped with a warning; a list whose entries are **all** malformed fails closed, rejecting every non-loopback request. | _(unset)_ |
+| `TRUSTED_PROXIES` | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). | _(unset → socket peer)_ |
 
 Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/{id}/pinned-title` (name a terminal; `PUT` to set, `DELETE` to go back to the automatic name), `/api/sessions/events` (status SSE), `/healthz` (readiness).
+
+The variables above are the whole operator surface. Separately, the terminal
+engine injects a few `WT_`-prefixed keys into each session's OWN environment
+(`WT_SESSION_REAP`, `WT_SESSION_ID`, `WT_SESSION_PATH`, `WT_TITLE_HANDLE`,
+`WT_TITLE_STATE_DIR`), so you will see them in `env` inside a terminal. Those are
+internal plumbing, not settings: they keep the prefix precisely because they sit
+in a shell's environment next to everything else the system exports, and the
+session reaper matches one of them on the exact `KEY=VALUE` pair. Do not set them.
 
 ### Volumes
 
 | Mount | Description |
 | --- | --- |
-| _(any path)_ | Nothing is required. Mount whatever the command needs to reach and point `WT_WORKDIR` at it; the examples above mount the current directory at `/work`. |
+| _(any path)_ | Nothing is required. Mount whatever the command needs to reach and point `WORK_DIR` at it; the examples above mount the current directory at `/work`. |
 
 ### Ports
 
 | Port | Description |
 | --- | --- |
-| `7681` | HTTP + WebSocket. Serves the UI, the session API and the terminal socket. Change the listen address with `WT_ADDR`; the healthcheck follows it. |
+| `7681` | HTTP + WebSocket. Serves the UI, the session API and the terminal socket. Change the listen address with `LISTEN_ADDR`; the healthcheck follows it. |
 
 ## Startup failures
 
@@ -176,9 +184,9 @@ step failed:
 
 | `stage` | What failed |
 | --- | --- |
-| `config` | The `WT_*` environment is invalid: a missing or unreadable `WT_WORKDIR`, an unparseable `WT_PERSIST_SCROLLBACK` or `WT_SCROLLBACK`. |
+| `config` | The environment is invalid: a missing or unreadable `WORK_DIR`, an unparseable `PERSIST_SCROLLBACK` or `SCROLLBACK`. |
 | `static` | The embedded front end or its Content-Security-Policy is unusable. A build defect, not a setting: no environment change fixes it. |
-| `listen` | The address in `WT_ADDR` could not be bound. |
+| `listen` | The address in `LISTEN_ADDR` could not be bound. |
 | `serve` | The HTTP server exited with an error while running. |
 | `unknown` | A failure nothing attributed. |
 
@@ -191,7 +199,7 @@ what puts a credential on a variable in the first place.
 
 ## Client IP logging
 
-The access log records a `client_ip` per request. By default (`WT_TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `WT_TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `WT_TRUSTED_PROXIES=10.0.0.0/8,192.0.2.10`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
+The access log records a `client_ip` per request. By default (`TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `TRUSTED_PROXIES=10.0.0.0/8,192.0.2.10`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
 
 A terminal that successfully attaches (the `/ws` WebSocket handshake) gets no line: the handshake ends the HTTP exchange, so the line could only be written when the socket finally closes, reporting a session-long duration and a status the server never sent. Every attach ATTEMPT is recorded separately, before the handshake runs, with a truncated session id, the client IP and the request id — that record is the audit trail for a socket that presents a session credential. A handshake that is _refused_ is also logged with its real status — a rejected `Host`, a cross-origin request, missing credentials, a plain HTTP request with no upgrade headers — so that is what to grep when a browser cannot attach.
 
@@ -204,9 +212,9 @@ after a 15s start period. `/healthz` answers `200 {"status":"ok"}` once the
 listener is bound and `503` during startup and the graceful-shutdown drain, so a
 load balancer stops sending traffic while the server is draining.
 
-Two details worth knowing. The probe derives its port from `WT_ADDR`, so moving
-the listener keeps it working. And when `WT_PASSWORD` is set the probe
-authenticates with `WT_USERNAME`/`WT_PASSWORD` through a curl config file on
+Two details worth knowing. The probe derives its port from `LISTEN_ADDR`, so moving
+the listener keeps it working. And when `AUTH_PASSWORD` is set the probe
+authenticates with `AUTH_USERNAME`/`AUTH_PASSWORD` through a curl config file on
 stdin rather than a command-line flag, so the password never appears in the
 container's process list.
 

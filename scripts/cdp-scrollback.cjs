@@ -17,7 +17,7 @@
 // the remaining link: the server's ED3 -> wire propagation through a live PTY.
 //
 // Drive it against the ED3 fixture (run-cdp.sh wires this up):
-//   WT_ADDR=:7681 WT_CMD="sh scripts/emit-ed3.sh" ./web-terminal-server-bin
+//   LISTEN_ADDR=:7681 SESSION_CMD="sh scripts/emit-ed3.sh" ./web-terminal-server-bin
 //
 // Screen-frame layout (engine's terminal/wire_binary.go): byte 0 = msg_type
 // (0=screen), bytes 9..16 = base (uint64 LE), byte 26 = cursor_flags whose bit4

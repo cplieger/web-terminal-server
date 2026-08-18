@@ -4,18 +4,23 @@
 # healthcheck that passed credentials with `curl -u`:
 #   curl -sf -u "${WT_USERNAME:-admin}:${WT_PASSWORD:-}" http://127.0.0.1:7681/healthz
 # Its curl-auth-user rule flags that -u argument, but it is shell parameter
-# expansion (the WT_USERNAME/WT_PASSWORD env vars resolved at runtime), not an
-# embedded credential. The CURRENT Dockerfile no longer uses -u at all: it feeds a
-# curl config file on stdin (`-K -`) so the password never reaches argv, which
-# also splits the two expansions across separate lines. So this allowlist exists
-# ONLY for the historical commit, and removing it makes the scan fail on history
-# rather than on the tree. Verified 2026-08: with useDefault alone the scan
-# reports exactly that one hit, and nothing in the working tree.
+# expansion (env vars resolved at runtime), not an embedded credential. The
+# CURRENT Dockerfile no longer uses -u at all: it feeds a curl config file on
+# stdin (`-K -`) so the password never reaches argv, which also splits the two
+# expansions across separate lines. So this allowlist exists ONLY for the
+# historical commit, and removing it makes the scan fail on history rather than on
+# the tree. Verified 2026-08: with useDefault alone the scan reports exactly that
+# one hit, and nothing in the working tree.
+#
+# The WT_ names below are HISTORICAL SPELLINGS and must not be renamed with the
+# rest of the tree. The operator knobs became AUTH_USERNAME / AUTH_PASSWORD, but
+# this regex matches bytes in an immutable commit, so updating it to the new names
+# would stop matching and turn the full-history scan red.
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "historical Dockerfile healthcheck curl -u referenced WT_USERNAME/WT_PASSWORD env vars, not a real secret"
+description = "historical Dockerfile healthcheck curl -u referenced the pre-rename WT_USERNAME/WT_PASSWORD env vars, not a real secret"
 regexTarget = "line"
 regexes = ['''\$\{WT_USERNAME:-admin\}:\$\{WT_PASSWORD:-\}''']
 
