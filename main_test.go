@@ -27,8 +27,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/v4/terminal"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/web-terminal-engine/v5/terminal"
+	"github.com/cplieger/webhttp/v2"
 )
 
 // shutdownManager tears the manager down at the end of a test and fails it when
@@ -626,7 +626,7 @@ func TestWebSocketHijackReachesThroughChain(t *testing.T) {
 		reached = true
 		_, _, _ = http.NewResponseController(w).Hijack()
 	})
-	h, err := newHandler(&config{}, ws, stubHandler{}, stubHandler{}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: ws, REST: stubHandler{}, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -660,7 +660,7 @@ func (s stubHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 // below call newHandler directly with their own hit-tracking stubs.
 func newTestHandler(t *testing.T, cfg config, ready *webhttp.Ready, wsHit *atomic.Bool) http.Handler {
 	t.Helper()
-	h, err := newHandler(&cfg, stubHandler{hit: wsHit}, stubHandler{}, stubHandler{}, ready)
+	h, err := newHandler(&cfg, terminal.SessionHandlers{WS: stubHandler{hit: wsHit}, REST: stubHandler{}, Events: stubHandler{}}, ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -940,7 +940,7 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 func hostPolicyFor(t *testing.T, entries ...string) *webhttp.HostPolicy {
 	t.Helper()
 	policy, invalid := webhttp.ParseHostList(entries,
-		webhttp.WithLoopbackExempt(),
+		webhttp.WithLoopbackExempt(true),
 		webhttp.WithHostAllowlistError("host_not_allowed",
 			"host not allowed; add it to WT_ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
@@ -1056,7 +1056,7 @@ func TestRouteSessionsReachesREST(t *testing.T) {
 	var ready webhttp.Ready
 	var wsHit, restHit, eventsHit atomic.Bool
 	ready.Set(true)
-	h, err := newHandler(&config{}, stubHandler{hit: &wsHit}, stubHandler{hit: &restHit}, stubHandler{hit: &eventsHit}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{hit: &wsHit}, REST: stubHandler{hit: &restHit}, Events: stubHandler{hit: &eventsHit}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -1083,7 +1083,7 @@ func TestRouteEventsReachesSSE(t *testing.T) {
 	var ready webhttp.Ready
 	var wsHit, restHit, eventsHit atomic.Bool
 	ready.Set(true)
-	h, err := newHandler(&config{}, stubHandler{hit: &wsHit}, stubHandler{hit: &restHit}, stubHandler{hit: &eventsHit}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{hit: &wsHit}, REST: stubHandler{hit: &restHit}, Events: stubHandler{hit: &eventsHit}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -1107,7 +1107,7 @@ func TestRouteEventsReachesSSE(t *testing.T) {
 // StatusRecorder (the /api/sessions/events path is not skipped), so this pins
 // that the SSE stream still flushes through the logging wrapper.
 func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
-	factory := func(string) *terminal.Handler {
+	factory := func(terminal.SessionID) *terminal.Handler {
 		return terminal.NewHandler([]string{"/bin/cat"}, terminal.WithLogger(nil))
 	}
 	mgr := terminal.NewSessionManager(factory, terminal.WithManagerLogger(nil))
@@ -1119,7 +1119,7 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 
 	var ready webhttp.Ready
 	ready.Set(true)
-	h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, mgr.EventsHandler(), &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{}, Events: mgr.EventsHandler()}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -1142,7 +1142,7 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	}
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
-		if line := sc.Text(); strings.HasPrefix(line, "data:") && strings.Contains(line, id) {
+		if line := sc.Text(); strings.HasPrefix(line, "data:") && strings.Contains(line, string(id)) {
 			return // an event flushed through the middleware chain
 		}
 	}
@@ -1159,7 +1159,7 @@ func TestCreateRateLimit(t *testing.T) {
 	var ready webhttp.Ready
 	var restHit atomic.Bool
 	ready.Set(true)
-	h, err := newHandler(&config{}, stubHandler{}, stubHandler{hit: &restHit}, stubHandler{}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{hit: &restHit}, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -1196,7 +1196,7 @@ func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var ready webhttp.Ready
 		ready.Set(true)
-		h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, stubHandler{}, &ready)
+		h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{}, Events: stubHandler{}}, &ready)
 		if err != nil {
 			t.Fatalf("newHandler() error: %v", err)
 		}
@@ -1400,11 +1400,11 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	// The engine's own REST route table. The factory is never invoked (nothing
 	// here creates a session), so no PTY is spawned.
 	mgr := terminal.NewSessionManager(
-		func(string) *terminal.Handler { return terminal.NewHandler([]string{"/bin/true"}) },
+		func(terminal.SessionID) *terminal.Handler { return terminal.NewHandler([]string{"/bin/true"}) },
 		terminal.WithManagerLogger(slog.New(slog.DiscardHandler)),
 	)
 	t.Cleanup(func() { shutdownManager(t, mgr) })
-	h, err := newHandler(&config{}, stubHandler{}, mgr.RESTHandler(), stubHandler{}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: mgr.RESTHandler(), Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -1476,7 +1476,7 @@ func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	var ready webhttp.Ready // zero value: not ready -> /healthz answers 503
-	h, err := newHandler(&config{}, stubHandler{}, stubHandler{}, stubHandler{}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{}, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -1519,7 +1519,7 @@ func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
 		var ready webhttp.Ready
 		ready.Set(true)
 		ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
-		h, err := newHandler(&config{}, ws, stubHandler{}, stubHandler{}, &ready)
+		h, err := newHandler(&config{}, terminal.SessionHandlers{WS: ws, REST: stubHandler{}, Events: stubHandler{}}, &ready)
 		if err != nil {
 			t.Fatalf("newHandler() error: %v", err)
 		}
@@ -1568,7 +1568,7 @@ func TestSessionLoggerTruncatesSessionID(t *testing.T) {
 	}
 
 	log := buf.String()
-	if strings.Contains(log, id) {
+	if strings.Contains(log, string(id)) {
 		t.Errorf("log = %q, must never carry the FULL session id %q (it is the /ws resume capability token)", log, id)
 	}
 	want := terminal.LogID(id)
@@ -2335,7 +2335,7 @@ func TestCanonicalPathGuardRefusesTheSideEffect(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
 	var restHit atomic.Bool
-	h, err := newHandler(&config{}, stubHandler{}, stubHandler{hit: &restHit}, stubHandler{}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{hit: &restHit}, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -2491,7 +2491,7 @@ func TestCrossOriginProtectionGatesUnsafeMethods(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
 	var restHit atomic.Bool
-	h, err := newHandler(&config{}, stubHandler{}, stubHandler{hit: &restHit}, stubHandler{}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{hit: &restHit}, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}
@@ -2570,9 +2570,13 @@ func TestNoDiagnosticRoutesOnThisSurface(t *testing.T) {
 func TestSessionSurfaceIsNeverCacheable(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
-	h, err := newHandler(&config{}, stubHandler{}, terminal.NewSessionManager(
-		func(string) *terminal.Handler { return terminal.NewHandler([]string{"/bin/true"}) },
-	).RESTHandler(), stubHandler{}, &ready)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{
+		WS: stubHandler{},
+		REST: terminal.NewSessionManager(
+			func(terminal.SessionID) *terminal.Handler { return terminal.NewHandler([]string{"/bin/true"}) },
+		).RESTHandler(),
+		Events: stubHandler{},
+	}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
 	}

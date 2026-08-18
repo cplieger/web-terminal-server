@@ -1,6 +1,6 @@
 // Command web-terminal-server is a thin, generic web terminal: it runs a
 // configured command in a PTY and serves the @cplieger/web-terminal-ui front
-// end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v4.
+// end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v5.
 //
 // SECURITY: this is a remote shell. Anyone who can reach the listen address
 // and pass auth (if any) gets an interactive process running WT_CMD with this
@@ -24,10 +24,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/envx"
+	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/slogx"
-	"github.com/cplieger/web-terminal-engine/v4/terminal"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/web-terminal-engine/v5/terminal"
+	"github.com/cplieger/webhttp/v2"
 )
 
 // staticFS holds the bundled front end (the @cplieger/web-terminal-ui scaffold
@@ -58,7 +58,7 @@ const healthzPath = "/healthz"
 // rendered into main's one startup ERROR line, and a compose interpolation mistake can
 // put a credential on any variable, so echoing it would leave a durable queryable copy
 // in the log store (CWE-532). A below-min value already parsed, so the int itself is safe.
-func applyIntEnv(key string, minVal int, dst *int) error {
+func applyIntEnv(key envx.Key, minVal int, dst *int) error {
 	n, ok, err := envx.IntStrict(key)
 	if err != nil {
 		return fmt.Errorf("%s must be an integer >= %d", key, minVal)
@@ -77,7 +77,7 @@ func applyIntEnv(key string, minVal int, dst *int) error {
 // duration. Same name-only rejection as applyIntEnv, for the same reason. String() is
 // deliberate on the negative arm: %q on a time.Duration renders a rune literal, since its
 // underlying kind is int64, and a duration that already parsed cannot be a secret.
-func applyDurationEnv(key string, dst *time.Duration) error {
+func applyDurationEnv(key envx.Key, dst *time.Duration) error {
 	d, ok, err := envx.DurationStrict(key)
 	if err != nil {
 		return fmt.Errorf("%s must be a non-negative Go duration", key)
@@ -97,7 +97,7 @@ func applyDurationEnv(key string, dst *time.Duration) error {
 // operator who typed WT_PERSIST_SCROLLBACK=flase deserves a startup error rather than a
 // container that quietly persists. The library's error is returned verbatim — it names
 // the key and the accepted vocabulary already, and carries no fragment of the value.
-func applyBoolEnv(key string, dst *bool) error {
+func applyBoolEnv(key envx.Key, dst *bool) error {
 	v, ok, err := envx.BoolStrict(key)
 	if err != nil {
 		return err
@@ -141,7 +141,7 @@ func parseTrustedProxies(key string) []*net.IPNet {
 // every browser request would otherwise 403 with no hint why.
 func parseAllowedHosts(key string) *webhttp.HostPolicy {
 	policy, invalid := webhttp.ParseHostList(strings.Split(os.Getenv(key), ","),
-		webhttp.WithLoopbackExempt(),
+		webhttp.WithLoopbackExempt(true),
 		webhttp.WithHostAllowlistError("host_not_allowed",
 			"host not allowed; add it to WT_ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
@@ -379,7 +379,11 @@ func run() error {
 	// its lifecycle, flipping it true after bind and false on the shutdown signal.
 	var ready webhttp.Ready
 
-	handler, err := newHandler(&cfg, mgr.WebSocketHandler(), mgr.RESTHandler(), mgr.EventsHandler(), &ready)
+	handler, err := newHandler(&cfg, terminal.SessionHandlers{
+		WS:     mgr.WebSocketHandler(),
+		REST:   mgr.RESTHandler(),
+		Events: mgr.EventsHandler(),
+	}, &ready)
 	if err != nil {
 		// The remedy rides inside the error because main renders exactly one ERROR line.
 		// This stage is a BUILD defect rather than a runtime setting, which is the one
@@ -467,14 +471,14 @@ func run() error {
 // constructed here so a test can exercise routing and middleware with stubs and no
 // real PTY. ready gates /healthz. It returns an error when the embedded static assets
 // cannot be opened or the CSP cannot be built from index.html.
-func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready) (http.Handler, error) {
+func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// The engine owns its route topology: MountSessionRoutes wires exactly its documented
 	// set — /ws, /api/sessions (+ subtree), /api/sessions/events — so no engine-internal
 	// route can reach this network surface unannounced. The create gate rides webhttp's
 	// shared session-create preset (burst 6, 1/s refill), so a bare and possibly
 	// unauthenticated caller cannot fork PTY processes without bound.
-	terminal.MountSessionRoutes(mux, ws, rest, events,
+	terminal.MountSessionRoutes(mux, h,
 		terminal.WithCreateGate(webhttp.SessionCreateRateLimit(terminal.SessionsPath)))
 	// Serving-state gate for a load balancer: 200 when ready, 503 during startup and
 	// shutdown. run owns the flag lifecycle. This app has no health-library file marker,
@@ -556,7 +560,7 @@ func newHandler(cfg *config, ws, rest, events http.Handler, ready *webhttp.Ready
 			// record — the uniform 426, a malformed-key 400, the CrossOriginProtection 403, the
 			// basicAuth 401 — which is why this is not WithSkipPaths("/ws"): a path skip is
 			// decided before the handler runs and would take the refusals with it.
-			webhttp.WithSkipUpgrades(),
+			webhttp.WithSkipUpgrades(true),
 		),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
 		// One record per /ws UPGRADE attempt, outside the host gate so a rejected Host
@@ -633,7 +637,7 @@ func wsAttachLog(trustedProxies []*net.IPNet) webhttp.Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == terminal.WSPath && isWebSocketUpgrade(r) {
 				slog.Info(wsAttachMsg,
-					"session", terminal.LogID(r.URL.Query().Get("session")),
+					"session", terminal.LogID(terminal.SessionID(r.URL.Query().Get("session"))),
 					"client_ip", webhttp.ClientIP(r, trustedProxies...),
 					"request_id", webhttp.RequestIDFromContext(r.Context()))
 			}
@@ -671,14 +675,8 @@ func headerHasToken(r *http.Request, name, token string) bool {
 // attach and resume capability token, so logging it whole would put a session-access
 // credential into aggregated logs (CWE-532) — and WT_PASSWORD is optional, so in the
 // documented unauthenticated posture the token alone is enough to attach.
-func sessionFactory(cfg *config) func(string) *terminal.Handler {
-	return func(id string) *terminal.Handler {
-		// terminal.WithInputTitle is deliberately NOT set. It names a session after the
-		// first line typed into it, which fits a session-per-conversation agent shell and
-		// not a general-purpose terminal: here a session is a shell you run many unrelated
-		// commands in, so the engine's foreground-process/cwd ladder is the better
-		// automatic label and the shell's own OSC title is usually meaningful. A user who
-		// wants a fixed name renames the tab, which outranks every automatic source.
+func sessionFactory(cfg *config) func(terminal.SessionID) *terminal.Handler {
+	return func(id terminal.SessionID) *terminal.Handler {
 		opts := []terminal.Option{
 			terminal.WithLogger(slog.Default().With("session", terminal.LogID(id))),
 			// The engine logs the child's full argv at process start. WT_CMD is

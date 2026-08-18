@@ -82,7 +82,7 @@ package, not here.
 ## Local development
 
 The engine and UI are published, so a plain checkout builds against the
-released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine/v4`
+released packages: `go.mod` pins `github.com/cplieger/web-terminal-engine/v5`
 (`go.sum` carries its checksums), and `scripts/dev-build.sh` and the Dockerfile
 pull the published `@cplieger/web-terminal-*` npm tarballs.
 
@@ -130,10 +130,14 @@ pinned published one, add a `go.work` that redirects the module to your sibling
 checkout:
 
 ```text
-go 1.26.5
+go 1.26.6
 use .
-replace github.com/cplieger/web-terminal-engine/v4 => ../web-terminal-engine
+replace github.com/cplieger/web-terminal-engine/v5 => ../web-terminal-engine
 ```
+
+Use `use .` plus `replace`, not a `use (...)` list naming the sibling: as a
+workspace main module the engine resolves its OWN requirements, which fails
+against any version not yet published.
 
 `go.work` is gitignored and dockerignored (local-dev only); the `replace` reads
 `../web-terminal-engine/go.mod` directly so the build uses your working-tree

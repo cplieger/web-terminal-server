@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/web-terminal-engine/v4/terminal"
+	"github.com/cplieger/web-terminal-engine/v5/terminal"
 )
 
 // TestRun_delegatesToTheEngineRule pins that the gate's verdict IS the
@@ -35,8 +35,8 @@ func TestRun_delegatesToTheEngineRule(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code := run(tc.clientRev, tc.clientMinServer, &stdout, &stderr)
 			engineSaysCompatible := terminal.WirePairIncompatibility(
-				terminal.WireProtocolVersion, terminal.MinSupportedClientWireVersion,
-				tc.clientRev, tc.clientMinServer,
+				terminal.WireEnd{Rev: terminal.WireProtocolVersion, MinPeer: terminal.MinSupportedClientWireVersion},
+				terminal.WireEnd{Rev: tc.clientRev, MinPeer: tc.clientMinServer},
 			) == ""
 			if engineSaysCompatible != tc.wantCompatible {
 				t.Fatalf("engine verdict for (%d,%d) = compatible:%v, test expected %v; the engine's rule changed and this table is stale",
