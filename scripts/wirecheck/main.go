@@ -29,7 +29,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/cplieger/web-terminal-engine/v4/terminal"
+	"github.com/cplieger/web-terminal-engine/v5/terminal"
 )
 
 // usageErrMsg is the one line every exit-2 path prints last, so the broken-gate case is
@@ -98,10 +98,9 @@ func run(clientRev, clientMinServer int, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usageErrMsg)
 		return 2
 	}
-	if reason := terminal.WirePairIncompatibility(
-		terminal.WireProtocolVersion, terminal.MinSupportedClientWireVersion,
-		clientRev, clientMinServer,
-	); reason != "" {
+	server := terminal.WireEnd{Rev: terminal.WireProtocolVersion, MinPeer: terminal.MinSupportedClientWireVersion}
+	client := terminal.WireEnd{Rev: clientRev, MinPeer: clientMinServer}
+	if reason := terminal.WirePairIncompatibility(server, client); reason != "" {
 		fmt.Fprintf(stderr, "ERROR wire-floor-mismatch: %s\n%s\n", reason, remediation())
 		return 1
 	}
