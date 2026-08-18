@@ -10,6 +10,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"embed"
 	"errors"
@@ -187,10 +188,10 @@ type config struct {
 // path and main owns the single exit.
 func loadConfig() (config, error) {
 	c := config{
-		addr:           envx.String("WT_ADDR", defaultAddr),
-		command:        strings.Fields(envx.String("WT_CMD", defaultCmd)),
+		addr:           cmp.Or(envx.String("WT_ADDR"), defaultAddr),
+		command:        strings.Fields(cmp.Or(envx.String("WT_CMD"), defaultCmd)),
 		workDir:        os.Getenv("WT_WORKDIR"),
-		username:       envx.String("WT_USERNAME", defaultUsername),
+		username:       cmp.Or(envx.String("WT_USERNAME"), defaultUsername),
 		password:       os.Getenv("WT_PASSWORD"),
 		trustedProxies: parseTrustedProxies("WT_TRUSTED_PROXIES"),
 		hostPolicy:     parseAllowedHosts("WT_ALLOWED_HOSTS"),
@@ -319,7 +320,7 @@ func stageOf(err error) string {
 // parse-failure warning emits AFTER Setup through the configured handler (the
 // slogx contract). A bad value is diagnosable-not-fatal: warn and run at info.
 func setupLogging() {
-	logLevel, logLevelOK := slogx.ParseLevel(envx.String("WT_LOG_LEVEL", ""), slog.LevelInfo)
+	logLevel, logLevelOK := slogx.ParseLevel(envx.String("WT_LOG_LEVEL"), slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: logLevel})
 	if !logLevelOK {
 		// Field-name-only: a compose expansion mistake could put a secret in
