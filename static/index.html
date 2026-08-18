@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark">
 <!-- Whether this deployment persists terminal scrollback in the browser. The
-     server stamps the resolved value here at startup from WT_PERSIST_SCROLLBACK
+     server stamps the resolved value here at startup from PERSIST_SCROLLBACK
      (main.go applyPersistFlag), in either direction, so this committed value is
      documentation of the default rather than a load-bearing input. On by default
      because without it a reloaded or discarded tab refills its whole buffer over
-     the wire, which is the normal case on a phone; WT_PERSIST_SCROLLBACK=false is
+     the wire, which is the normal case on a phone; PERSIST_SCROLLBACK=false is
      the opt-out for a shared device or a compliance constraint. The exact byte
      string is matched by the server and startup FAILS if it is missing, so edit it
      only alongside main.go's constants. -->
@@ -86,7 +86,7 @@
   // a spinner that never stops.
   //
   // Scrollback persistence is the operator's call, read from the meta tag the
-  // server stamps from WT_PERSIST_SCROLLBACK. It is OMITTED rather than passed as
+  // server stamps from PERSIST_SCROLLBACK. It is OMITTED rather than passed as
   // undefined when off, because the option's presence is what enables the feature.
   // The store is the library's own, so this page carries no storage code and no
   // orphan sweep of its own to get wrong.

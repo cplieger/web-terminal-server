@@ -101,7 +101,7 @@ start_server() { # wt_cmd
       exit 4
     }
   fi
-  WT_ADDR="$WT_HOST:$WT_PORT" WT_CMD="$1" WT_SCROLLBACK=5000 "$bin" >/dev/null 2>&1 &
+  LISTEN_ADDR="$WT_HOST:$WT_PORT" SESSION_CMD="$1" SCROLLBACK=5000 "$bin" >/dev/null 2>&1 &
   SERVER_PID=$!
   wait_for "http://$WT_HOST:$WT_PORT/healthz" "web-terminal-server"
 }

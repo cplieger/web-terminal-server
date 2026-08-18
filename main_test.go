@@ -50,15 +50,18 @@ func shutdownManager(t *testing.T, mgr *terminal.SessionManager) {
 	}
 }
 
-// setWTEnv clears every WT_* variable then applies the given overrides, so each
-// loadConfig case runs against a known-clean environment regardless of the host
-// shell or test ordering. t.Setenv restores the prior values at test end.
-func setWTEnv(t *testing.T, over map[string]string) {
+// setServerEnv clears every variable this server reads then applies the given
+// overrides, so each loadConfig case runs against a known-clean environment
+// regardless of the host shell or test ordering. The names are bare rather than
+// app-prefixed, which makes an ambient value likelier, so the clear list must
+// cover every key loadConfig and setupLogging touch. t.Setenv restores the prior
+// values at test end.
+func setServerEnv(t *testing.T, over map[string]string) {
 	t.Helper()
 	for _, k := range []string{
-		"WT_ADDR", "WT_CMD", "WT_WORKDIR", "WT_SCROLLBACK",
-		"WT_USERNAME", "WT_PASSWORD", "WT_IDLE_REAPER", "WT_TRUSTED_PROXIES",
-		"WT_ALLOWED_HOSTS",
+		"LISTEN_ADDR", "SESSION_CMD", "WORK_DIR", "SCROLLBACK",
+		"AUTH_USERNAME", "AUTH_PASSWORD", "IDLE_TIMEOUT", "TRUSTED_PROXIES",
+		"ALLOWED_HOSTS", "PERSIST_SCROLLBACK", "LOG_LEVEL",
 	} {
 		t.Setenv(k, "")
 	}
@@ -68,7 +71,7 @@ func setWTEnv(t *testing.T, over map[string]string) {
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
-	setWTEnv(t, nil)
+	setServerEnv(t, nil)
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig() unexpected error: %v", err)
@@ -79,7 +82,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if len(cfg.command) != 1 || cfg.command[0] != defaultCmd {
 		t.Errorf("command = %v, want [%q]", cfg.command, defaultCmd)
 	}
-	// UNSET (nil), not defaulted: with no WT_SCROLLBACK the app holds no opinion
+	// UNSET (nil), not defaulted: with no SCROLLBACK the app holds no opinion
 	// and omits the option, so the handler inherits the engine's own default. A
 	// number here would be this app re-deciding a sizing question the engine
 	// documents, and the three consumers sharing this knob would drift.
@@ -95,7 +98,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 }
 
 func TestLoadConfigCommandSplitting(t *testing.T) {
-	setWTEnv(t, map[string]string{"WT_CMD": "  /usr/bin/env   bash  -l "})
+	setServerEnv(t, map[string]string{"SESSION_CMD": "  /usr/bin/env   bash  -l "})
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig() error: %v", err)
@@ -116,15 +119,15 @@ func TestLoadConfigErrors(t *testing.T) {
 		name string
 		env  map[string]string
 	}{
-		{"empty command", map[string]string{"WT_CMD": "   "}},
-		{"scrollback not an int", map[string]string{"WT_SCROLLBACK": "lots"}},
-		{"scrollback negative", map[string]string{"WT_SCROLLBACK": "-5"}},
-		{"workdir missing", map[string]string{"WT_WORKDIR": "/no/such/dir/web-terminal-test"}},
-		{"idle reaper negative", map[string]string{"WT_IDLE_REAPER": "-5s"}},
+		{"empty command", map[string]string{"SESSION_CMD": "   "}},
+		{"scrollback not an int", map[string]string{"SCROLLBACK": "lots"}},
+		{"scrollback negative", map[string]string{"SCROLLBACK": "-5"}},
+		{"workdir missing", map[string]string{"WORK_DIR": "/no/such/dir/web-terminal-test"}},
+		{"idle reaper negative", map[string]string{"IDLE_TIMEOUT": "-5s"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setWTEnv(t, tt.env)
+			setServerEnv(t, tt.env)
 			if _, err := loadConfig(); err == nil {
 				t.Fatalf("loadConfig() = nil error, want error for %s", tt.name)
 			}
@@ -136,10 +139,10 @@ func TestLoadConfigErrors(t *testing.T) {
 // strict env validators, and it is the inverse of what this test used to assert.
 //
 // These errors are rendered into main's ONE startup ERROR line, and a compose
-// interpolation mistake can put a credential on any variable (`WT_SCROLLBACK: ${TOKEN}`
+// interpolation mistake can put a credential on any variable (`SCROLLBACK: ${TOKEN}`
 // resolves to a token that fails to parse as an int). Echoing the rejected value would
 // leave a durable, queryable copy of it in the log store (CWE-532), so a rejection names
-// the KEY and the accepted shape and nothing else. That is the same rule the WT_LOG_LEVEL
+// the KEY and the accepted shape and nothing else. That is the same rule the LOG_LEVEL
 // warning and envx's own value-free BoolStrict error already follow here.
 //
 // The out-of-range cases are the deliberate exception: those values PARSED, so the number
@@ -155,16 +158,16 @@ func TestLoadConfigRejectionNamesTheKeyAndNeverTheValue(t *testing.T) {
 		want    string
 		notWant string
 	}{
-		{"unparseable int names the key only", map[string]string{"WT_SCROLLBACK": "  lots\t"}, "WT_SCROLLBACK must be an integer >= 0", "lots"},
-		{"unparseable int never leaks a secret-shaped value", map[string]string{"WT_SCROLLBACK": secretish}, "WT_SCROLLBACK must be an integer >= 0", secretish},
-		{"below-min int names the parsed number", map[string]string{"WT_SCROLLBACK": "-5"}, "got -5", `"-5"`},
-		{"unparseable duration names the key only", map[string]string{"WT_IDLE_REAPER": " 5x "}, "WT_IDLE_REAPER must be a non-negative Go duration", "5x"},
-		{"unparseable duration never leaks a secret-shaped value", map[string]string{"WT_IDLE_REAPER": secretish}, "WT_IDLE_REAPER must be a non-negative Go duration", secretish},
-		{"negative duration names the parsed duration", map[string]string{"WT_IDLE_REAPER": "-5s"}, `"-5s"`, ""},
+		{"unparseable int names the key only", map[string]string{"SCROLLBACK": "  lots\t"}, "SCROLLBACK must be an integer >= 0", "lots"},
+		{"unparseable int never leaks a secret-shaped value", map[string]string{"SCROLLBACK": secretish}, "SCROLLBACK must be an integer >= 0", secretish},
+		{"below-min int names the parsed number", map[string]string{"SCROLLBACK": "-5"}, "got -5", `"-5"`},
+		{"unparseable duration names the key only", map[string]string{"IDLE_TIMEOUT": " 5x "}, "IDLE_TIMEOUT must be a non-negative Go duration", "5x"},
+		{"unparseable duration never leaks a secret-shaped value", map[string]string{"IDLE_TIMEOUT": secretish}, "IDLE_TIMEOUT must be a non-negative Go duration", secretish},
+		{"negative duration names the parsed duration", map[string]string{"IDLE_TIMEOUT": "-5s"}, `"-5s"`, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setWTEnv(t, tt.env)
+			setServerEnv(t, tt.env)
 
 			_, err := loadConfig()
 			if err == nil {
@@ -182,7 +185,7 @@ func TestLoadConfigRejectionNamesTheKeyAndNeverTheValue(t *testing.T) {
 
 func TestLoadConfigWorkDirAccepted(t *testing.T) {
 	dir := t.TempDir()
-	setWTEnv(t, map[string]string{"WT_WORKDIR": dir})
+	setServerEnv(t, map[string]string{"WORK_DIR": dir})
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig() error: %v", err)
@@ -198,10 +201,10 @@ func TestLoadConfigWorkDirNotDirectory(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	setWTEnv(t, map[string]string{"WT_WORKDIR": file})
+	setServerEnv(t, map[string]string{"WORK_DIR": file})
 	_, err := loadConfig()
 	if err == nil {
-		t.Fatal("loadConfig() = nil error, want error when WT_WORKDIR is a regular file")
+		t.Fatal("loadConfig() = nil error, want error when WORK_DIR is a regular file")
 	}
 	if !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("loadConfig() error = %q, want it to mention %q", err, "not a directory")
@@ -209,7 +212,7 @@ func TestLoadConfigWorkDirNotDirectory(t *testing.T) {
 }
 
 func TestLoadConfigScrollbackZeroAllowed(t *testing.T) {
-	setWTEnv(t, map[string]string{"WT_SCROLLBACK": "0"})
+	setServerEnv(t, map[string]string{"SCROLLBACK": "0"})
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig() error: %v", err)
@@ -233,7 +236,7 @@ func TestLoadConfigScrollbackZeroAllowed(t *testing.T) {
 // phone memory. Clamping up and warning beats obeying that quietly.
 func TestLoadConfigScrollbackClampsBelowPagingFloor(t *testing.T) {
 	shallow := terminal.MinPagingCapacity - 1
-	setWTEnv(t, map[string]string{"WT_SCROLLBACK": strconv.Itoa(shallow)})
+	setServerEnv(t, map[string]string{"SCROLLBACK": strconv.Itoa(shallow)})
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig() error: %v", err)
@@ -250,7 +253,7 @@ func TestLoadConfigScrollbackClampsBelowPagingFloor(t *testing.T) {
 // only what it fills, so the number costs nothing until it is used.
 func TestLoadConfigScrollbackHonoursDeepValues(t *testing.T) {
 	const deep = 50_000_000
-	setWTEnv(t, map[string]string{"WT_SCROLLBACK": strconv.Itoa(deep)})
+	setServerEnv(t, map[string]string{"SCROLLBACK": strconv.Itoa(deep)})
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig() error: %v", err)
@@ -261,7 +264,7 @@ func TestLoadConfigScrollbackHonoursDeepValues(t *testing.T) {
 }
 
 // TestWarnIfExposed asserts the warn decision (warn vs. stay silent) across
-// every WT_ADDR form by capturing slog.Default() into a buffer: loopback
+// every LISTEN_ADDR form by capturing slog.Default() into a buffer: loopback
 // (v4/v6/name) and password-set cases must stay silent, while wildcard,
 // routable, and unparseable hosts without a password must warn. warnIfExposed
 // is the only guardrail against an accidental open shell, so this log-only
@@ -283,7 +286,7 @@ func TestWarnIfExposed(t *testing.T) {
 		// "Localhost"; webhttp.ClassifyBind folds like the sibling apps.
 		{"loopback name mixed case", "Localhost:7681", "", false},
 		{"loopback ipv6", "[::1]:7681", "", false},
-		// The classify-the-unsplit-input recipe: a portless loopback WT_ADDR
+		// The classify-the-unsplit-input recipe: a portless loopback LISTEN_ADDR
 		// is read as a bare host and stays silent, exactly as before the
 		// webhttp migration (it fails at Listen with its own error).
 		{"portless loopback stays silent", "127.0.0.1", "", false},
@@ -370,7 +373,7 @@ func TestBasicAuth(t *testing.T) {
 	// not everything — even a client presenting the same empty string gets
 	// 401. Production wiring never configures an empty pair (newHandler skips
 	// the middleware entirely when no password is set, and envx.String
-	// defaults an empty WT_USERNAME to "admin"), so an open endpoint is only
+	// defaults an empty AUTH_USERNAME to "admin"), so an open endpoint is only
 	// ever the explicit skip, never an accidental empty-secret match.
 	t.Run("empty configured password fails closed", func(t *testing.T) {
 		rec := basicAuthRequest(user, "", &[2]string{user, ""})
@@ -708,7 +711,7 @@ func TestRouteWSReachesTerminal(t *testing.T) {
 
 func TestLoadConfigIdleReaper(t *testing.T) {
 	t.Run("idle reaper duration parsed and validated", func(t *testing.T) {
-		setWTEnv(t, map[string]string{"WT_IDLE_REAPER": "30m"})
+		setServerEnv(t, map[string]string{"IDLE_TIMEOUT": "30m"})
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
@@ -716,9 +719,9 @@ func TestLoadConfigIdleReaper(t *testing.T) {
 		if cfg.idleReaper != 30*time.Minute {
 			t.Errorf("idleReaper = %v, want 30m", cfg.idleReaper)
 		}
-		setWTEnv(t, map[string]string{"WT_IDLE_REAPER": "nonsense"})
+		setServerEnv(t, map[string]string{"IDLE_TIMEOUT": "nonsense"})
 		if _, err := loadConfig(); err == nil {
-			t.Error("loadConfig() with WT_IDLE_REAPER=nonsense = nil error, want error")
+			t.Error("loadConfig() with IDLE_TIMEOUT=nonsense = nil error, want error")
 		}
 	})
 }
@@ -734,39 +737,39 @@ func trustedContains(nets []*net.IPNet, ip string) bool {
 	return false
 }
 
-// TestLoadConfigTrustedProxies covers WT_TRUSTED_PROXIES parsing via the shared
+// TestLoadConfigTrustedProxies covers TRUSTED_PROXIES parsing via the shared
 // webhttp.ParseCIDRs helper and its threading onto cfg.trustedProxies (consumed
 // by webhttp.WithClientIP in newHandler). Three contracts: unset yields nil (so
 // ClientIP ignores X-Forwarded-For and logs the spoof-proof socket peer), a
 // valid CIDR + bare-IP mix is parsed into containment-correct nets, and a
 // malformed entry is warned (named) and skipped while the valid subset is kept —
 // startup is never aborted. These cases mutate the process-global default logger
-// and WT_* env, so they run serially (no t.Parallel).
+// and env, so they run serially (no t.Parallel).
 func TestLoadConfigTrustedProxies(t *testing.T) {
 	t.Run("unset yields nil (socket-peer default)", func(t *testing.T) {
-		setWTEnv(t, nil)
+		setServerEnv(t, nil)
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
 		}
 		if cfg.trustedProxies != nil {
-			t.Errorf("trustedProxies = %v, want nil when WT_TRUSTED_PROXIES is unset", cfg.trustedProxies)
+			t.Errorf("trustedProxies = %v, want nil when TRUSTED_PROXIES is unset", cfg.trustedProxies)
 		}
 	})
 
 	t.Run("empty string yields nil", func(t *testing.T) {
-		setWTEnv(t, map[string]string{"WT_TRUSTED_PROXIES": "   "})
+		setServerEnv(t, map[string]string{"TRUSTED_PROXIES": "   "})
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
 		}
 		if cfg.trustedProxies != nil {
-			t.Errorf("trustedProxies = %v, want nil for a blank WT_TRUSTED_PROXIES", cfg.trustedProxies)
+			t.Errorf("trustedProxies = %v, want nil for a blank TRUSTED_PROXIES", cfg.trustedProxies)
 		}
 	})
 
 	t.Run("valid CIDR and bare-IP mix parsed", func(t *testing.T) {
-		setWTEnv(t, map[string]string{"WT_TRUSTED_PROXIES": "10.0.0.0/8, 192.168.1.5 , ::1"})
+		setServerEnv(t, map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, 192.168.1.5 , ::1"})
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
@@ -796,7 +799,7 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		t.Cleanup(func() { slog.SetDefault(prev) })
 
-		setWTEnv(t, map[string]string{"WT_TRUSTED_PROXIES": "10.0.0.0/8, not-an-ip, 999.999.999.999"})
+		setServerEnv(t, map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, not-an-ip, 999.999.999.999"})
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
@@ -826,7 +829,7 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 	})
 }
 
-// TestLoadConfigAllowedHosts covers WT_ALLOWED_HOSTS parsing via the shared
+// TestLoadConfigAllowedHosts covers ALLOWED_HOSTS parsing via the shared
 // webhttp.ParseHostList helper and its threading onto cfg.hostPolicy (consumed
 // by the host-allowlist middleware in newHandler). Contracts: unset yields an
 // INACTIVE policy (any Host accepted, the backward-compatible default), a
@@ -834,7 +837,7 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 // warned (named) and DROPPED while the valid subset is kept, and an
 // all-invalid list stays ACTIVE and empty — deny-all, fail closed, with a
 // second Warn naming the deny-all state. These cases mutate the process-global
-// default logger and WT_* env, so they run serially (no t.Parallel).
+// default logger and env, so they run serially (no t.Parallel).
 func TestLoadConfigAllowedHosts(t *testing.T) {
 	allows := func(t *testing.T, policy *webhttp.HostPolicy, host, remoteAddr string) bool {
 		t.Helper()
@@ -846,21 +849,21 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 	}
 
 	t.Run("unset yields an inactive policy (any Host accepted)", func(t *testing.T) {
-		setWTEnv(t, nil)
+		setServerEnv(t, nil)
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
 		}
 		if cfg.hostPolicy.Active() {
-			t.Error("hostPolicy is active for an unset WT_ALLOWED_HOSTS; want the permissive backward-compatible default")
+			t.Error("hostPolicy is active for an unset ALLOWED_HOSTS; want the permissive backward-compatible default")
 		}
 		if !allows(t, cfg.hostPolicy, "anything.example:7681", "") {
-			t.Error("inactive policy rejected a request; unset WT_ALLOWED_HOSTS must accept every Host")
+			t.Error("inactive policy rejected a request; unset ALLOWED_HOSTS must accept every Host")
 		}
 	})
 
 	t.Run("valid list canonicalizes into an exact-match gate", func(t *testing.T) {
-		setWTEnv(t, map[string]string{"WT_ALLOWED_HOSTS": "localhost, 192.168.1.5, Term.Example.COM."})
+		setServerEnv(t, map[string]string{"ALLOWED_HOSTS": "localhost, 192.168.1.5, Term.Example.COM."})
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
@@ -889,7 +892,7 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		t.Cleanup(func() { slog.SetDefault(prev) })
 
-		setWTEnv(t, map[string]string{"WT_ALLOWED_HOSTS": "http://term.example.com, localhost"})
+		setServerEnv(t, map[string]string{"ALLOWED_HOSTS": "http://term.example.com, localhost"})
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
@@ -914,7 +917,7 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		t.Cleanup(func() { slog.SetDefault(prev) })
 
-		setWTEnv(t, map[string]string{"WT_ALLOWED_HOSTS": ":7681"})
+		setServerEnv(t, map[string]string{"ALLOWED_HOSTS": ":7681"})
 		cfg, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() error: %v", err)
@@ -935,21 +938,21 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 }
 
 // hostPolicyFor builds an active HostPolicy from entries with this app's
-// options (loopback carve-out + the WT_ALLOWED_HOSTS 403 message), failing the
+// options (loopback carve-out + the ALLOWED_HOSTS 403 message), failing the
 // test on any invalid entry — handler tests configure only valid lists.
 func hostPolicyFor(t *testing.T, entries ...string) *webhttp.HostPolicy {
 	t.Helper()
 	policy, invalid := webhttp.ParseHostList(entries,
 		webhttp.WithLoopbackExempt(true),
 		webhttp.WithHostAllowlistError("host_not_allowed",
-			"host not allowed; add it to WT_ALLOWED_HOSTS to serve this hostname"))
+			"host not allowed; add it to ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
 		t.Fatalf("test allowlist has invalid entries: %v", invalid)
 	}
 	return policy
 }
 
-// TestHostAllowlistGatesRoutes pins the WT_ALLOWED_HOSTS anti-DNS-rebinding
+// TestHostAllowlistGatesRoutes pins the ALLOWED_HOSTS anti-DNS-rebinding
 // gate through the real middleware stack (newHandler): a rebinding attack
 // makes an attacker-controlled hostname resolve to this server, so Origin and
 // Host AGREE and CrossOriginProtection alone admits the request — the
@@ -999,8 +1002,8 @@ func TestHostAllowlistGatesRoutes(t *testing.T) {
 				t.Errorf("GET Host %s (peer %s) = %d, want %d", tc.host, tc.remoteAddr, rec.Code, tc.want)
 			}
 			if tc.want == http.StatusForbidden {
-				if body := rec.Body.String(); !strings.Contains(body, "host_not_allowed") || !strings.Contains(body, "WT_ALLOWED_HOSTS") {
-					t.Errorf("403 body = %q, want the host_not_allowed envelope naming WT_ALLOWED_HOSTS", body)
+				if body := rec.Body.String(); !strings.Contains(body, "host_not_allowed") || !strings.Contains(body, "ALLOWED_HOSTS") {
+					t.Errorf("403 body = %q, want the host_not_allowed envelope naming ALLOWED_HOSTS", body)
 				}
 			}
 		})
@@ -1011,7 +1014,7 @@ func TestHostAllowlistGatesRoutes(t *testing.T) {
 		rec := httptest.NewRecorder()
 		open.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://anything.example:7681/healthz", nil))
 		if rec.Code != http.StatusOK {
-			t.Errorf("GET /healthz with no host policy = %d, want %d (unset WT_ALLOWED_HOSTS must stay backward compatible)", rec.Code, http.StatusOK)
+			t.Errorf("GET /healthz with no host policy = %d, want %d (unset ALLOWED_HOSTS must stay backward compatible)", rec.Code, http.StatusOK)
 		}
 	})
 }
@@ -1539,7 +1542,7 @@ func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
 
 // TestSessionLoggerTruncatesSessionID pins the session-token log boundary in
 // main's handler factory. The session id doubles as the /ws attach + resume
-// capability token, and WT_PASSWORD is optional, so in the documented
+// capability token, and AUTH_PASSWORD is optional, so in the documented
 // unauthenticated posture a full id in an aggregated log is enough for anyone
 // with log-read reach to attach to a live terminal (CWE-532). The factory
 // therefore binds only terminal.LogID's truncated form.
@@ -1609,7 +1612,7 @@ func authThrottleHandler(t *testing.T) (http.Handler, func(validCreds bool) *htt
 // TestFailedAuthThrottle pins the failed-auth throttle
 // (webhttp.FailedAuthRateLimit) fronting basicAuth: before it, a wrong password
 // was answered 401 in microseconds with nothing counting attempts, so the single
-// static WT_PASSWORD guarding an interactive remote shell could be guessed at
+// static AUTH_PASSWORD guarding an interactive remote shell could be guessed at
 // wire speed. The properties that make the control correct are that failures
 // cost a token, that success never does, and that the refusal is this app's own
 // envelope.
@@ -1652,7 +1655,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 			t.Fatalf("bucket is not empty: failed attempt = %d, want 429", code)
 		}
 		// The operator (and the image's baked healthcheck, which sends
-		// WT_USERNAME/WT_PASSWORD) must keep working while an attacker is being
+		// AUTH_USERNAME/AUTH_PASSWORD) must keep working while an attacker is being
 		// throttled on the same shared bucket.
 		if code := do(true).Code; code != http.StatusOK {
 			t.Errorf("valid request mid-flood = %d, want 200 (a correct credential is never throttled)", code)
@@ -1671,7 +1674,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 		if body := rec.Body.String(); !strings.Contains(body, "too_many_auth_failures") {
 			t.Errorf("429 body = %q, want the too_many_auth_failures code (what log queries and alert rules key on)", body)
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "WT_USERNAME/WT_PASSWORD") {
+		if body := rec.Body.String(); !strings.Contains(body, "AUTH_USERNAME/AUTH_PASSWORD") {
 			t.Errorf("429 body = %q, want the message naming the credentials to check", body)
 		}
 		if ra := rec.Header().Get("Retry-After"); ra == "" {
@@ -1708,7 +1711,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 }
 
 // TestFailedAuthThrottleInertWithoutPassword pins the inert mode. With no
-// WT_PASSWORD this app is deliberately unauthenticated — there is no credential
+// AUTH_PASSWORD this app is deliberately unauthenticated — there is no credential
 // to fail — so the throttle must not exist: newHandler builds neither it nor its
 // token bucket, and Chain skips the nil entry. Any 429 here would be a
 // regression that throttled the documented no-auth posture.
@@ -1720,7 +1723,7 @@ func TestFailedAuthThrottleInertWithoutPassword(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, healthzPath, nil))
 		if rec.Code != http.StatusOK {
-			t.Fatalf("request %d with no WT_PASSWORD = %d, want 200 (the throttle must be absent, not merely lenient)",
+			t.Fatalf("request %d with no AUTH_PASSWORD = %d, want 200 (the throttle must be absent, not merely lenient)",
 				i+1, rec.Code)
 		}
 	}
@@ -1732,7 +1735,7 @@ func TestFailedAuthThrottleInertWithoutPassword(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("unsolicited-credential request %d with no WT_PASSWORD = %d, want 200", i+1, rec.Code)
+			t.Fatalf("unsolicited-credential request %d with no AUTH_PASSWORD = %d, want 200", i+1, rec.Code)
 		}
 	}
 }
@@ -1950,7 +1953,7 @@ func TestStageOf(t *testing.T) {
 func TestAtStagePreservesTheMessageAndTheChain(t *testing.T) {
 	t.Parallel()
 	inner := errors.New("mount target is a file")
-	wrapped := fmt.Errorf("WT_WORKDIR is not a directory: %w", inner)
+	wrapped := fmt.Errorf("WORK_DIR is not a directory: %w", inner)
 	got := atStage(stageConfig, wrapped)
 
 	if got.Error() != wrapped.Error() {
@@ -1995,11 +1998,11 @@ func TestRunReturnsAnAttributedConfigFailureInsteadOfExiting(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	setWTEnv(t, map[string]string{"WT_WORKDIR": file})
+	setServerEnv(t, map[string]string{"WORK_DIR": file})
 
 	err := run()
 	if err == nil {
-		t.Fatal("run() = nil error, want error when WT_WORKDIR is a regular file")
+		t.Fatal("run() = nil error, want error when WORK_DIR is a regular file")
 	}
 	if got := stageOf(err); got != stageConfig {
 		t.Errorf("run() stage = %q, want %q", got, stageConfig)
@@ -2038,13 +2041,13 @@ func TestLoadConfigWorkDirNamesTheShapeItRejected(t *testing.T) {
 			if tc.skip {
 				t.Skip("running as root: a 0000 parent is traversable, so this case cannot fail closed")
 			}
-			setWTEnv(t, map[string]string{"WT_WORKDIR": tc.path})
+			setServerEnv(t, map[string]string{"WORK_DIR": tc.path})
 			_, err := loadConfig()
 			if err == nil {
-				t.Fatalf("loadConfig() with WT_WORKDIR=%q = nil error, want an error", tc.path)
+				t.Fatalf("loadConfig() with WORK_DIR=%q = nil error, want an error", tc.path)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("loadConfig() with WT_WORKDIR=%q error = %q, want it to mention %q", tc.path, err, tc.want)
+				t.Errorf("loadConfig() with WORK_DIR=%q error = %q, want it to mention %q", tc.path, err, tc.want)
 			}
 		})
 	}
@@ -2105,7 +2108,7 @@ func TestStaticCacheControl(t *testing.T) {
 
 // TestSecurityHeadersCarryTheHardenedSet pins the three headers this app sets over
 // webhttp's SecurityHeaders defaults. The terminal renders clickable OSC 8 hyperlinks
-// straight out of an arbitrary WT_CMD's output, so a session can be induced to open an
+// straight out of an arbitrary SESSION_CMD's output, so a session can be induced to open an
 // attacker page; COOP and the tightened Referrer-Policy make the vendored UI's
 // rel="noopener noreferrer" independent of the Renovate-bumped UI pin.
 //
@@ -2362,7 +2365,7 @@ func TestCanonicalPathGuardRefusesTheSideEffect(t *testing.T) {
 	}
 }
 
-// TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly pins both halves of the WT_LOG_LEVEL
+// TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly pins both halves of the LOG_LEVEL
 // contract, neither of which anything checked.
 //
 // The level must actually be INSTALLED — a parse whose result is dropped is invisible
@@ -2388,7 +2391,7 @@ func TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			prev := slog.Default()
 			t.Cleanup(func() { slog.SetDefault(prev) })
-			t.Setenv("WT_LOG_LEVEL", tc.value)
+			t.Setenv("LOG_LEVEL", tc.value)
 
 			// setupLogging installs its own handler over slogx, so capture by swapping the
 			// default afterwards would lose the warning. Redirect stderr instead.
@@ -2409,19 +2412,19 @@ func TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly(t *testing.T) {
 			_ = r.Close()
 
 			if !installed.Enabled(t.Context(), tc.wantLevel) {
-				t.Errorf("WT_LOG_LEVEL=%q: installed logger is not enabled at %v; the parsed level was dropped", tc.value, tc.wantLevel)
+				t.Errorf("LOG_LEVEL=%q: installed logger is not enabled at %v; the parsed level was dropped", tc.value, tc.wantLevel)
 			}
 			// One level below the boundary must be off, or "enabled" proves nothing.
 			if tc.wantLevel > slog.LevelDebug && installed.Enabled(t.Context(), tc.wantLevel-4) {
-				t.Errorf("WT_LOG_LEVEL=%q: installed logger is enabled BELOW %v, so the level is not in force", tc.value, tc.wantLevel)
+				t.Errorf("LOG_LEVEL=%q: installed logger is enabled BELOW %v, so the level is not in force", tc.value, tc.wantLevel)
 			}
 
-			warned := strings.Contains(string(out), "unparseable WT_LOG_LEVEL")
+			warned := strings.Contains(string(out), "unparseable LOG_LEVEL")
 			if warned != tc.wantWarn {
-				t.Errorf("WT_LOG_LEVEL=%q: warned = %v, want %v (stderr: %s)", tc.value, warned, tc.wantWarn, out)
+				t.Errorf("LOG_LEVEL=%q: warned = %v, want %v (stderr: %s)", tc.value, warned, tc.wantWarn, out)
 			}
 			if tc.value != "" && strings.Contains(string(out), tc.value) {
-				t.Errorf("WT_LOG_LEVEL=%q: the rejected value reached the log: %s", tc.value, out)
+				t.Errorf("LOG_LEVEL=%q: the rejected value reached the log: %s", tc.value, out)
 			}
 		})
 	}

@@ -198,14 +198,14 @@ RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.
 RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /web-terminal-server .
 
-# --- Runtime: minimal Debian with a shell for the default WT_CMD ---
+# --- Runtime: minimal Debian with a shell for the default SESSION_CMD ---
 FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # bash for the default command; curl for the healthcheck; ca-certificates for
-# TLS from within the shell. Operators who set a different WT_CMD layer their
-# own tools on top.
+# TLS from within the shell. Operators who set a different SESSION_CMD layer
+# their own tools on top.
 # PKG_REFRESH busts the cache for this layer. Without it BuildKit restores the
 # layer verbatim on every rebuild and `apt-get upgrade` never runs again, so the
 # image keeps shipping whatever packages were current when the layer was first
@@ -229,9 +229,9 @@ COPY --from=builder /web-terminal-server /usr/local/bin/web-terminal-server
 # In a container the server must listen on all interfaces to be reachable via
 # the published port or a reverse proxy (the binary's own default is loopback).
 # SECURITY: do not publish this port to an untrusted network without auth — set
-# WT_PASSWORD or front it with an authenticating reverse proxy. See README.
-ENV WT_ADDR=:7681
-ENV WT_CMD=/bin/bash
+# AUTH_PASSWORD or front it with an authenticating reverse proxy. See README.
+ENV LISTEN_ADDR=:7681
+ENV SESSION_CMD=/bin/bash
 EXPOSE 7681
 
 # Probe /healthz with credentials via curl's stdin config file (-K -) rather
@@ -240,7 +240,7 @@ EXPOSE 7681
 # either can't break out of the config's quoted value or inject another curl
 # directive. Do NOT simplify to -u: that reintroduces both the argv exposure
 # and the injection vector.
-# The port is DERIVED from WT_ADDR rather than hardcoded, so an operator who
+# The port is DERIVED from LISTEN_ADDR rather than hardcoded, so an operator who
 # moves the listener keeps a working probe instead of an image that reports
 # unhealthy while serving. --max-time 4 sits strictly below --timeout=5s, so a
 # slow endpoint is reported by curl's exit code instead of being force-killed
@@ -253,8 +253,8 @@ EXPOSE 7681
 # rule guards does not arise here.
 # hadolint ignore=DL3025
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
-    CMD u=$(printf '%s' "${WT_USERNAME:-admin}" | sed 's/[\\"]/\\&/g'); \
-        p=$(printf '%s' "${WT_PASSWORD:-}" | sed 's/[\\"]/\\&/g'); \
-        printf 'user = "%s:%s"\n' "$u" "$p" | curl -sfS --max-time 4 -K - "http://127.0.0.1:${WT_ADDR##*:}/healthz" || exit 1
+    CMD u=$(printf '%s' "${AUTH_USERNAME:-admin}" | sed 's/[\\"]/\\&/g'); \
+        p=$(printf '%s' "${AUTH_PASSWORD:-}" | sed 's/[\\"]/\\&/g'); \
+        printf 'user = "%s:%s"\n' "$u" "$p" | curl -sfS --max-time 4 -K - "http://127.0.0.1:${LISTEN_ADDR##*:}/healthz" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/web-terminal-server"]

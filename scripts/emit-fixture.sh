@@ -3,7 +3,7 @@
 # (scripts/cdp-*.cjs). Point the server at it so the browser has real,
 # predictable output to render and scroll:
 #
-#   WT_CMD="sh /path/to/scripts/emit-fixture.sh" ./web-terminal-server
+#   SESSION_CMD="sh /path/to/scripts/emit-fixture.sh" ./web-terminal-server
 #
 # It bursts 120 numbered lines (enough to overflow the viewport and accrue
 # scrollback), then emits one line every 0.4s forever, so "the read position

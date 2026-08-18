@@ -3,10 +3,10 @@
 // end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v5.
 //
 // SECURITY: this is a remote shell. Anyone who can reach the listen address
-// and pass auth (if any) gets an interactive process running WT_CMD with this
+// and pass auth (if any) gets an interactive process running SESSION_CMD with this
 // server's privileges. It binds loopback (127.0.0.1) by default; only expose
 // it on a public interface behind an authenticating reverse proxy, or set
-// WT_PASSWORD. See README.md.
+// AUTH_PASSWORD. See README.md.
 package main
 
 import (
@@ -95,7 +95,7 @@ func applyDurationEnv(key envx.Key, dst *time.Duration) error {
 // applyBoolEnv parses a boolean env var into *dst via envx.BoolStrict, leaving it
 // unchanged when the var is unset or empty. Strict rather than "anything non-empty is
 // true": this flag decides whether terminal output is written to browser storage, so an
-// operator who typed WT_PERSIST_SCROLLBACK=flase deserves a startup error rather than a
+// operator who typed PERSIST_SCROLLBACK=flase deserves a startup error rather than a
 // container that quietly persists. The library's error is returned verbatim — it names
 // the key and the accepted vocabulary already, and carries no fragment of the value.
 func applyBoolEnv(key envx.Key, dst *bool) error {
@@ -133,7 +133,7 @@ func parseTrustedProxies(key string) []*net.IPNet {
 	return nets
 }
 
-// parseAllowedHosts reads the comma-separated WT_ALLOWED_HOSTS list of exact hostnames
+// parseAllowedHosts reads the comma-separated ALLOWED_HOSTS list of exact hostnames
 // / IPs this server answers for into a webhttp.HostPolicy. It closes the DNS-rebinding
 // hole a same-origin check alone leaves open: rebinding makes Origin and Host AGREE, so
 // CrossOriginProtection admits it (CWE-346). Unset yields an INACTIVE policy, the
@@ -144,13 +144,13 @@ func parseAllowedHosts(key string) *webhttp.HostPolicy {
 	policy, invalid := webhttp.ParseHostList(strings.Split(os.Getenv(key), ","),
 		webhttp.WithLoopbackExempt(true),
 		webhttp.WithHostAllowlistError("host_not_allowed",
-			"host not allowed; add it to WT_ALLOWED_HOSTS to serve this hostname"))
+			"host not allowed; add it to ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
 		// Count-only, like parseTrustedProxies: a mis-expanded variable could put a
 		// credential in an entry, so the rejected values never reach the log.
 		slog.Warn("dropping malformed "+key+" entries; they cannot match any browser-sent Host",
 			"invalid_count", len(invalid),
-			"hint", "use bare hostnames or IPs only (no scheme, path, or CIDR), e.g. localhost,192.168.1.5,term.example.com; a lone port like :7681 belongs in WT_ADDR")
+			"hint", "use bare hostnames or IPs only (no scheme, path, or CIDR), e.g. localhost,192.168.1.5,term.example.com; a lone port like :7681 belongs in LISTEN_ADDR")
 	}
 	if policy.Active() && policy.Size() == 0 {
 		slog.Warn(key+" has no usable entries; rejecting every non-loopback request (fail closed)",
@@ -159,7 +159,7 @@ func parseAllowedHosts(key string) *webhttp.HostPolicy {
 	return policy
 }
 
-// config holds the resolved server settings parsed from the WT_* environment.
+// config holds the resolved server settings parsed from the environment.
 type config struct {
 	hostPolicy *webhttp.HostPolicy
 	// scrollback is the operator's retained-history depth, or nil when they set nothing —
@@ -183,26 +183,26 @@ type config struct {
 	persistScrollback bool
 }
 
-// loadConfig parses and validates the WT_* environment into a config. It returns an
+// loadConfig parses and validates the environment into a config. It returns an
 // error rather than exiting because nothing below main may exit: run owns every failure
 // path and main owns the single exit.
 func loadConfig() (config, error) {
 	c := config{
-		addr:           cmp.Or(envx.String("WT_ADDR"), defaultAddr),
-		command:        strings.Fields(cmp.Or(envx.String("WT_CMD"), defaultCmd)),
-		workDir:        os.Getenv("WT_WORKDIR"),
-		username:       cmp.Or(envx.String("WT_USERNAME"), defaultUsername),
-		password:       os.Getenv("WT_PASSWORD"),
-		trustedProxies: parseTrustedProxies("WT_TRUSTED_PROXIES"),
-		hostPolicy:     parseAllowedHosts("WT_ALLOWED_HOSTS"),
+		addr:           cmp.Or(envx.String("LISTEN_ADDR"), defaultAddr),
+		command:        strings.Fields(cmp.Or(envx.String("SESSION_CMD"), defaultCmd)),
+		workDir:        os.Getenv("WORK_DIR"),
+		username:       cmp.Or(envx.String("AUTH_USERNAME"), defaultUsername),
+		password:       os.Getenv("AUTH_PASSWORD"),
+		trustedProxies: parseTrustedProxies("TRUSTED_PROXIES"),
+		hostPolicy:     parseAllowedHosts("ALLOWED_HOSTS"),
 		// On by default: without it a reloaded or browser-discarded tab asks for the
 		// whole retained scrollback back over the wire, which is the normal case on a
-		// phone and reads as a fault rather than a reload. WT_PERSIST_SCROLLBACK is
+		// phone and reads as a fault rather than a reload. PERSIST_SCROLLBACK is
 		// the opt-OUT; see static_persist.go for what enabling it puts where.
 		persistScrollback: true,
 	}
 	if len(c.command) == 0 {
-		return config{}, errors.New("WT_CMD is empty")
+		return config{}, errors.New("SESSION_CMD is empty")
 	}
 	// Local sentinel, deliberately NOT a config field: it exists only to detect
 	// "the operator said nothing" through applyIntEnv, which writes only when the
@@ -211,11 +211,11 @@ func loadConfig() (config, error) {
 	scrollbackUnset := -1
 	scrollbackLines := scrollbackUnset
 	// Both validators run before returning so two simultaneously malformed
-	// WT_* values surface in one startup failure instead of one restart apart.
+	// values surface in one startup failure instead of one restart apart.
 	if err := errors.Join(
 		applyIntEnv(terminal.ScrollbackEnvVar, 0, &scrollbackLines),
-		applyDurationEnv("WT_IDLE_REAPER", &c.idleReaper),
-		applyBoolEnv("WT_PERSIST_SCROLLBACK", &c.persistScrollback),
+		applyDurationEnv("IDLE_TIMEOUT", &c.idleReaper),
+		applyBoolEnv("PERSIST_SCROLLBACK", &c.persistScrollback),
 	); err != nil {
 		return config{}, err
 	}
@@ -231,7 +231,7 @@ func loadConfig() (config, error) {
 		c.scrollback = &capacity
 	}
 	if c.workDir != "" {
-		// WT_WORKDIR is operator-supplied configuration, not untrusted request input, so an
+		// WORK_DIR is operator-supplied configuration, not untrusted request input, so an
 		// arbitrary absolute path is expected here.
 		fi, err := os.Stat(c.workDir) //nolint:gosec // G703 -- operator-controlled config path, not user input
 		switch {
@@ -239,13 +239,13 @@ func loadConfig() (config, error) {
 		// three tells an operator with an unreadable mount to add a mount that is
 		// already there.
 		case errors.Is(err, fs.ErrNotExist):
-			return config{}, fmt.Errorf("WT_WORKDIR does not exist: %q", c.workDir)
+			return config{}, fmt.Errorf("WORK_DIR does not exist: %q", c.workDir)
 		case err != nil:
-			return config{}, fmt.Errorf("WT_WORKDIR is not readable: %w", err)
+			return config{}, fmt.Errorf("WORK_DIR is not readable: %w", err)
 		// The engine sets cmd.Dir to this path, so a regular file would pass startup and
 		// fail only when the PTY child cannot spawn on the first client connect.
 		case !fi.IsDir():
-			return config{}, fmt.Errorf("WT_WORKDIR is not a directory: %q", c.workDir)
+			return config{}, fmt.Errorf("WORK_DIR is not a directory: %q", c.workDir)
 		}
 	}
 	return c, nil
@@ -277,7 +277,7 @@ const shutdownGrace = 5 * time.Second
 // are the strings an operator's log query or alert rule matches, so changing one
 // is a breaking change to the log surface.
 const (
-	stageConfig = "config" // the WT_* environment is invalid
+	stageConfig = "config" // the environment is invalid
 	stageStatic = "static" // the embedded static tree or its CSP is unusable
 	stageListen = "listen" // the listener could not bind
 	stageServe  = "serve"  // the HTTP server exited with an error
@@ -314,18 +314,18 @@ func stageOf(err error) string {
 	return stageUnknown
 }
 
-// setupLogging installs the slog handler. WT_LOG_LEVEL is parsed here, not in
+// setupLogging installs the slog handler. LOG_LEVEL is parsed here, not in
 // loadConfig: the level must be known BEFORE the handler installs so every later
 // record (loadConfig errors included) emits at the configured level, and the
 // parse-failure warning emits AFTER Setup through the configured handler (the
 // slogx contract). A bad value is diagnosable-not-fatal: warn and run at info.
 func setupLogging() {
-	logLevel, logLevelOK := slogx.ParseLevel(envx.String("WT_LOG_LEVEL"), slog.LevelInfo)
+	logLevel, logLevelOK := slogx.ParseLevel(envx.String("LOG_LEVEL"), slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: logLevel})
 	if !logLevelOK {
 		// Field-name-only: a compose expansion mistake could put a secret in
 		// the value, so the raw string never reaches the log.
-		slog.Warn("unparseable WT_LOG_LEVEL; using the info default",
+		slog.Warn("unparseable LOG_LEVEL; using the info default",
 			"hint", "use debug, info, warn, or error")
 	}
 }
@@ -346,12 +346,12 @@ func run() error {
 	warnIfPID1()
 
 	// DNS rebinding rides the victim's BROWSER, so it reaches even a loopback
-	// or LAN bind — "keep it loopback" does not cover it. WT_PASSWORD blocks
+	// or LAN bind — "keep it loopback" does not cover it. AUTH_PASSWORD blocks
 	// it (the attacker's page cannot present credentials cross-origin), so
 	// only the unauthenticated posture warrants the warning.
 	if cfg.password == "" && !cfg.hostPolicy.Active() {
-		slog.Warn("WT_ALLOWED_HOSTS is unset or blank and no WT_PASSWORD is set; any Host header is accepted, leaving DNS rebinding open even on loopback binds",
-			"hint", "set WT_ALLOWED_HOSTS to the exact hostnames/IPs you browse to (e.g. localhost,192.168.1.5,term.example.com), or set WT_PASSWORD")
+		slog.Warn("ALLOWED_HOSTS is unset or blank and no AUTH_PASSWORD is set; any Host header is accepted, leaving DNS rebinding open even on loopback binds",
+			"hint", "set ALLOWED_HOSTS to the exact hostnames/IPs you browse to (e.g. localhost,192.168.1.5,term.example.com), or set AUTH_PASSWORD")
 	}
 
 	// Each session gets its own PTY-backed handler; sessionFactory carries what the
@@ -495,7 +495,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 	// computed over the bytes the browser receives. Fails loud on a lost marker.
 	sub, err = applyPersistFlag(sub, cfg.persistScrollback)
 	if err != nil {
-		return nil, fmt.Errorf("apply WT_PERSIST_SCROLLBACK: %w", err)
+		return nil, fmt.Errorf("apply PERSIST_SCROLLBACK: %w", err)
 	}
 	// webhttp.StaticHandler supplies the embedded-static mechanism this app used to
 	// hand-roll: per-file content-hash ETags (embed.FS reports a zero ModTime, so
@@ -519,13 +519,13 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 	// webhttp.Middleware it slots into the Chain just inside the security headers, so a
 	// 401 still carries them. The throttle in front of it is built from the SAME gate, so
 	// the two read one verdict about one parse of the Authorization header. Both stay nil
-	// without WT_PASSWORD — nothing is CONSTRUCTED rather than built and then bypassed by
+	// without AUTH_PASSWORD — nothing is CONSTRUCTED rather than built and then bypassed by
 	// a predicate that always returns false, and Chain skips a nil entry.
 	var authMW, authThrottleMW webhttp.Middleware
 	if cfg.password != "" {
 		gate := newBasicAuthGate(cfg.username, cfg.password)
 		// webhttp.FailedAuthRateLimit (burst 10, one token per 6s) bounds the guessing
-		// RATE against the single static WT_PASSWORD. Without it every route sits behind
+		// RATE against the single static AUTH_PASSWORD. Without it every route sits behind
 		// a credential check answering in microseconds and nothing above it counts
 		// attempts: SessionCreateRateLimit is further in AND gates only POST
 		// /api/sessions, so a wrong password never reaches it. Only a request the gate is
@@ -533,7 +533,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 		// is what keeps the baked healthcheck and a real browser working mid-flood.
 		authThrottleMW = webhttp.FailedAuthRateLimit(
 			func(r *http.Request) bool { return !gate.presentsValidCredentials(r) },
-			"too many failed authentication attempts; check the credentials in WT_USERNAME/WT_PASSWORD")
+			"too many failed authentication attempts; check the credentials in AUTH_USERNAME/AUTH_PASSWORD")
 		authMW = gate.middleware
 	}
 
@@ -572,7 +572,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 			webhttp.WithCSP(cspPolicy),
 			// COOP severs window.opener for any cross-origin page a session opens. The
 			// terminal renders clickable OSC 8 hyperlinks straight out of untrusted child
-			// output — WT_CMD is arbitrary — so a session can be induced to open an attacker
+			// output — SESSION_CMD is arbitrary — so a session can be induced to open an attacker
 			// page; the vendored UI already sets rel="noopener noreferrer", and this header
 			// plus the tightened Referrer-Policy make that guarantee independent of the
 			// Renovate-bumped UI pin. COOP and the Permissions-Policy features are
@@ -674,19 +674,19 @@ func headerHasToken(r *http.Request, name, token string) bool {
 // each new session: a PTY-backed handler scoped to cfg's command, scrollback and workdir.
 // The id is bound through terminal.LogID rather than raw because it doubles as the /ws
 // attach and resume capability token, so logging it whole would put a session-access
-// credential into aggregated logs (CWE-532) — and WT_PASSWORD is optional, so in the
+// credential into aggregated logs (CWE-532) — and AUTH_PASSWORD is optional, so in the
 // documented unauthenticated posture the token alone is enough to attach.
 func sessionFactory(cfg *config) func(terminal.SessionID) *terminal.Handler {
 	return func(id terminal.SessionID) *terminal.Handler {
 		opts := []terminal.Option{
 			terminal.WithLogger(slog.Default().With("session", terminal.LogID(id))),
-			// The engine logs the child's full argv at process start. WT_CMD is
+			// The engine logs the child's full argv at process start. SESSION_CMD is
 			// operator-supplied and whitespace-split, and the README's own guidance sends
 			// complex invocations through it, so an argv carrying a token is plausible —
 			// once per SESSION into aggregated logs (CWE-532). The startup line stays the
 			// one authoritative record of what this container runs.
 			terminal.WithCommandLogValue("[redacted]"),
-			// Keep the colours an arbitrary WT_CMD paints legible on the UI's near-black
+			// Keep the colours an arbitrary SESSION_CMD paints legible on the UI's near-black
 			// background. A program picks a palette SLOT (SGR 34 for blue) and cannot know
 			// what RGB this terminal resolves it to, so the terminal is the only layer that
 			// can hold a legibility floor. 4.5 is the WCAG AA floor for body text.
@@ -708,7 +708,7 @@ func sessionFactory(cfg *config) func(terminal.SessionID) *terminal.Handler {
 }
 
 // warnIfPID1 reports that no container init is present, which is detectable here in one
-// comparison. Orphan reaping is the init's job, not this server's: whatever WT_CMD runs can
+// comparison. Orphan reaping is the init's job, not this server's: whatever SESSION_CMD runs can
 // fork a child that outlives its own parent, the kernel reparents that orphan onto PID 1,
 // and os/exec waits only for children this process started — so with the server AT PID 1
 // every orphan stays a zombie for the container's lifetime, and the engine's session reaping
@@ -726,7 +726,7 @@ func warnIfPID1() {
 // loopback interface without authentication, which is an unauthenticated remote shell.
 //
 // Classification follows webhttp.ClassifyBind's classify-the-unsplit-input recipe: a
-// WT_ADDR that is not host:port (a portless "127.0.0.1", a bare hostname) is read as a
+// LISTEN_ADDR that is not host:port (a portless "127.0.0.1", a bare hostname) is read as a
 // bare host and classified anyway, so a portless loopback stays silent and everything
 // unrecognized warns. Fail-public.
 func warnIfExposed(addr, password string) {
@@ -742,12 +742,12 @@ func warnIfExposed(addr, password string) {
 		slog.Warn("listening on a non-loopback address WITHOUT authentication",
 			"addr", addr,
 			"risk", "anyone who can reach this address gets an interactive shell",
-			"fix", "set WT_PASSWORD, bind 127.0.0.1, or front with an authenticating reverse proxy")
+			"fix", "set AUTH_PASSWORD, bind 127.0.0.1, or front with an authenticating reverse proxy")
 	case strings.TrimSpace(password) == "":
-		slog.Warn("listening on a non-loopback address with a whitespace-only WT_PASSWORD",
+		slog.Warn("listening on a non-loopback address with a whitespace-only AUTH_PASSWORD",
 			"addr", addr,
 			"risk", "a blank/whitespace password provides negligible protection for a remote shell",
-			"fix", "set a strong WT_PASSWORD or front with an authenticating reverse proxy")
+			"fix", "set a strong AUTH_PASSWORD or front with an authenticating reverse proxy")
 	}
 }
 

@@ -20,7 +20,7 @@
 //
 // Start the server on the emitter first (continuous output, so the selection-
 // survival check has frames to survive), reachable from the sidecar host:
-//   WT_ADDR=:7681 WT_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server
+//   LISTEN_ADDR=:7681 SESSION_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server
 //
 // Zero deps (Node 22 global WebSocket + fetch). Usage: node scripts/cdp-input.cjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";

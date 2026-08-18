@@ -1,7 +1,7 @@
 // CDP live-verify for the disconnect->reconnect resume path (sleep/wake must not
 // lose content). Drives a REAL disconnect->reconnect cycle against a
 // web-terminal-server instance whose PTY is the deterministic emitter
-// (scripts/emit-fixture.sh via WT_CMD), which keeps printing lines server-side
+// (scripts/emit-fixture.sh via SESSION_CMD), which keeps printing lines server-side
 // the whole time. While the socket is severed the emitter accrues lines the
 // client never saw; on reconnect the client resumes by absolute index
 // (haveThrough) and the server replays exactly the missed lines. The pass
@@ -22,7 +22,7 @@
 // reconnectNow to). Zero deps (Node 22 global WebSocket + fetch).
 //
 // Start the server on the emitter first (reachable from the sidecar host):
-//   WT_ADDR=:7681 WT_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server
+//   LISTEN_ADDR=:7681 SESSION_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server
 //
 // Usage: node scripts/cdp-resume.cjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";

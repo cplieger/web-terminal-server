@@ -6,7 +6,7 @@
 //
 // Baseline setup (see scripts/run-cdp.sh for the automated version): a
 // web-terminal-server on the deterministic emitter, reachable from the browser:
-//   WT_ADDR=:7681 WT_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server-bin
+//   LISTEN_ADDR=:7681 SESSION_CMD="sh scripts/emit-fixture.sh" ./web-terminal-server-bin
 //
 // Env: CDP_URL (DevTools endpoint), WT_URL (server), WAIT (render settle ms).
 // Zero deps (Node 22 global WebSocket + fetch). Cleans up the tab it opens.
