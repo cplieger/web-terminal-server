@@ -233,7 +233,7 @@ func loadConfig() (config, error) {
 	if c.workDir != "" {
 		// WORK_DIR is operator-supplied configuration, not untrusted request input, so an
 		// arbitrary absolute path is expected here.
-		fi, err := os.Stat(c.workDir) //nolint:gosec // G703 -- operator-controlled config path, not user input
+		fi, err := os.Stat(c.workDir)
 		switch {
 		// Three shapes with three remedies, kept apart because one message for all
 		// three tells an operator with an unreadable mount to add a mount that is
@@ -307,8 +307,7 @@ func atStage(stage string, err error) error {
 
 // stageOf reports the stage a failure was attributed to, or stageUnknown.
 func stageOf(err error) string {
-	var se *stageError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*stageError](err); ok {
 		return se.stage
 	}
 	return stageUnknown
@@ -533,7 +532,8 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 		// is what keeps the baked healthcheck and a real browser working mid-flood.
 		authThrottleMW = webhttp.FailedAuthRateLimit(
 			func(r *http.Request) bool { return !gate.presentsValidCredentials(r) },
-			"too many failed authentication attempts; check the credentials in AUTH_USERNAME/AUTH_PASSWORD")
+			"too many failed authentication attempts; check the credentials in AUTH_USERNAME/AUTH_PASSWORD",
+		)
 		authMW = gate.middleware
 	}
 

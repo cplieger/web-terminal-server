@@ -45,7 +45,8 @@ func applyPersistFlag(base fs.FS, enabled bool) (fs.FS, error) {
 	on, off := bytes.Count(html, []byte(persistFlagOn)), bytes.Count(html, []byte(persistFlagOff))
 	if on+off != 1 {
 		return nil, fmt.Errorf(
-			"want exactly one wt-persist-scrollback marker in %s, found %d", indexName, on+off)
+			"want exactly one wt-persist-scrollback marker in %s, found %d", indexName, on+off,
+		)
 	}
 	want, other := persistFlagOff, persistFlagOn
 	if enabled {

@@ -1214,7 +1214,11 @@ func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 		if code := post(); code != http.StatusTooManyRequests {
 			t.Fatalf("post immediately after exhausting the burst = %d, want 429", code)
 		}
-		time.Sleep(2 * time.Second) // virtual clock: refills ~2 tokens
+		// synctest.Sleep advances the bubble clock AND waits for every goroutine in it
+		// to settle, so the shared bucket's own bookkeeping is quiescent before the
+		// next post reads it. time.Sleep alone advances the clock and asserts against
+		// whatever state the bubble happens to be in.
+		synctest.Sleep(2 * time.Second) // virtual clock: refills ~2 tokens
 		if code := post(); code != http.StatusOK {
 			t.Errorf("post after a 2s refill = %d, want 200 (bucket must recover)", code)
 		}

@@ -408,8 +408,7 @@ func runGate(t *testing.T, args ...string) (int, string) {
 	if err == nil {
 		return 0, stderr.String()
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exitErr.ExitCode(), stderr.String()
 	}
 	t.Fatalf("running the gate: %v", err)
@@ -433,11 +432,13 @@ func TestGateProcessExitCodes(t *testing.T) {
 	// the compatible pairing.
 	compatible := write("ok.json", fmt.Sprintf(
 		`{"schemaVersion":1,"wireCompatibility":{"protocolVersion":%d,"minimumServerProtocolVersion":%d,"incompatibleCloseCode":4002}}`,
-		terminal.WireProtocolVersion, terminal.WireProtocolVersion))
+		terminal.WireProtocolVersion, terminal.WireProtocolVersion,
+	))
 	// A client demanding a server NEWER than this one violates the declared floor.
 	violating := write("bad.json", fmt.Sprintf(
 		`{"schemaVersion":1,"wireCompatibility":{"protocolVersion":%d,"minimumServerProtocolVersion":%d,"incompatibleCloseCode":4002}}`,
-		terminal.WireProtocolVersion+1, terminal.WireProtocolVersion+1))
+		terminal.WireProtocolVersion+1, terminal.WireProtocolVersion+1,
+	))
 
 	for name, tc := range map[string]struct {
 		args     []string
