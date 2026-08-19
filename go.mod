@@ -1,6 +1,6 @@
 module github.com/cplieger/web-terminal-server
 
-go 1.26.7
+go 1.27.0
 
 require (
 	github.com/cplieger/slogx v1.6.1
