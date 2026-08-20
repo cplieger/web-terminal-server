@@ -70,7 +70,7 @@ package, not here.
 - Dockerfile follows the shared `cplieger/ci` conventions: `# check=error=true`, native
   per-arch builds (no QEMU/xx), `GOTOOLCHAIN=auto`, cache-mounted `go mod
   download` and `go build`. The `# renovate:` ARGs track tool and package versions,
-  and every build-time download is verified against a recorded sha256 — a `# repin:`
+  and every build-time download is verified against a recorded sha256; a `# repin:`
   marker above each digest ARG is what lets a bot recompute it, so keep the marker
   on the line directly above its ARG.
 - The three build steps shared with `scripts/dev-build.sh` live in
@@ -162,7 +162,7 @@ bash scripts/smoke.sh            # needs a built image; see .github/workflows/sm
 ```
 
 `go test` covers the env parsing, the CSP contract, the middleware chain, the
-canonical-path guard and the wire-floor gate — including tests that read the
+canonical-path guard and the wire-floor gate, including tests that read the
 shipped `Dockerfile` as text, so deleting the gate's build step fails the suite
 rather than shipping an incompatible client.
 
