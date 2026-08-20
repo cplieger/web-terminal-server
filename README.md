@@ -105,7 +105,7 @@ On by default. Set `PERSIST_SCROLLBACK=false` to turn it off.
 What it does: the browser keeps the newest 200 lines of each session, so a reload
 asks the server only for what was printed while the page was gone. Without it the
 terminal comes back holding nothing and pulls the whole retained scrollback back
-over the wire — you see the history filling in, and on a phone that is the normal
+over the wire: you see the history filling in, and on a phone that is the normal
 case rather than an edge case, because iOS discards backgrounded tabs under memory
 pressure and returning to one re-runs the page. A warm reconnect and switching
 between tabs in one page already replay nothing, so this only changes the
@@ -115,7 +115,7 @@ What it stores, which is the reason there is a switch at all: up to 200 lines of
 each session's output, in this origin's `localStorage`, and at most about 1 MB in
 total across every session. That is readable from that
 browser without reaching this server and without passing `AUTH_PASSWORD`, and it
-outlives the tab that produced it — an entry is deleted when you close its
+outlives the tab that produced it; an entry is deleted when you close its
 terminal, and otherwise after seven days. `SESSION_CMD` decides what ends up in there.
 
 Most ways to read it also hand over a live shell, so the snapshot is rarely the
@@ -126,13 +126,13 @@ command output at rest is not acceptable.**
 
 Nothing is ever sent anywhere: the server neither reads nor receives these
 snapshots, and it does not know whether a browser kept one. No permission prompt is
-involved — `localStorage` needs none — and a browser that blocks site data, or a
+involved (`localStorage` needs none), and a browser that blocks site data, or a
 private window, simply restores nothing and replays over the wire as before.
 
 Restored content is checked against the running server on the first reconnect and
 cleared if it came from a previous run, which covers the confusing case: a restarted
 server numbers its output from the beginning again. If that session is already gone
-— which is what a restart usually leaves — the restore is discarded outright rather
+(which is what a restart usually leaves) the restore is discarded outright rather
 than shown behind a “Session ended” banner.
 
 ## Configuration reference
@@ -146,12 +146,12 @@ defaults differ, the Default column shows them as binary / image.
 | `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
 | `SESSION_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
 | `WORK_DIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
-| `SCROLLBACK` | Lines of history the server retains per session — how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer — asking for less server history would cost the phone more. This is the terminal engine's own variable, shared verbatim with every app built on it, which is why this server holds no default of its own. | `100000` |
-| `PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off — see [Persisted scrollback](#persisted-scrollback). | `true` |
+| `SCROLLBACK` | Lines of history the server retains per session: how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer, so asking for less server history would cost the phone more. This is the terminal engine's own variable, shared verbatim with every app built on it, which is why this server holds no default of its own. | `100000` |
+| `PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off; see [Persisted scrollback](#persisted-scrollback). | `true` |
 | `IDLE_TIMEOUT` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
 | `AUTH_USERNAME` | Basic-auth username (only used when `AUTH_PASSWORD` is set). | `admin` |
 | `AUTH_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
-| `ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). The carve-out needs loopback on **both** ends — a loopback client address _and_ a loopback `Host` — so the image healthcheck and a same-host `curl` keep working while a forged loopback `Host` from a remote peer does not. Any other name you browse to must be listed. Malformed entries are dropped with a warning; a list whose entries are **all** malformed fails closed, rejecting every non-loopback request. | _(unset)_ |
+| `ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). The carve-out needs loopback on **both** ends (a loopback client address _and_ a loopback `Host`), so the image healthcheck and a same-host `curl` keep working while a forged loopback `Host` from a remote peer does not. Any other name you browse to must be listed. Malformed entries are dropped with a warning; a list whose entries are **all** malformed fails closed, rejecting every non-loopback request. | _(unset)_ |
 | `TRUSTED_PROXIES` | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). | _(unset → socket peer)_ |
 
 Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/{id}/pinned-title` (name a terminal; `PUT` to set, `DELETE` to go back to the automatic name), `/api/sessions/events` (status SSE), `/healthz` (readiness).
@@ -199,7 +199,7 @@ what puts a credential on a variable in the first place.
 
 The access log records a `client_ip` per request. By default (`TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `TRUSTED_PROXIES=10.0.0.0/8,192.0.2.10`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
 
-A terminal that successfully attaches (the `/ws` WebSocket handshake) gets no line: the handshake ends the HTTP exchange, so the line could only be written when the socket finally closes, reporting a session-long duration and a status the server never sent. Every attach ATTEMPT is recorded separately, before the handshake runs, with a truncated session id, the client IP and the request id — that record is the audit trail for a socket that presents a session credential. A handshake that is _refused_ is also logged with its real status — a rejected `Host`, a cross-origin request, missing credentials, a plain HTTP request with no upgrade headers — so that is what to grep when a browser cannot attach.
+A terminal that successfully attaches (the `/ws` WebSocket handshake) gets no line: the handshake ends the HTTP exchange, so the line could only be written when the socket finally closes, reporting a session-long duration and a status the server never sent. Every attach ATTEMPT is recorded separately, before the handshake runs, with a truncated session id, the client IP and the request id. That record is the audit trail for a socket that presents a session credential. A handshake that is _refused_ is also logged with its real status (a rejected `Host`, a cross-origin request, missing credentials, a plain HTTP request with no upgrade headers), so that is what to grep when a browser cannot attach.
 
 The session id in `/ws?session=<id>` is a **capability**: holding it is enough to attach to that terminal. This server keeps it out of its own logs (the access log records the route template for session paths, and the attach record truncates the id), but a fronting reverse proxy logs full request URIs by default and would capture it in the clear. Drop or redact the `/ws` query string in the proxy's own access log.
 
