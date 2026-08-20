@@ -64,8 +64,8 @@ live on the server, so closing the page does not kill what is running, and
 reopening it reattaches to the same terminals from any device.
 
 It is deliberately thin. The terminal itself is two shared libraries (the engine
-and its reference UI); this repo is one Go file that starts the PTY, serves the
-bundled front end, and applies the security posture described above.
+and its reference UI); this repo is two small Go files that start the PTY, serve
+the bundled front end, and apply the security posture described above.
 
 ## Run
 
@@ -157,12 +157,10 @@ defaults differ, the Default column shows them as binary / image.
 Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/{id}/pinned-title` (name a terminal; `PUT` to set, `DELETE` to go back to the automatic name), `/api/sessions/events` (status SSE), `/healthz` (readiness).
 
 The variables above are the whole operator surface. Separately, the terminal
-engine injects a few `WT_`-prefixed keys into each session's OWN environment
-(`WT_SESSION_REAP`, `WT_SESSION_ID`, `WT_SESSION_PATH`, `WT_TITLE_HANDLE`,
-`WT_TITLE_STATE_DIR`), so you will see them in `env` inside a terminal. Those are
-internal plumbing, not settings: they keep the prefix precisely because they sit
-in a shell's environment next to everything else the system exports, and the
-session reaper matches one of them on the exact `KEY=VALUE` pair. Do not set them.
+engine injects one `WT_`-prefixed key into each session's OWN environment,
+`WT_SESSION_REAP`, so you see it in `env` inside a terminal. It is internal
+plumbing, not a setting: the session reaper matches it on the exact `KEY=VALUE`
+pair. Do not set it.
 
 ### Volumes
 
@@ -184,7 +182,7 @@ step failed:
 
 | `stage` | What failed |
 | --- | --- |
-| `config` | The environment is invalid: a missing or unreadable `WORK_DIR`, an unparseable `PERSIST_SCROLLBACK` or `SCROLLBACK`. |
+| `config` | The environment is invalid: a `WORK_DIR` that is missing, unreadable or not a directory, an empty `SESSION_CMD`, or an unparseable `PERSIST_SCROLLBACK`, `SCROLLBACK` or `IDLE_TIMEOUT`. |
 | `static` | The embedded front end or its Content-Security-Policy is unusable. A build defect, not a setting: no environment change fixes it. |
 | `listen` | The address in `LISTEN_ADDR` could not be bound. |
 | `serve` | The HTTP server exited with an error while running. |

@@ -38,9 +38,10 @@ workflows, or `LICENSE`.
   with a console CSP violation. The marker is verified on every boot in both
   spellings and a build that lost it aborts startup.
 - The browser bundle is **not** authored here. It is the engine + UI packages
-  compiled to `static/vendor/` at build time; only `static/index.html` (the
-  scaffold + importmap + inline `createTerminal(root, { features: presetTabbed() })` call) is committed, which is enough
-  for `//go:embed static` to have content.
+  compiled to `static/vendor/` at build time; only `static/index.html` is
+  committed (the scaffold, the importmap, and the inline
+  `createTerminal("#terminal", { features: () => presetTabbed({ attentionIcons: true }), … })`
+  call), which is enough for `//go:embed static` to have content.
 
 Keep the server thin: terminal behavior belongs in the engine or the UI
 package, not here.
@@ -130,7 +131,7 @@ pinned published one, add a `go.work` that redirects the module to your sibling
 checkout:
 
 ```text
-go 1.26.6
+go 1.27.0
 use .
 replace github.com/cplieger/web-terminal-engine/v5 => ../web-terminal-engine
 ```
