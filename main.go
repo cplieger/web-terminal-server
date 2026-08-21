@@ -24,10 +24,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/envx"
+	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/slogx"
-	"github.com/cplieger/web-terminal-engine/v4/terminal"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/web-terminal-engine/v5/terminal"
+	"github.com/cplieger/webhttp/v2"
 )
 
 // staticFS holds the bundled front end (the @cplieger/web-terminal-ui scaffold

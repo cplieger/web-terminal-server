@@ -27,8 +27,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/web-terminal-engine/v4/terminal"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/web-terminal-engine/v5/terminal"
+	"github.com/cplieger/webhttp/v2"
 )
 
 // shutdownManager tears the manager down at the end of a test and fails it when

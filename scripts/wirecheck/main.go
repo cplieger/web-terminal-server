@@ -29,7 +29,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/cplieger/web-terminal-engine/v4/terminal"
+	"github.com/cplieger/web-terminal-engine/v5/terminal"
 )
 
 // usageErrMsg is the one line every exit-2 path prints last, so the broken-gate case is
