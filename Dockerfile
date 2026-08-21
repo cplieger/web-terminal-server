@@ -73,9 +73,9 @@ COPY . ./
 # that drives a remote shell. Downloaded to a file first because a pipe cannot be
 # hashed before it is consumed.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=5.0.0
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=5.0.1
 # repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=f8c2bd12616b97bc89e142e0184442b4b75498a19924a16396c22c8f31588880
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=0e7779860964787ac506cb5ea1e2562d83db277893608e9ea04bfcef482616b6
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
 ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=6.1.4
 # repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
