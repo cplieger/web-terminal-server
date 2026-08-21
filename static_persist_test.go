@@ -88,6 +88,49 @@ func TestApplyPersistFlagFlipsExactlyTheMarker(t *testing.T) {
 	}
 }
 
+func TestApplyPersistFlagStampsAPageThatShipsTheOffMarker(t *testing.T) {
+	// The committed page's spelling documents the default rather than deciding it,
+	// so a build whose index.html ships the off marker is a valid build and both
+	// resolutions still hold over it: off reads back unchanged, on is overlaid.
+	shipsOff := fstest.MapFS{indexName: &fstest.MapFile{
+		Data: []byte(`<html><head>` + persistFlagOff + `</head><body></body></html>`),
+	}}
+
+	t.Run("off", func(t *testing.T) {
+		out, err := applyPersistFlag(shipsOff, false)
+		if err != nil {
+			t.Fatalf("applyPersistFlag(page carrying the off marker, enabled=false): %v", err)
+		}
+		html, err := fs.ReadFile(out, indexName)
+		if err != nil {
+			t.Fatalf("read %s: %v", indexName, err)
+		}
+		if !strings.Contains(string(html), persistFlagOff) {
+			t.Errorf("resolved %s = %q, want it to carry %q", indexName, html, persistFlagOff)
+		}
+		if strings.Contains(string(html), persistFlagOn) {
+			t.Errorf("resolved %s = %q, want no %q", indexName, html, persistFlagOn)
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		out, err := applyPersistFlag(shipsOff, true)
+		if err != nil {
+			t.Fatalf("applyPersistFlag(page carrying the off marker, enabled=true): %v", err)
+		}
+		html, err := fs.ReadFile(out, indexName)
+		if err != nil {
+			t.Fatalf("read %s: %v", indexName, err)
+		}
+		if !strings.Contains(string(html), persistFlagOn) {
+			t.Errorf("resolved %s = %q, want it to carry %q", indexName, html, persistFlagOn)
+		}
+		if strings.Contains(string(html), persistFlagOff) {
+			t.Errorf("resolved %s = %q, want no %q", indexName, html, persistFlagOff)
+		}
+	})
+}
+
 func TestApplyPersistFlagFailsLoudOnAMissingMarker(t *testing.T) {
 	// Checked on EVERY boot, including one with the flag off. A build that lost the
 	// marker is malformed, and the alternative is discovering it months later on
@@ -115,8 +158,15 @@ func TestApplyPersistFlagRefusesADuplicatedMarker(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			doubled := fstest.MapFS{indexName: &fstest.MapFile{Data: []byte(data)}}
-			if _, err := applyPersistFlag(doubled, true); err == nil {
-				t.Error("applyPersistFlag accepted a page with two markers")
+			_, err := applyPersistFlag(doubled, true)
+			if err == nil {
+				t.Fatal("applyPersistFlag accepted a page with two markers")
+			}
+			// The count is the whole diagnostic. An operator told "found 0" for a
+			// page carrying one of each spelling goes hunting for a marker that is
+			// missing, instead of the contradiction that is actually there.
+			if !strings.Contains(err.Error(), "found 2") {
+				t.Errorf("applyPersistFlag error = %q, want it to report two markers", err)
 			}
 		})
 	}
