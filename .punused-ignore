@@ -44,7 +44,11 @@ method (memInfo).Mode
 method (memInfo).ModTime
 method (memInfo).Sys
 
-method (memInfo).IsDir
+# memInfo.IsDir needs no entry, and the list above deliberately omits it:
+# main.go's WORK_DIR check calls fi.IsDir() on an os.Stat result, and gopls
+# counts that fs.FileInfo call as a reference to this package's own IsDir. The
+# method is no less required than its siblings; punused simply stops reporting
+# it. An entry would report as "matches nothing" on every run.
 
 # --- main.go's startup-stage error wrapper.
 #
