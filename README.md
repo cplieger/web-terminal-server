@@ -8,6 +8,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/web-terminal-server/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/web-terminal-server)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/web-terminal-server/releases)
 
+<!-- hub-overview BEGIN -->
 A small, generic web terminal: it runs a configured command in a PTY and serves
 the [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui)
 front end over HTTP + WebSocket, built on the
@@ -66,6 +67,7 @@ reopening it reattaches to the same terminals from any device.
 It is deliberately thin. The terminal itself is two shared libraries (the engine
 and its reference UI); this repo is two small Go files that start the PTY, serve
 the bundled front end, and apply the security posture described above.
+<!-- hub-overview END -->
 
 ## Run
 
