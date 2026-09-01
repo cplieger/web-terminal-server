@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
-# Assert every module the served page imports was emitted, non-empty.
-#
-# The target list is DERIVED from the page's own importmap rather than hardcoded, which is
-# the whole point: a hardcoded list goes stale the moment a library moves a module, and the
-# failure is invisible until a browser resolves the import and 404s. This repo's page maps
-# three specifiers today, one of which (`.../presets.js`) exists only because the UI keeps
-# its presets at `src/presets.ts` right now.
-#
-# There is no /app.js to check: this page mounts the terminal from an inline module script,
-# so every emitted target comes from the importmap.
+# Asserts every module the page's importmap references was actually emitted.
+# The target list is DERIVED from the importmap rather than hardcoded, so a
+# library moving a module fails here instead of 404ing in the browser.
 #
 # Usage: assert-emit.sh <index.html> <static-root>
 set -euo pipefail

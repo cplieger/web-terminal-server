@@ -1,25 +1,14 @@
 #!/usr/bin/env bash
-# Docker smoke test: build the image and prove the real artifact actually
-# serves traffic — not just that it compiles (the CI `validate` gate already
-# checks build-ability). Asserts the runtime contract:
+# Docker smoke test: builds the image and proves the artifact actually serves
+# traffic (the CI `validate` gate only proves it compiles). Asserts:
+#   1. /healthz = 200 once ready; the shipped HEALTHCHECK passes under auth
+#   2. / = 200, serves the UI scaffold
+#   3. /ws speaks WebSocket (non-upgrade GET is rejected)
+#   4. with AUTH_PASSWORD set, every route requires it
 #
-#   1. /healthz returns 200 once the container is ready (the HEALTHCHECK
-#      target), and the image's own shipped HEALTHCHECK probe -- run via
-#      `docker exec` -- passes under auth, proving the embedded probe sends
-#      credentials
-#   2. /          returns 200 and serves the UI scaffold (embedded static FS)
-#   3. /ws        speaks WebSocket (a plain GET without upgrade headers is
-#                 rejected, proving the engine handler is mounted)
-#   4. with AUTH_PASSWORD set, every route (incl. /healthz and /ws) returns 401
-#      without credentials and 200 with them (Basic-auth middleware is wired)
-#
-# Usage:  scripts/smoke.sh [IMAGE]
-#   IMAGE defaults to a locally-built `web-terminal-server:smoke`. Pass an
-#   already-built/pulled image ref to skip the build (CI builds once, then
-#   reuses the loaded image).
-#
-# Requires docker, curl, and jq. Exits non-zero on the first failed assertion and
-# always removes the container it started.
+# Usage: scripts/smoke.sh [IMAGE] (defaults to a locally-built
+# web-terminal-server:smoke; pass a prebuilt ref to skip the build)
+# Requires docker, curl, jq. Exits non-zero on first failed assertion.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -49,15 +38,13 @@ if [ "$IMAGE" = "web-terminal-server:smoke" ]; then
   docker build -t "$IMAGE" .
 fi
 
-# Run with a password so the same container exercises the auth paths too. Use a
-# short-lived command; the server itself is what we probe, not the PTY.
+# Run with a password so the same container exercises the auth paths too.
 echo "[smoke] starting container $CONTAINER on :${HOST_PORT} (auth enabled)"
 docker run -d --name "$CONTAINER" \
   -p "127.0.0.1:${HOST_PORT}:7681" \
   -e AUTH_PASSWORD="$PASSWORD" \
   "$IMAGE" >/dev/null
 
-# Wait for readiness via the authenticated /healthz (max ~30s).
 echo "[smoke] waiting for readiness"
 ready=""
 for _ in $(seq 1 30); do
@@ -66,7 +53,7 @@ for _ in $(seq 1 30); do
     ready=1
     break
   fi
-  # Surface an early container crash instead of waiting the full timeout.
+  # Surface an early crash instead of waiting the full timeout.
   if ! docker ps --filter "name=${CONTAINER}" --filter status=running --format '{{.Names}}' | grep -q "$CONTAINER"; then
     docker logs "$CONTAINER" >&2 || true
     fail "container exited before becoming ready"
@@ -94,17 +81,11 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/")
 echo "$body" | grep -qiE 'term|<!doctype html|<html' || fail "/ body does not look like the UI scaffold"
 echo "[smoke] PASS  / (authenticated) = 200, serves scaffold"
 
-# 2b. The scaffold references importmap JS + CSS + font assets the build assembles into
-#     static/vendor/ and static/style.css. A scaffold-only check passes even when those
-#     404, leaving the user on a permanent "Loading..." overlay (mount() throws on the
-#     failed module import).
-#
-#     The JS list is DERIVED from the importmap in the page we just fetched, not
-#     hardcoded: a library that moves a module (presets.js exists only because the UI keeps
-#     its presets at src/presets.ts today) would otherwise be silently unchecked here, and
-#     an importmap entry added upstream would never be probed at all. The literal list
-#     below is only for assets the importmap cannot name — the stylesheet and the preloaded
-#     font.
+# 2b. Every importmap JS asset + CSS + font the build assembles must be reachable
+#     (a scaffold-only check passes even when these 404, leaving a permanent
+#     "Loading..." overlay). JS list is DERIVED from the served importmap, not
+#     hardcoded, so a library moving a module fails here instead of going
+#     silently unchecked.
 importmap_targets=$(printf '%s' "$body" | sed -n '/<script type="importmap">/,/<\/script>/p' | grep -o '"/[^"]*"' | tr -d '"' || true)
 [ -n "$importmap_targets" ] || fail "no importmap module paths found in the served page (the page lost its importmap, or the extraction is broken)"
 for asset in $importmap_targets /style.css /vendor/fonts/MonaspaceNeonNF-Regular.woff2; do
@@ -113,11 +94,10 @@ for asset in $importmap_targets /style.css /vendor/fonts/MonaspaceNeonNF-Regular
 done
 echo "[smoke] PASS  every importmap module the served page names is reachable, plus CSS + font"
 
-# 2c. The hardened response headers. They are set once in the middleware chain, so one
-#     probe covers every route, and each is a control an operator can lose to a refactor
-#     without any functional symptom: the CSP hash pinning that stops injected script in a
-#     page driving a root shell, and the COOP/Referrer-Policy pair that keeps a clicked
-#     OSC 8 hyperlink from reaching back through window.opener.
+# 2c. Hardened headers: CSP hash-pinning stops injected script in a page
+#     driving a root shell; COOP/Referrer-Policy keep a clicked OSC 8
+#     hyperlink from reaching back through window.opener. Both fail silently
+#     on a refactor with no functional symptom, hence the explicit probe.
 headers=$(curl -s -D - -o /dev/null -u "admin:${PASSWORD}" "${BASE}/")
 for expected in \
   'content-security-policy:.*script-src' \
@@ -132,13 +112,11 @@ printf '%s' "$headers" | grep -qi "content-security-policy:.*'unsafe-inline'" \
   && fail "the CSP carries 'unsafe-inline'; the inline script and style must stay hash-pinned"
 echo "[smoke] PASS  hardened headers served (hash-pinned CSP, nosniff, DENY, COOP, Referrer-Policy, Permissions-Policy)"
 
-# 3. /ws authenticated but WITHOUT upgrade headers -> not a 200/101. The engine
-#    (v3, multi-session) answers every non-upgrade GET /ws with Accept's own
-#    426, known session or not (unknown sessions are reported post-upgrade via
-#    close code 4004, so a plain probe can't test session existence). Create a
-#    real session via the REST API anyway so this check also proves the REST
-#    surface is mounted, then assert the non-upgrade rejection (typically
-#    400/426).
+# 3. /ws without upgrade headers -> not 200/101. Engine v3 answers every
+#    non-upgrade GET /ws with 426 whether the session is known or not (unknown
+#    sessions are reported post-upgrade via close 4004; a plain probe can't
+#    test existence). Create a real session via REST first so this also
+#    proves the REST surface is mounted.
 session_id=$(curl -s -u "admin:${PASSWORD}" -X POST "${BASE}/api/sessions" | jq -r '.id // empty')
 [ -n "$session_id" ] || fail "POST /api/sessions did not return a session id"
 code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/ws?session=${session_id}")
@@ -147,11 +125,9 @@ case "$code" in
   101) echo "[smoke] PASS  /ws upgraded = 101" ;;
   *) fail "/ws?session=${session_id} (no upgrade) = $code, want 400/426/405 (handler mounted)" ;;
 esac
-# A missing/unknown session id must answer a non-upgrade GET exactly like a
-# known one (engine v3 anti-probing contract: no pre-upgrade 404 oracle for
-# session existence; the definitive "unknown session" signal is close code
-# 4004 after the upgrade). Verify the uniform rejection so a regression back
-# to the distinguishable 404 is caught.
+# An unknown session id must answer identically (no pre-upgrade 404 oracle for
+# session existence — the anti-probing contract; "unknown" is close 4004,
+# post-upgrade only).
 code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}/ws")
 [ "$code" = "426" ] || fail "/ws (no session param) = $code, want 426 (same as known session; no existence oracle)"
 echo "[smoke] PASS  /ws (no session param) = 426, indistinguishable from a known session"

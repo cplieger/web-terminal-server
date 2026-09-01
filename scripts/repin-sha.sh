@@ -1,30 +1,25 @@
 #!/bin/sh
-# Recompute a Dockerfile sha256 integrity pin after its version pin moved.
+# Recompute a Dockerfile sha256 pin after its version pin moved. Renovate can
+# bump a version but not compute the artifact's sha256 (no datasource
+# publishes it), so this runs as a postUpgradeTasks step and lands the
+# recomputed pin in the bump commit.
 #
-# Renovate can bump a version literal but cannot compute the sha256 of the
-# artifact that version names: no datasource publishes it (github-tags exposes a
-# git commit, npm exposes SHA-512, most dist tarballs publish nothing). Every
-# such pin therefore used to need a human to run curl | sha256sum and paste the
-# result into the PR. This script is that step, run by Renovate itself via
-# postUpgradeTasks so the recomputed pin lands in the bump commit.
-#
-# Each pin declares its own source URL in a marker comment on the line directly
-# above the ARG it protects:
+# Each pin declares its source URL in a marker directly above the ARG it
+# protects:
 #
 #   # repin: dep=ryanoasis/nerd-fonts url=https://github.com/ryanoasis/nerd-fonts/releases/download/{version}/Monaspace.tar.xz
 #   ARG NERDFONT_SHA256=<64 lowercase hex>
 #
-#   {version}      the new version exactly as Renovate reports it (may lead v)
+#   {version}      the new version as Renovate reports it (may lead v)
 #   {version_nov}  the same with one leading v stripped
 #
-# A dep with several pins (per-arch artifacts) declares one marker per ARG.
+# A dep with several pins declares one marker per ARG.
 #
 # Usage: repin-sha.sh <depName> <newVersion> [dockerfile ...]
 #
-# Exits 0 and changes nothing when no marker names <depName>: the Renovate task
-# is wired for a SET of deps and must be a silent no-op for every other one.
-# Exits non-zero on a marker it cannot honour (bad shape, unreachable URL,
-# unchanged file), because a silent miss reproduces exactly the stale-pin build
+# Exits 0 and changes nothing when no marker names <depName> (the task is
+# wired for a SET of deps and must no-op for every other one). Exits non-zero
+# on a marker it cannot honour, since a silent miss reproduces the stale-pin
 # failure this script exists to prevent.
 set -eu
 
@@ -39,12 +34,9 @@ version=$2
 shift 2
 [ -n "$dep" ] && [ -n "$version" ] || usage
 
-# The version is interpolated into the sed EXPRESSION below, and GNU sed's `e`
-# flag and `e` command execute the pattern space as a shell command, so a
-# version carrying `|` and `;` is arbitrary code execution here. It also reaches
-# curl as part of a URL, where `{}`/`[]` trigger curl's own URL globbing.
-# The value is not ours: it is whatever version a third-party datasource
-# reports, so constrain it to the shape a version has before any use.
+# Interpolated into the sed EXPRESSION below (GNU sed's `e` executes the
+# pattern space as a shell command) and into a curl URL ({}/[] trigger
+# globbing), so a third-party version string is constrained before any use.
 case $version in
   *[!A-Za-z0-9._+~-]*)
     printf 'repin: refusing version with unexpected characters: %s\n' "$version" >&2
@@ -59,11 +51,8 @@ if [ $# -eq 0 ]; then
 fi
 
 tmp=$(mktemp -d)
-# staged is the in-place rewrite target beside the Dockerfile, tracked here so
-# the trap can remove it: it lives OUTSIDE $tmp by necessity (a rename must be
-# same-filesystem), so the mktemp -d cleanup cannot reach it, and an interrupt
-# between the copy and the rename would otherwise leave it in the working tree
-# for Renovate to carry into a branch.
+# staged lives beside the Dockerfile (a rename must be same-filesystem), so
+# it's outside $tmp and the trap tracks it separately for cleanup.
 staged=
 cleanup() {
   rm -rf "$tmp"
@@ -72,20 +61,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-# resolve_target prints the real path of $1, following symlinks.
-#
-# It matters because the rewrite below commits by RENAME, which must land beside
-# the actual file, and because a Dockerfile reached through a symlink has to be
-# updated at its TARGET rather than replaced by a regular file — silently
-# breaking whatever the symlink was arranged for.
-#
-# Neither realpath nor readlink is in POSIX (realpath arrived only in
-# POSIX.1-2024) and this script is `#!/bin/sh` synced across every repo, so both
-# are probed rather than assumed. With neither available a SYMLINKED Dockerfile
-# fails closed: the rewrite commits by rename, so returning the unresolved path
-# would turn a tracked symlink into a regular file, and a warning does not
-# preserve the arrangement the symlink exists for. An ordinary file still uses
-# the path as given, which needs no resolver.
+# Prints the real path of $1, following symlinks. Rewrite commits by RENAME
+# beside the resolved target, so a Dockerfile reached through a symlink must
+# update at its TARGET, not become a regular file. Neither realpath nor
+# readlink is POSIX, so both are probed; with neither available, a symlinked
+# Dockerfile fails closed rather than silently breaking the symlink.
 resolve_target() {
   if command -v realpath >/dev/null 2>&1; then
     realpath "$1"
@@ -111,8 +91,7 @@ for dockerfile in "$@"; do
   }
 
   # Emit "<ARG name> <url template>" for every marker naming this dep. The
-  # marker must sit on the line immediately above its ARG so the pairing is
-  # unambiguous in a file that carries several pins.
+  # marker must sit directly above its ARG so the pairing stays unambiguous.
   awk -v dep="$dep" '
 		/^#[[:space:]]*repin:/ {
 			# END reports it: printing here as well would double the message, because
@@ -152,10 +131,10 @@ for dockerfile in "$@"; do
   while read -r name url; do
     [ -n "$name" ] || continue
 
-    # A sed replacement is NOT a literal context ('&' re-inserts the match,
-    # '\1' a group, '|' closes the command), so this is safe only because the
-    # version was parsed to [A-Za-z0-9._+~-] at the argument boundary above.
-    # The URL is then built from the Dockerfile marker plus that parsed value.
+    # sed's replacement is not a literal context ('&', '\1', a stray '|'),
+    # which is safe only because $version was constrained to
+    # [A-Za-z0-9._+~-] above; it also reaches curl inside a URL, where
+    # {}/[] trigger curl's own globbing.
     resolved=$(printf '%s\n' "$url" \
       | sed -e "s|{version}|$version|g" -e "s|{version_nov}|$version_nov|g")
 
@@ -181,9 +160,8 @@ for dockerfile in "$@"; do
         ;;
     esac
 
-    # Anchored on the ARG name and the 64-hex value, so nothing else in the
-    # file can match; the optional trailing group preserves an inline
-    # Renovate anchor comment (ARG X=<sha>  # tool v1.2.3).
+    # Anchored on the ARG name + 64-hex value so nothing else can match; the
+    # optional trailing group preserves an inline Renovate anchor comment.
     sed -E "s|^(ARG ${name}=)[0-9a-f]{64}([[:space:]].*)?\$|\1${sha}\2|" \
       "$dockerfile_target" >"$tmp/rewritten"
 
@@ -192,23 +170,13 @@ for dockerfile in "$@"; do
       exit 1
     fi
 
-    # Replace atomically. '>' truncates the target before the first byte lands,
-    # so a killed postUpgradeTask or an ENOSPC leaves a truncated Dockerfile in
-    # the branch Renovate commits. Stage beside the TARGET (the mktemp -d above
-    # is a different filesystem, so a rename out of it cannot work) and rename
-    # over it; copying the original first carries its mode across the replace,
-    # which `cp -p` does portably where `chmod --reference` is GNU-only.
-    #
-    # mktemp, not a name built from $$: it creates the file with O_EXCL under an
-    # unpredictable name, so nothing can be sitting at the path when the copy opens
-    # it -- a $$-derived name is guessable and `rm -f` then `cp -p` reopens by path,
-    # which is a window a symlink planted there turns into a write through it. The
-    # rename still commits, and `cp -p` still carries the original's mode across the
-    # replace (verified: cp -p sets the source's mode on an existing destination),
-    # which is why mktemp's own 0600 does not leak into the committed file. A
-    # leftover matches neither postUpgradeTasks fileFilter (Dockerfile,
-    # **/Dockerfile), so it can never be committed. shell.md, "Temp files and atomic
-    # writes".
+    # Replace atomically: '>' truncates before the first byte lands, so a
+    # killed task or ENOSPC would leave a truncated Dockerfile. mktemp (not a
+    # $$-derived name) creates with O_EXCL so nothing can sit at the path when
+    # the copy opens it; stage beside the target (mktemp -d above is a
+    # different filesystem, so a rename out of it can't work); cp -p carries
+    # the original's mode across the replace. shell.md "Temp files and
+    # atomic writes".
     staged=$(mktemp "$dockerfile_target.repin.XXXXXX")
     cp -p "$dockerfile_target" "$staged"
     cat "$tmp/rewritten" >"$staged"

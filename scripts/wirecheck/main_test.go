@@ -13,11 +13,8 @@ import (
 	"github.com/cplieger/web-terminal-engine/v5/terminal"
 )
 
-// TestRun_delegatesToTheEngineRule pins that the gate's verdict IS the
-// engine's verdict, in both directions and at the exclusive boundary. The rule
-// itself (and its agreement with the runtime close-4002 floor) is pinned in
-// the engine; what matters here is that run() routes that answer without
-// inverting or swallowing it.
+// TestRun_delegatesToTheEngineRule pins that run() routes the engine's
+// compatibility verdict without inverting or swallowing it.
 func TestRun_delegatesToTheEngineRule(t *testing.T) {
 	cases := map[string]struct {
 		clientRev, clientMinServer int
@@ -50,12 +47,10 @@ func TestRun_delegatesToTheEngineRule(t *testing.T) {
 	}
 }
 
-// TestRun_exitCodeContract pins the process exit codes and output streams the
-// Dockerfile wire-floor gate branches on: 0 compatible (ok line on stdout),
-// 1 floor violated (mismatch on stderr), 2 usage error. A wiring regression
-// (inverted check, swapped code, wrong stream) would silently neuter or break
-// the image build gate. Client values derive from the engine's constants, so
-// the cases track a future floor raise.
+// TestRun_exitCodeContract pins the exit codes and streams the Dockerfile
+// branches on: 0 compatible (stdout), 1 floor violated (stderr), 2 usage
+// error. Client values derive from the engine's constants, so the cases track
+// a future floor raise.
 func TestRun_exitCodeContract(t *testing.T) {
 	cases := []struct {
 		name                       string
@@ -109,8 +104,7 @@ func TestRun_exitCodeContract(t *testing.T) {
 	}
 }
 
-// TestRun_failureNamesBothPins keeps the remediation actionable: the engine's
-// reason says WHICH half is behind, and this repo adds which pin to move.
+// TestRun_failureNamesBothPins pins that the remediation names both pins.
 func TestRun_failureNamesBothPins(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(terminal.WireProtocolVersion, terminal.WireProtocolVersion+1, &stdout, &stderr); code != 1 {
@@ -124,17 +118,11 @@ func TestRun_failureNamesBothPins(t *testing.T) {
 	}
 }
 
-// The gate's verdict is worthless if nothing runs it. run() is exercised above in
-// process, and that suite stays green if the Dockerfile step is deleted, commented out,
-// or reverted to `go run` — a one-word edit that collapses this program's two failure
-// modes into one, because `go run` reports its OWN status 1 for any non-zero program
-// exit, turning exit 2 ("the extraction is broken, do NOT bump a pin") into exit 1
-// ("genuine wire incompatibility"). An incompatible pair then ships, answers /healthz
-// healthy, and refuses every session at first connect with close 4002.
-//
-// So the tests below read the shipped Dockerfile as text and pin the invocation itself.
-// They are matchers over shell text, which is easy to get subtly wrong, so each matcher
-// has its own unit test underneath.
+// The tests below read the shipped Dockerfile as text and pin that it
+// actually invokes the gate: in-process tests of run() stay green even if the
+// Dockerfile step is deleted or reverted to `go run`, which collapses exit 2
+// ("the extraction is broken") into exit 1 ("bump a pin") and lets an
+// incompatible pair ship behind a healthy /healthz.
 
 // dockerfileUnderTest returns the shipped Dockerfile's logical lines.
 func dockerfileUnderTest(t *testing.T) []string {
@@ -147,10 +135,10 @@ func dockerfileUnderTest(t *testing.T) []string {
 	return dockerfileLogicalLines(string(data))
 }
 
-// dockerfileLogicalLines folds backslash-continued physical lines into one logical line
-// and drops comment and blank lines, so a matcher sees a RUN's whole shell pipeline as a
-// single string. Without the fold, a gate split across continuations reads as several
-// unrelated lines and every matcher below returns false on correct input.
+// dockerfileLogicalLines folds backslash-continued lines into one logical
+// line and drops comment/blank lines: without the fold, a gate split across
+// continuations reads as several unrelated lines and every matcher below
+// returns false on correct input.
 func dockerfileLogicalLines(text string) []string {
 	var out []string
 	var b strings.Builder
@@ -191,14 +179,11 @@ func gateBuildOutput(line string) string {
 	return ""
 }
 
-// lineInvokesTheGate reports whether line builds the gate and then RUNS the built binary
-// with a -manifest argument.
-//
-// The window matters. Everything before the `go build` may contain shell operators — this
-// repo's step legitimately opens with a `test -f "$WIRE_MANIFEST" || { …; exit 2; }`
-// pre-flight carrying `||`, `;` and `>&2` — so operators are only disqualifying AFTER the
-// build, where they could divert the invocation. Rejecting `||` anywhere would return
-// false on the real, correct Dockerfile.
+// lineInvokesTheGate reports whether line builds the gate and then RUNS the
+// built binary with a -manifest argument. A shell operator disqualifies only
+// AFTER the build segment: this repo's real step opens with a
+// `test -f "$WIRE_MANIFEST" || { …; exit 2; }` pre-flight, so rejecting `||`
+// anywhere would return false on the correct Dockerfile.
 func lineInvokesTheGate(line string) bool {
 	out := gateBuildOutput(line)
 	if out == "" {
@@ -208,16 +193,14 @@ func lineInvokesTheGate(line string) bool {
 	if idx < 0 {
 		return false
 	}
-	// Skip past the build's own `-o <out>` argument: the first occurrence of out is the
-	// build target, not a call, so searching from idx would match the build itself.
+	// Skip past the build's own `-o <out>` argument — otherwise the first
+	// occurrence of out (the build target) matches the build itself.
 	tail := line[idx+len("-o "+out):]
 	runIdx := strings.Index(tail, out)
 	if runIdx < 0 {
-		// The binary is never invoked, only produced.
-		return false
+		return false // the binary is never invoked, only produced
 	}
 	invocation := tail[runIdx:]
-	// After the invocation begins, a shell operator could redirect or replace it.
 	for _, op := range []string{"||", "&&", ";", "|", "&"} {
 		if strings.Contains(invocation, op) {
 			return false
@@ -226,16 +209,15 @@ func lineInvokesTheGate(line string) bool {
 	return strings.Contains(invocation, "-manifest ")
 }
 
-// lineRunsTheGateUnbuilt reports whether line reaches the gate through `go run`, which
-// discards the exit code the Dockerfile branches on.
+// lineRunsTheGateUnbuilt reports whether line reaches the gate through `go
+// run`, which discards the exit code the Dockerfile branches on.
 func lineRunsTheGateUnbuilt(line string) bool {
 	return strings.Contains(line, "go run") &&
 		(strings.Contains(line, "./scripts/wirecheck") || strings.Contains(line, "/scripts/wirecheck "))
 }
 
-// TestDockerfileInvokesTheGate pins that the shipped Dockerfile builds this program and
-// then RUNS it with a manifest. A stage restructure that drops or comments out the RUN
-// leaves this package compiling and every other test here green.
+// TestDockerfileInvokesTheGate pins that the shipped Dockerfile builds this
+// program and then RUNS it with a manifest.
 func TestDockerfileInvokesTheGate(t *testing.T) {
 	t.Parallel()
 	lines := dockerfileUnderTest(t)
@@ -250,9 +232,9 @@ func TestDockerfileInvokesTheGate(t *testing.T) {
 	}
 }
 
-// TestDockerfileBuildsTheGateInsteadOfGoRun pins the BUILT form. `go run` collapses exit
-// 2 ("the extraction is broken") into exit 1 ("bump a pin"), which is the opposite
-// remedy.
+// TestDockerfileBuildsTheGateInsteadOfGoRun pins the BUILT form: `go run`
+// collapses exit 2 ("the extraction is broken") into exit 1 ("bump a pin"),
+// the opposite remedy.
 func TestDockerfileBuildsTheGateInsteadOfGoRun(t *testing.T) {
 	t.Parallel()
 	for i, line := range dockerfileUnderTest(t) {
@@ -262,9 +244,9 @@ func TestDockerfileBuildsTheGateInsteadOfGoRun(t *testing.T) {
 	}
 }
 
-// TestDockerfileLogicalLines_foldsAContinuedChain pins the fold, because every matcher
-// above is worthless without it: a gate split across backslash continuations would read
-// as several unrelated lines and TestDockerfileInvokesTheGate would count zero.
+// TestDockerfileLogicalLines_foldsAContinuedChain pins the fold: without it a
+// gate split across backslash continuations reads as unrelated lines and
+// TestDockerfileInvokesTheGate would count zero.
 func TestDockerfileLogicalLines_foldsAContinuedChain(t *testing.T) {
 	t.Parallel()
 	got := dockerfileLogicalLines("# comment\n\nRUN a && \\\n    b && \\\n    c\nCMD [\"x\"]\n")
@@ -279,10 +261,9 @@ func TestDockerfileLogicalLines_foldsAContinuedChain(t *testing.T) {
 	}
 }
 
-// TestLineInvokesTheGate_rejectsInertForms pins the matcher against the forms that look
-// like an invocation and are not, so TestDockerfileInvokesTheGate cannot pass on a
-// Dockerfile that never runs the gate. The first row is this repo's REAL step shape,
-// pre-flight `||` included: a matcher that rejects operators anywhere fails on it.
+// TestLineInvokesTheGate_rejectsInertForms pins the matcher against forms
+// that look like an invocation and are not. The first row is this repo's real
+// step shape, pre-flight `||` included.
 func TestLineInvokesTheGate_rejectsInertForms(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -330,10 +311,9 @@ func TestLineRunsTheGateUnbuilt(t *testing.T) {
 	}
 }
 
-// TestReadManifest pins every shape the engine's decoder can hand back, because each was
-// previously a shell `sed` capture whose only guard was `${VAR:?}`, in a RUN no test
-// could reach. The POLICY under test is this file's: every failure is exit 2, never a
-// compatibility verdict, and stderr says "fix the gate, do not bump a pin".
+// TestReadManifest pins every shape the engine's decoder can hand back: every
+// failure is exit 2, never a compatibility verdict, and stderr says "fix the
+// gate, do not bump a pin".
 func TestReadManifest(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -383,10 +363,9 @@ func TestReadManifest(t *testing.T) {
 	}
 }
 
-// gateEnvVar re-enters the test binary as the gate, so the PROCESS exit code is
-// observable. main() collapsing a 2 into a 1 (an os.Exit(0), a != 0 -> 1 normalisation,
-// a swallowed error) is invisible to every in-process test above, and 2-vs-1 is exactly
-// the distinction the Dockerfile step branches on.
+// gateEnvVar re-enters the test binary as the gate, so the PROCESS exit code
+// is observable: main() collapsing a 2 into a 1 is invisible to every
+// in-process test above, and 2-vs-1 is exactly what the Dockerfile branches on.
 const gateEnvVar = "WIRECHECK_TEST_RUN_AS_GATE"
 
 func TestMain(m *testing.M) {
@@ -415,8 +394,8 @@ func runGate(t *testing.T, args ...string) (int, string) {
 	return -1, ""
 }
 
-// TestGateProcessExitCodes pins the contract the Dockerfile consumes at the PROCESS
-// level: 0 compatible, 1 floor violated, 2 the gate is broken.
+// TestGateProcessExitCodes pins the contract at the PROCESS level: 0
+// compatible, 1 floor violated, 2 the gate is broken.
 func TestGateProcessExitCodes(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
@@ -427,14 +406,11 @@ func TestGateProcessExitCodes(t *testing.T) {
 		}
 		return p
 	}
-	// Derived from the engine's own constants so neither case can rot when a revision
-	// moves. A client speaking this server's revision and demanding no more than it is
-	// the compatible pairing.
+	// Derived from the engine's constants so neither case rots when a revision moves.
 	compatible := write("ok.json", fmt.Sprintf(
 		`{"schemaVersion":1,"wireCompatibility":{"protocolVersion":%d,"minimumServerProtocolVersion":%d,"incompatibleCloseCode":4002}}`,
 		terminal.WireProtocolVersion, terminal.WireProtocolVersion,
 	))
-	// A client demanding a server NEWER than this one violates the declared floor.
 	violating := write("bad.json", fmt.Sprintf(
 		`{"schemaVersion":1,"wireCompatibility":{"protocolVersion":%d,"minimumServerProtocolVersion":%d,"incompatibleCloseCode":4002}}`,
 		terminal.WireProtocolVersion+1, terminal.WireProtocolVersion+1,

@@ -31,15 +31,14 @@ import (
 	"github.com/cplieger/webhttp/v2"
 )
 
-// shutdownManager tears the manager down at the end of a test and fails it when
-// the teardown does not finish. It builds its own context rather than taking the
-// test's: a subtest's context is already cancelled by the time cleanups run, so a
-// wait against it would report an expiry on every test.
-//
-// The budget is deliberately generous against the real ceiling (the engine bounds
-// a stubborn child's reap at 5s, and the containment and marker ladders each
-// spend several grace windows), so a failure here means teardown genuinely hung
-// rather than that the runner was loaded.
+// shutdownManager tears the manager down at the end of a test and fails it
+// when the teardown does not finish. It builds its own context rather than
+// the test's, since a subtest's context is already cancelled by the time
+// cleanups run and a wait against it would report an expiry every time.
+// The budget is deliberately generous against the real ceiling (the engine
+// bounds a stubborn child's reap at 5s, and the containment and marker
+// ladders each spend several grace windows), so a failure here means
+// teardown genuinely hung, not that the runner was loaded.
 func shutdownManager(t *testing.T, mgr *terminal.SessionManager) {
 	t.Helper()
 	const budget = 20 * time.Second
@@ -135,20 +134,14 @@ func TestLoadConfigErrors(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRejectionNamesTheKeyAndNeverTheValue pins the confidentiality half of the
-// strict env validators, and it is the inverse of what this test used to assert.
-//
-// These errors are rendered into main's ONE startup ERROR line, and a compose
-// interpolation mistake can put a credential on any variable (`SCROLLBACK: ${TOKEN}`
-// resolves to a token that fails to parse as an int). Echoing the rejected value would
-// leave a durable, queryable copy of it in the log store (CWE-532), so a rejection names
-// the KEY and the accepted shape and nothing else. That is the same rule the LOG_LEVEL
-// warning and envx's own value-free BoolStrict error already follow here.
-//
-// The out-of-range cases are the deliberate exception: those values PARSED, so the number
-// or duration is a bounds fact rather than an unknown string, and naming it is what makes
-// the message actionable. The duration case also pins String(): %q on a time.Duration
-// renders a rune literal, since its underlying kind is int64.
+// TestLoadConfigRejectionNamesTheKeyAndNeverTheValue pins the confidentiality
+// half of the strict env validators: these errors render into main's ONE
+// startup ERROR line, and a compose interpolation mistake can put a
+// credential on any variable, so a rejection names the KEY and accepted
+// shape only (CWE-532) — the same rule LOG_LEVEL and envx's BoolStrict
+// follow. The out-of-range cases are the exception (those values PARSED,
+// so naming the number/duration is actionable); the duration case also
+// pins %q on time.Duration rendering a rune literal (int64 underneath).
 func TestLoadConfigRejectionNamesTheKeyAndNeverTheValue(t *testing.T) {
 	// A value shaped like a credential, so a regression prints something obviously wrong.
 	const secretish = "not-a-real-credential-AAAAAAAAAAAA"
@@ -441,15 +434,10 @@ func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
 		t.Errorf("script-src = %q, want 'unsafe-inline' dropped", scriptSrc)
 	}
 
-	// style-src is hash-pinned, not 'unsafe-inline'. The old comment here claimed
-	// "the renderer's dynamic per-cell inline styles depend on it", which was
-	// FALSE and contradicted main.go's own note 200 lines away: the renderer
-	// styles via CSSOM property setters, which style-src does not govern, and
-	// neither the UI nor the engine template emits a style= attribute. The
-	// sibling web-terminal-kiro proved it by hash-pinning the same page shape in
-	// production. A stale comment asserting a security relaxation is REQUIRED when
-	// it is not is exactly what stops someone tightening it later, so this now
-	// pins the tightened policy instead.
+	// style-src is hash-pinned, not 'unsafe-inline': the renderer styles via
+	// CSSOM property setters, which style-src does not govern, and neither
+	// the UI nor the engine template emits a style= attribute, so nothing
+	// here depends on inline-style relaxation.
 	styleSrc := cspDirective(t, csp, "style-src")
 	if strings.Contains(styleSrc, "'unsafe-inline'") {
 		t.Errorf("style-src = %q, want 'unsafe-inline' dropped in favour of a hash", styleSrc)
@@ -830,14 +818,12 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 }
 
 // TestLoadConfigAllowedHosts covers ALLOWED_HOSTS parsing via the shared
-// webhttp.ParseHostList helper and its threading onto cfg.hostPolicy (consumed
-// by the host-allowlist middleware in newHandler). Contracts: unset yields an
-// INACTIVE policy (any Host accepted, the backward-compatible default), a
-// valid list is canonicalized into an exact-match gate, a malformed entry is
-// warned (named) and DROPPED while the valid subset is kept, and an
-// all-invalid list stays ACTIVE and empty — deny-all, fail closed, with a
-// second Warn naming the deny-all state. These cases mutate the process-global
-// default logger and env, so they run serially (no t.Parallel).
+// webhttp.ParseHostList helper and its threading onto cfg.hostPolicy.
+// Contracts: unset yields an INACTIVE policy (any Host accepted, the
+// backward-compatible default), a valid list canonicalizes into an
+// exact-match gate, a malformed entry is warned and DROPPED while the valid
+// subset is kept, and an all-invalid list stays ACTIVE and empty — deny-all,
+// fail closed. Serial: mutates the process-global default logger and env.
 func TestLoadConfigAllowedHosts(t *testing.T) {
 	allows := func(t *testing.T, policy *webhttp.HostPolicy, host, remoteAddr string) bool {
 		t.Helper()
@@ -953,15 +939,13 @@ func hostPolicyFor(t *testing.T, entries ...string) *webhttp.HostPolicy {
 }
 
 // TestHostAllowlistGatesRoutes pins the ALLOWED_HOSTS anti-DNS-rebinding
-// gate through the real middleware stack (newHandler): a rebinding attack
-// makes an attacker-controlled hostname resolve to this server, so Origin and
-// Host AGREE and CrossOriginProtection alone admits the request — the
-// exact-host allowlist must reject it BEFORE the terminal routes, while an
-// allowed Host still reaches them. Also pins that X-Forwarded-Host cannot
-// smuggle an allowed name, the loopback peer+Host carve-out (the image's own
-// healthcheck keeps working under a browser-facing allowlist; a forged
-// loopback Host from a remote peer does not), and that a zero-value config
-// (no policy) stays permissive.
+// gate through the real middleware stack: a rebinding attack makes an
+// attacker-controlled hostname resolve to this server, so Origin and Host
+// AGREE and CrossOriginProtection alone admits the request — the exact-host
+// allowlist must reject it BEFORE the terminal routes, while an allowed
+// Host still reaches them. Also pins that X-Forwarded-Host cannot smuggle
+// an allowed name, the loopback peer+Host carve-out, and that a zero-value
+// config stays permissive.
 func TestHostAllowlistGatesRoutes(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
@@ -1379,23 +1363,13 @@ func TestStaticHandlerGzipNegotiation(t *testing.T) {
 }
 
 // TestAccessLogRedactsSessionTokenPaths pins the WithTemplatePathsUnder wiring
-// in newHandler: the token-bearing /api/sessions/{id} REST paths (the /ws attach
-// capability token the engine declares log-sensitive) must emit access lines
-// whose recorded path is the token-free route template — never the raw id —
-// while /healthz stays skipped and the exact-path create/list and SSE routes
-// keep their real path. A regression dropping the policy would leak live session
-// tokens to every log-read consumer (CWE-532). Serial: swaps the process-global
-// default logger (newHandler binds slog.Default() at construction).
-//
-// It passes the ENGINE's real REST handler rather than a stub, and that is the
-// point: the recorded template now comes from the pattern the mux actually
-// matched, so this asserts the app agrees with the engine's route table instead
-// of with a local copy of it. This app used to carry that table as a
-// string-parsing transform — and so did web-terminal-kiro, independently, and the
-// two had already diverged on the unmatched case. Mounting the real routes means
-// there is one table, and a route the engine adds or renames shows up here.
-// ws/events stay stubs: neither is template-rewritten, and the real SSE handler
-// only returns when the client disconnects.
+// in newHandler: the token-bearing /api/sessions/{id} REST paths (the /ws
+// attach capability token) must log the token-free route template, never the
+// raw id, while /healthz stays skipped and exact-path routes keep their real
+// path. A regression here leaks live session tokens to every log reader
+// (CWE-532). Serial: swaps the process-global default logger. Uses the
+// ENGINE's real REST handler, not a stub, so the recorded template comes
+// from the route table the mux actually matched.
 func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -1450,10 +1424,9 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	if !strings.Contains(log, "path=/api/sessions/{id}/pinned-title") {
 		t.Errorf("access log = %q, want a template-path access line for the rename route", log)
 	}
-	// A subresource the engine does not serve is recorded as unmatched rather than
-	// collapsed onto a route it is not — the failure mode above, made visible. The
-	// marker is the library's now, so this app and web-terminal-kiro can no longer
-	// disagree about what it looks like.
+	// An unserved subresource is recorded as unmatched, not collapsed onto a
+	// route it is not — the marker is the library's, so this app and
+	// web-terminal-kiro can no longer disagree about its shape.
 	if !strings.Contains(log, "path=/api/sessions/(unmatched)") {
 		t.Errorf("access log = %q, want an unmatched-subresource access line", log)
 	}
@@ -1501,17 +1474,14 @@ func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 	}
 }
 
-// TestWebSocketUpgradeSkippedButRefusalLogged pins the WithSkipUpgrades wiring
-// in newHandler, whose two halves fail in opposite directions. A COMPLETED
-// upgrade must emit NO access line: the handshake ends the HTTP exchange, so a
-// line would only appear when the socket closes, carrying a session-length
-// duration and a status net/http never sent. A REFUSED handshake must still be
-// logged — here the uniform 426 that keeps /ws unprobeable, and by the same
-// path the 400 on a malformed key, the CrossOriginProtection 403 and the
-// basicAuth 401 — because that is what an operator greps when a browser cannot
-// attach. A regression to WithSkipPaths("/ws") satisfies the first half and
-// silently breaks the second, which is the failure this pins. Serial: swaps the
-// process-global default logger (newHandler binds slog.Default()).
+// TestWebSocketUpgradeSkippedButRefusalLogged pins the WithSkipUpgrades
+// wiring: a COMPLETED upgrade must emit NO access line, since the handshake
+// ends the HTTP exchange and a line would carry a session-length duration
+// and a status net/http never sent. A REFUSED handshake (the uniform 426, a
+// malformed key's 400, CrossOriginProtection's 403, basicAuth's 401) must
+// still be logged — what an operator greps when a browser cannot attach.
+// WithSkipPaths("/ws") satisfies the first half but silently breaks the
+// second, which is the regression this pins.
 func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -1546,16 +1516,12 @@ func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
 
 // TestSessionLoggerTruncatesSessionID pins the session-token log boundary in
 // main's handler factory. The session id doubles as the /ws attach + resume
-// capability token, and AUTH_PASSWORD is optional, so in the documented
-// unauthenticated posture a full id in an aggregated log is enough for anyone
-// with log-read reach to attach to a live terminal (CWE-532). The factory
-// therefore binds only terminal.LogID's truncated form.
-//
-// This test exists because the app previously logged the whole id and nothing
-// failed: the leak was found by audit, not by CI. It drives the real engine
-// session manager through the real factory so a regression (widening the
-// prefix, dropping the LogID call, or binding the raw id again) fails here.
-// Serial: swaps the process-global default logger the factory reads.
+// capability token, and AUTH_PASSWORD is optional, so in the unauthenticated
+// posture a full id in an aggregated log is enough for anyone with log-read
+// reach to attach to a live terminal (CWE-532); the app previously logged the
+// whole id and nothing failed, found by audit rather than CI. The factory
+// binds only terminal.LogID's truncated form; this drives the real session
+// manager through it. Serial: swaps the process-global default logger.
 func TestSessionLoggerTruncatesSessionID(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -1745,16 +1711,13 @@ func TestFailedAuthThrottleInertWithoutPassword(t *testing.T) {
 }
 
 // TestCanonicalPathGuard pins the canonical-path guard (webhttp.
-// CanonicalRequestPath). http.ServeMux cleans the request path before it selects
-// a pattern and answers 307 when the cleaned path differs — before any handler
-// runs. A 307 is a SUCCESS status to a client that does not follow redirects,
-// and this image's baked HEALTHCHECK is `curl -sf` with no -L: a probe sent to
-// //healthz would exit 0 having never invoked the readiness gate. The guard
-// refuses those spellings on the probe and session-API surfaces instead.
-//
-// The other half of the contract is the SCOPE. The static mount keeps its
-// redirects: a browser follows them, they are how relative asset paths resolve,
-// and a static GET has no side effect a missed redirect could hide.
+// CanonicalRequestPath). ServeMux cleans the request path before selecting
+// a pattern and answers 307 when it differs, before any handler runs — a
+// SUCCESS status to a client without -L, and this image's baked
+// HEALTHCHECK is `curl -sf` with no -L, so `//healthz` would exit 0 having
+// never invoked the readiness gate. The guard refuses those spellings on
+// the probe and session-API surfaces; the static mount keeps its
+// redirects.
 func TestCanonicalPathGuard(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
@@ -1859,19 +1822,14 @@ func TestCanonicalPathGuard(t *testing.T) {
 	})
 }
 
-// TestAttentionIconVariantsAreServed pins the promise index.html makes when it
-// passes attentionIcons: true to the UI preset.
-//
-// That option tells the library to swap every link[rel=icon] to a status variant
-// while a background session wants the user, and the library derives those URLs
-// from a NAMING CONVENTION rather than a map it can validate: it inserts -input,
-// -done or -alert after the filename's `favicon` token. Nothing in the library can
-// check the files exist, because they live here — the dot's colour is the app's
-// theme, so the assets are a per-app artifact of the fleet's
-// .kiro/scripts/gen-attention-icons.py.
-//
-// So the failure mode of breaking the promise is a BLANK tab icon, not a missing
-// dot, and this test is what stands between a renamed icon and that.
+// TestAttentionIconVariantsAreServed pins the promise index.html makes by
+// passing attentionIcons: true to the UI preset: the library swaps every
+// link[rel=icon] to a status variant while a background session wants the
+// user, deriving those URLs from a NAMING CONVENTION (inserting -input,
+// -done or -alert after the `favicon` token) rather than a map it can
+// validate — the assets live here, generated by
+// .kiro/scripts/gen-attention-icons.py. Breaking the promise shows a BLANK
+// tab icon, not a missing dot, and this test catches a renamed icon first.
 func TestAttentionIconVariantsAreServed(t *testing.T) {
 	t.Parallel()
 
@@ -2110,15 +2068,14 @@ func TestStaticCacheControl(t *testing.T) {
 	}
 }
 
-// TestSecurityHeadersCarryTheHardenedSet pins the three headers this app sets over
-// webhttp's SecurityHeaders defaults. The terminal renders clickable OSC 8 hyperlinks
-// straight out of an arbitrary SESSION_CMD's output, so a session can be induced to open an
-// attacker page; COOP and the tightened Referrer-Policy make the vendored UI's
+// TestSecurityHeadersCarryTheHardenedSet pins the three headers this app
+// sets over webhttp's SecurityHeaders defaults. The terminal renders
+// clickable OSC 8 hyperlinks straight out of arbitrary SESSION_CMD output,
+// so a session can be induced to open an attacker page; COOP and the
+// tightened Referrer-Policy make the vendored UI's
 // rel="noopener noreferrer" independent of the Renovate-bumped UI pin.
-//
-// Dropping any one option leaves the response either header-free (COOP,
-// Permissions-Policy) or on webhttp's looser strict-origin-when-cross-origin default,
-// and no other test in this package would notice.
+// Dropping any one option leaves the response header-free or on webhttp's
+// looser default, and no other test here would notice.
 func TestSecurityHeadersCarryTheHardenedSet(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
@@ -2142,16 +2099,14 @@ func TestSecurityHeadersCarryTheHardenedSet(t *testing.T) {
 	}
 }
 
-// TestWSAttachLogRecordsEveryUpgradeAttempt pins the /ws audit record. The access logger
-// skips admitted upgrades (WithSkipUpgrades) and neither the engine's WebSocketHandler nor
-// the per-session Handler logs an attach, so without this middleware the request that
-// PRESENTS the session capability token is the only request to this server with no record
-// at all — a leaked id could be replayed with nothing to show an operator (CWE-778).
-//
-// It also pins that the record TRUNCATES the token: the whole point is an audit trail that
-// is not itself a credential store.
-//
-// Not parallel: it swaps the process-global slog handler.
+// TestWSAttachLogRecordsEveryUpgradeAttempt pins the /ws audit record. The
+// access logger skips admitted upgrades (WithSkipUpgrades), and neither the
+// engine's WebSocketHandler nor the per-session Handler logs an attach, so
+// without this middleware the request that PRESENTS the session capability
+// token would have no record at all — a leaked id replayable with nothing
+// to show an operator (CWE-778). Also pins that the record TRUNCATES the
+// token, since an audit trail must not itself be a credential store. Not
+// parallel: swaps the process-global slog handler.
 func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
 	// A session id, which is what /ws carries. Distinctive enough that a leak of it
 	// into the log is unmistakable, and shaped like the engine's ids rather than a key.
@@ -2209,15 +2164,14 @@ func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
 	}
 }
 
-// TestWSAttachLogIsWiredIntoTheChain pins the middleware's PLACE in newHandler, which the
-// unit test above cannot: it calls wsAttachLog directly, so dropping the entry from
-// webhttp.Chain would leave that test green and the audit record gone.
-//
-// It also pins the placement relative to the host gate. A request with a Host the
-// allowlist rejects must still leave a record, because a rebinding probe against an
-// unauthenticated PTY is exactly the event an operator needs afterwards.
-//
-// Not parallel: it swaps the process-global slog handler.
+// TestWSAttachLogIsWiredIntoTheChain pins the middleware's PLACE in
+// newHandler, which the unit test above cannot: it calls wsAttachLog
+// directly, so dropping the entry from webhttp.Chain would leave that test
+// green and the audit record gone. It also pins the placement relative to
+// the host gate: a request with a Host the allowlist rejects must still
+// leave a record, since a rebinding probe against an unauthenticated PTY is
+// exactly the event an operator needs afterwards. Not parallel: swaps the
+// process-global slog handler.
 func TestWSAttachLogIsWiredIntoTheChain(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -2369,15 +2323,13 @@ func TestCanonicalPathGuardRefusesTheSideEffect(t *testing.T) {
 	}
 }
 
-// TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly pins both halves of the LOG_LEVEL
-// contract, neither of which anything checked.
-//
-// The level must actually be INSTALLED — a parse whose result is dropped is invisible
-// today — and the unparseable warning must name the KEY and carry no copy of the VALUE. A
-// compose interpolation mistake is what puts a credential on this key (CWE-532), and this
-// app's own comment claims the posture without a test behind it.
-//
-// Not parallel: it replaces the process-global logger, and t.Setenv forbids it anyway.
+// TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly pins both halves of
+// the LOG_LEVEL contract: the level must actually be INSTALLED (a parse
+// whose result is dropped is invisible today), and the unparseable warning
+// must name the KEY and carry no copy of the VALUE, since a compose
+// interpolation mistake is what puts a credential on this key (CWE-532).
+// Not parallel: replaces the process-global logger, and t.Setenv forbids
+// it anyway.
 func TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly(t *testing.T) {
 	// A value shaped like a credential, so a regression prints something unmistakable.
 	const secretish = "not-a-real-credential-BBBBBBBBBBBB"
@@ -2485,15 +2437,14 @@ func TestIsWebSocketUpgradeRequiresBothListTokens(t *testing.T) {
 	}
 }
 
-// TestCrossOriginProtectionGatesUnsafeMethods pins the CSRF layer, which nothing reached:
-// no test in this package sent an Origin header, so the whole entry could be deleted from
-// webhttp.Chain with the suite green.
-//
-// The boundary is exactly what the chain comment states: http.CrossOriginProtection
-// returns early for GET, HEAD and OPTIONS as safe methods, so the layer governs the
-// state-changing session REST calls and never the /ws handshake, which is a GET. The
-// same-origin case is asserted alongside the cross-origin one, because a handler that
-// refused every request would satisfy the negative test alone.
+// TestCrossOriginProtectionGatesUnsafeMethods pins the CSRF layer: no test
+// in this package sent an Origin header before, so the whole entry could be
+// deleted from webhttp.Chain with the suite green.
+// http.CrossOriginProtection returns early for GET, HEAD and OPTIONS as
+// safe methods, so the layer governs the state-changing session REST calls
+// and never the /ws handshake, which is a GET. The same-origin case is
+// asserted alongside the cross-origin one, since a handler that refused
+// everything would satisfy the negative test alone.
 func TestCrossOriginProtectionGatesUnsafeMethods(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
@@ -2565,15 +2516,14 @@ func TestNoDiagnosticRoutesOnThisSurface(t *testing.T) {
 	}
 }
 
-// TestSessionSurfaceIsNeverCacheable pins that every response on the session surface
-// refuses storage. The id in a session URL is the /ws attach capability, so a cached
-// response — or a cached 404 whose KEY carries the id — leaves it readable from a shared
-// cache after the session is gone.
-//
-// The header comes from the libraries (webhttp.ReadinessHandler, and the engine's own
-// no-store wrapper over its REST mux and SSE stream), so this is a synchronizing check
-// against them rather than a restatement: a library regression or a consumer override
-// fails here on the bump PR.
+// TestSessionSurfaceIsNeverCacheable pins that every response on the
+// session surface refuses storage: the id in a session URL is the /ws
+// attach capability, so a cached response — or a cached 404 whose KEY
+// carries the id — leaves it readable from a shared cache after the
+// session is gone. The header comes from the libraries (webhttp.
+// ReadinessHandler, the engine's own no-store wrapper), so this is a
+// synchronizing check against them: a library regression or a consumer
+// override fails here on the bump PR.
 func TestSessionSurfaceIsNeverCacheable(t *testing.T) {
 	var ready webhttp.Ready
 	ready.Set(true)
