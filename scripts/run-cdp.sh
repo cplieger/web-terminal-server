@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Run the CDP live-verify suite end to end and aggregate a single pass/fail.
-# Not human-reliant: each harness asserts and exits 0/non-zero, and this runner
-# returns non-zero if any harness fails.
-#
-# It provisions everything locally: a headless Chromium (a real one on PATH, or
-# the Playwright-cached build) exposing the DevTools Protocol, and a
-# web-terminal-server bound to loopback running the deterministic fixture. Then
-# it runs each harness and tears the lot down.
+# Runs the CDP live-verify suite end to end and aggregates a single
+# pass/fail; non-zero if any harness fails. Provisions a headless Chromium
+# and a web-terminal-server bound to loopback running the deterministic
+# fixture, then tears both down.
 #
 # Overrides:
 #   CDP_URL   use an existing DevTools endpoint instead of spawning Chromium
@@ -49,7 +45,7 @@ find_chromium() {
       return 0
     fi
   done
-  # Playwright cache (headless shell first, then full chromium).
+  # Playwright cache: headless shell first, then full chromium.
   for p in \
     "$HOME"/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell \
     "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome; do
@@ -124,8 +120,8 @@ run() { # label script
   fi
 }
 
-# Group 1: harnesses that run against the continuous-emitter fixture.
-# Listed once so a new harness can't be silently dropped from either branch.
+# Group 1: harnesses run against the continuous-emitter fixture, listed once
+# so a new harness can't be silently dropped from either branch.
 GROUP1=(render resume input viewport resize)
 run_group1() { for h in "${GROUP1[@]}"; do run "$h" "cdp-$h.cjs"; done; }
 

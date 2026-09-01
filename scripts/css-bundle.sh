@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
-# Concatenate the vendored UI's CSS members, in MANIFEST order, into one bundle.
-#
-# The recipe was inlined twice before this script existed (Dockerfile and dev-build.sh) in
-# the naive `: > out; while read line; cat >> out` shape, which gives up five things this
-# does not:
-#
-#   - Atomic assembly. A member that fails to read halfway through replaced a working
-#     bundle with a truncated one; here the temp sibling is only renamed after every member
-#     was read.
-#   - Containment. Every MANIFEST entry is resolved and required to stay under the css
-#     root, so neither a `../` entry nor a symlink in a crafted tarball can pull an
-#     arbitrary file into a served asset.
-#   - Regular-file guards. `cat` on a FIFO member hangs the build forever, with no deadline
-#     in either the image build or a dev build.
-#   - A non-empty check per member, and a refusal of an empty or fully-commented MANIFEST,
-#     which otherwise yields a zero-byte stylesheet and an unstyled terminal.
-#   - Cleanup on interrupt.
+# Concatenates the vendored UI's CSS members, in MANIFEST order, into one
+# bundle, atomically. Guards beyond a naive `cat >> out`: MANIFEST entries
+# confined under the css root (blocks `../` and symlink escape from a
+# crafted tarball), regular-file-only members (a FIFO would hang `cat`
+# forever), and refusal of an empty/fully-commented MANIFEST (which
+# otherwise yields a zero-byte stylesheet and an unstyled terminal).
 #
 # Usage: css-bundle.sh <css-root> <out-file>
 set -euo pipefail

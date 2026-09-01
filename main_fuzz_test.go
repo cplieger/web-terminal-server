@@ -6,16 +6,11 @@ import (
 	"testing"
 )
 
-// FuzzBasicAuthRejectsWrongCredentials asserts the auth gate security
+// FuzzBasicAuthRejectsWrongCredentials asserts the auth gate's security
 // invariant: only the exact configured (username, password) pair is
-// accepted and every other pair must receive 401. HTTP Basic encodes
-// "user:pass" and splits on the first colon, so the only input whose
-// decoded form re-parses to the accepted pair is that pair itself.
-//
-// It drives basicAuthGate.middleware, the 401 half of the gate whose
-// presentsValidCredentials predicate the failed-auth throttle also reads — so
-// every pair this proves rejected is also a pair the throttle charges a token
-// for, by construction rather than by a second implementation.
+// accepted, every other pair gets 401. It drives basicAuthGate.middleware,
+// whose presentsValidCredentials predicate the failed-auth throttle also
+// reads, so every rejected pair here is also one the throttle charges.
 func FuzzBasicAuthRejectsWrongCredentials(f *testing.F) {
 	const user, pass = "admin", "s3cret"
 	f.Add("admin", "wrong")

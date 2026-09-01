@@ -1,11 +1,8 @@
 #!/bin/sh
-# Deterministic fixture for the ED3 (CSI 3 J, "erase saved lines") end-to-end
-# check driven by scripts/cdp-scrollback.cjs. It bursts a large scrollback,
-# prints a PRE marker, then BLOCKS on stdin. The client triggers the clear by
-# sending a newline once it has settled — so the ED3 is client-timed, not on a
-# fixed clock the observer would race. On the trigger it emits ED3 (clear saved
-# lines) + ED2/home (clear the visible screen) + a POST marker, then idles.
-# Single deterministic pass. Not production.
+# Deterministic ED3 (CSI 3 J) fixture for scripts/cdp-scrollback.cjs: bursts
+# scrollback, emits a PRE marker, then blocks on stdin so the client controls
+# when the clear fires (client-timed, not a race against a fixed clock). Not
+# production.
 i=1
 while [ "$i" -le 200 ]; do
   printf 'scrollback line %d\r\n' "$i"

@@ -11,12 +11,11 @@ import (
 	"github.com/cplieger/webhttp/v2"
 )
 
-// PERSIST_SCROLLBACK is the one server fact the static front end reads, and it
-// reaches the page by a startup byte swap rather than a template. What the tests
-// below hold is that the swap is invisible to everything downstream: the CSP hash,
-// the ETag and the gzip body are all derived from the SERVED bytes, and a build
-// that lost the marker fails at startup instead of on the first boot an operator
-// enables the flag.
+// PERSIST_SCROLLBACK reaches the page by a startup byte swap rather than a
+// template. The tests below hold that the swap is invisible downstream: the
+// CSP hash, ETag and gzip body are all derived from the SERVED bytes, and a
+// build that lost the marker fails at startup rather than on the first boot
+// an operator enables the flag.
 
 func TestApplyPersistFlagLeavesTheTreeAloneOnTheDefault(t *testing.T) {
 	sub, err := fs.Sub(staticFS, "static")
@@ -65,14 +64,14 @@ func TestApplyPersistFlagFlipsExactlyTheMarker(t *testing.T) {
 	if !strings.Contains(string(after), persistFlagOff) {
 		t.Fatalf("overlaid %s does not carry the off marker", indexName)
 	}
-	// Nothing else moved: the swap is one marker, so the two files differ by
-	// exactly the length of the added "f".
+	// The swap is one marker, so the two files differ by exactly the length
+	// of the added "f".
 	if len(string(after))-len(string(before)) != len(persistFlagOff)-len(persistFlagOn) {
 		t.Errorf("overlay changed more than the marker: %d bytes before, %d after",
 			len(before), len(after))
 	}
-	// And the overlay is transparent for every other file, or the walk the static
-	// handler performs at construction would lose assets.
+	// The overlay must be transparent for every other file, or the static
+	// handler's construction-time walk would lose assets.
 	for _, name := range []string{"manifest.json", "favicon.svg"} {
 		want, err := fs.ReadFile(sub, name)
 		if err != nil {
@@ -89,9 +88,8 @@ func TestApplyPersistFlagFlipsExactlyTheMarker(t *testing.T) {
 }
 
 func TestApplyPersistFlagStampsAPageThatShipsTheOffMarker(t *testing.T) {
-	// The committed page's spelling documents the default rather than deciding it,
-	// so a build whose index.html ships the off marker is a valid build and both
-	// resolutions still hold over it: off reads back unchanged, on is overlaid.
+	// The committed page's spelling documents the default; it does not decide
+	// it, so a build whose index.html ships the off marker is still valid.
 	shipsOff := fstest.MapFS{indexName: &fstest.MapFile{
 		Data: []byte(`<html><head>` + persistFlagOff + `</head><body></body></html>`),
 	}}
@@ -132,10 +130,8 @@ func TestApplyPersistFlagStampsAPageThatShipsTheOffMarker(t *testing.T) {
 }
 
 func TestApplyPersistFlagFailsLoudOnAMissingMarker(t *testing.T) {
-	// Checked on EVERY boot, including one with the flag off. A build that lost the
-	// marker is malformed, and the alternative is discovering it months later on
-	// the first boot an operator sets the env var — on a container whose whole
-	// purpose is then to enable the thing that silently cannot be enabled.
+	// A build that lost the marker is malformed; failing loud beats
+	// discovering it months later on the first boot that flips the env var.
 	for _, enabled := range []bool{false, true} {
 		broken := fstest.MapFS{
 			indexName: &fstest.MapFile{Data: []byte("<html><head></head></html>")},
@@ -147,10 +143,9 @@ func TestApplyPersistFlagFailsLoudOnAMissingMarker(t *testing.T) {
 }
 
 func TestApplyPersistFlagRefusesADuplicatedMarker(t *testing.T) {
-	// Two markers means the swap would flip one and leave the other, so the page
-	// would carry contradictory answers and the reader that wins is a DOM-order
-	// accident. Counted across BOTH spellings, or a page carrying one of each
-	// would pass while being exactly the contradiction this rejects.
+	// Two markers would flip one and leave the other, so the page would carry
+	// contradictory answers. Counted across BOTH spellings, or a page
+	// carrying one of each would pass while being the contradiction itself.
 	for name, data := range map[string]string{
 		"both off":    persistFlagOff + persistFlagOff,
 		"both on":     persistFlagOn + persistFlagOn,
@@ -162,9 +157,9 @@ func TestApplyPersistFlagRefusesADuplicatedMarker(t *testing.T) {
 			if err == nil {
 				t.Fatal("applyPersistFlag accepted a page with two markers")
 			}
-			// The count is the whole diagnostic. An operator told "found 0" for a
-			// page carrying one of each spelling goes hunting for a marker that is
-			// missing, instead of the contradiction that is actually there.
+			// The count is the whole diagnostic: "found 0" for a page carrying
+			// one of each spelling sends an operator hunting for a missing
+			// marker instead of the contradiction that is actually there.
 			if !strings.Contains(err.Error(), "found 2") {
 				t.Errorf("applyPersistFlag error = %q, want it to report two markers", err)
 			}
@@ -178,9 +173,8 @@ func TestApplyPersistFlagFailsOnAnUnreadableIndex(t *testing.T) {
 	}
 }
 
-// TestPersistFlagReachesTheServedPage is the integration assertion: the flag the
-// operator set is what the browser receives, from the same handler stack the real
-// server builds.
+// TestPersistFlagReachesTheServedPage is the integration assertion: the flag
+// the operator set is what the browser receives.
 func TestPersistFlagReachesTheServedPage(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -211,9 +205,9 @@ func TestPersistFlagReachesTheServedPage(t *testing.T) {
 			if strings.Contains(body, tc.reject) {
 				t.Errorf("served page still carries %q", tc.reject)
 			}
-			// The static handler precomputed its validator from the same bytes it
-			// serves, or a browser would revalidate against a hash of the other
-			// variant and be handed a 304 for a page it does not have.
+			// The static handler precomputed its validator from the same bytes
+			// it serves, or a browser would revalidate against a hash of the
+			// other variant and be handed a 304 for a page it does not have.
 			if rec.Header().Get("ETag") == "" {
 				t.Error("served page carries no ETag")
 			}
@@ -222,21 +216,13 @@ func TestPersistFlagReachesTheServedPage(t *testing.T) {
 }
 
 // TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent covers what the
-// ordering is ACTUALLY load-bearing for.
-//
-// An earlier version of this test was named for the CSP and proved nothing. The
-// marker is a <meta> element, so flipping it cannot change any inline script's
-// bytes and therefore cannot change a script-src hash: building the CSP from the
-// un-overlaid embed would produce a byte-identical policy, and the test asserted
-// something true either way. Worse, it called applyPersistFlag(sub, true) while
-// the committed page already says "on", so it got the base FS back and never
-// exercised an overlay at all.
-//
-// What the ordering does buy is that the static handler hashes and gzips the bytes
-// it serves. So this drives the direction that DOES overlay (the opt-out), asserts
-// the CSP still admits the served page's scripts, and asserts the ETag differs
-// between the two variants — which is the property a browser depends on and the
-// one a shared cache would break.
+// ordering is actually load-bearing for. Flipping the marker cannot change
+// any inline script's bytes (it is a <meta> element), so it cannot change a
+// script-src hash; what the ordering DOES buy is that the static handler
+// hashes and gzips the bytes it serves. This drives the overlay direction
+// (the opt-out), asserts the CSP still admits the served page's scripts,
+// and asserts the ETag differs between the two variants — the property a
+// browser depends on and a shared cache would break.
 func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -267,8 +253,8 @@ func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 		}
 	}
 
-	// The ETag is the half that genuinely depends on the handler seeing the served
-	// bytes: two different pages must not share a validator.
+	// The ETag depends on the handler seeing the served bytes: two different
+	// pages must not share a validator.
 	etag := func(enabled bool) string {
 		t.Helper()
 		var ready webhttp.Ready
@@ -293,9 +279,8 @@ func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 }
 
 func TestApplyBoolEnvRejectsANonBoolean(t *testing.T) {
-	// Strict rather than "non-empty is true": this flag decides whether terminal
-	// output is written to browser storage, so a typo must be a startup error
-	// rather than a container that quietly persists.
+	// Strict rather than "non-empty is true": a typo must be a startup
+	// error rather than a container that quietly persists terminal output.
 	t.Setenv("PERSIST_SCROLLBACK", "flase")
 	dst := false
 	err := applyBoolEnv("PERSIST_SCROLLBACK", &dst)
@@ -305,10 +290,8 @@ func TestApplyBoolEnvRejectsANonBoolean(t *testing.T) {
 	if !strings.Contains(err.Error(), "PERSIST_SCROLLBACK") {
 		t.Errorf("error %q does not name the key", err)
 	}
-	// The value is deliberately NOT echoed — this app reports a bad env value by
-	// field name only, because a compose-expansion mistake could put a secret
-	// there. envx.BoolStrict carries no value fragment for the same reason, so
-	// this pins that the app does not reintroduce one by rewording.
+	// The value is deliberately NOT echoed (CWE-532); this pins that the app
+	// does not reintroduce it by rewording.
 	if strings.Contains(err.Error(), "flase") {
 		t.Errorf("error %q echoes the rejected value", err)
 	}
@@ -326,8 +309,8 @@ func TestApplyBoolEnvLeavesTheDefaultWhenUnset(t *testing.T) {
 	if dst {
 		t.Error("an unset var turned the flag on")
 	}
-	// An empty value is "unset" too, so a compose entry left blank keeps the
-	// default rather than failing the boot.
+	// An empty value is "unset" too, so a compose entry left blank keeps
+	// the default rather than failing the boot.
 	t.Setenv("PERSIST_SCROLLBACK", "")
 	if err := applyBoolEnv("PERSIST_SCROLLBACK", &dst); err != nil {
 		t.Fatalf("applyBoolEnv(empty): %v", err)
@@ -361,12 +344,11 @@ func TestApplyBoolEnvAcceptsTheUsualSpellings(t *testing.T) {
 }
 
 func TestPersistScrollbackDefaultsOn(t *testing.T) {
-	// The default is the whole point of the flag's existence being an opt-OUT: an
-	// off-by-default entry in an env table is off for everyone in practice, and the
-	// users who need this most are the least likely to go looking for it.
+	// An opt-OUT rather than opt-in: an off-by-default entry in an env
+	// table is off for everyone in practice.
 	t.Setenv("SESSION_CMD", "/bin/true")
-	// Cleared explicitly: the key is bare, so an ambient value would make the
-	// default this asserts unobservable.
+	// Cleared explicitly, since an ambient value would make the default
+	// this asserts unobservable.
 	t.Setenv("PERSIST_SCROLLBACK", "")
 	cfg, err := loadConfig()
 	if err != nil {
@@ -390,9 +372,8 @@ func TestPersistScrollbackHonoursTheOptOut(t *testing.T) {
 }
 
 func TestPersistScrollbackRejectsAMalformedOptOut(t *testing.T) {
-	// A typo must abort startup rather than silently leaving the default on: an
-	// operator who wrote "flase" was trying to turn this OFF, and the whole reason
-	// they were reaching for the knob is that they did not want the storage.
+	// A typo must abort startup rather than silently leaving the default
+	// on: an operator writing "flase" was trying to turn this OFF.
 	t.Setenv("SESSION_CMD", "/bin/true")
 	t.Setenv("PERSIST_SCROLLBACK", "flase")
 	if _, err := loadConfig(); err == nil {

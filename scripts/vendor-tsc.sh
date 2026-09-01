@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
 # Compile one vendored @cplieger package's TypeScript to served JS.
-#
-# The single home for the tsc invocation. The recipe was spelled four times before this
-# script existed (twice in the Dockerfile, twice in dev-build.sh) and the copies had
-# already drifted: two used a flat `src/*.ts` glob, which silently drops any nested
-# module, and none refused an empty source list, so a mis-published tarball produced an
-# empty output directory and a green build whose page fails in the module resolver.
-#
-# `find -type f` is deliberate rather than a bare `-name`: a directory, symlink or FIFO
-# named `*.ts` in a crafted or mis-published tarball otherwise reaches tsc, and a FIFO
-# hangs the build with no deadline.
+# `find -type f` (not a bare `-name`) so a symlink/FIFO named `*.ts` in a
+# crafted tarball can't reach tsc or hang the build. Refuses an empty source
+# list, since a mis-published tarball would otherwise emit nothing and exit 0.
 #
 # Usage: vendor-tsc.sh <tsc-binary> <label> <src-dir> <out-dir>
 set -euo pipefail

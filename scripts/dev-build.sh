@@ -1,21 +1,11 @@
 #!/usr/bin/env bash
-# Local dev build of web-terminal-server against the LOCAL working-tree engine
-# (../web-terminal-engine) and UI (../web-terminal-ui), before either package is published.
-#
-# It overlays both TS packages into a build node_modules so tsc can resolve the bare
-# specifiers, compiles each to static/vendor/ (tsc preserves bare + relative import
-# specifiers, which the served importmap then resolves), asserts the emit, bundles the
-# UI's CSS, fetches and verifies the terminal font, runs the wire-floor gate, and
-# `go build`s (via go.work) with everything embedded. Produces ./web-terminal-server-bin.
-#
-# Every step it shares with the image build goes through the same script the Dockerfile
-# calls (scripts/vendor-tsc.sh, scripts/assert-emit.sh, scripts/css-bundle.sh), so the two
-# paths cannot drift. That matters here more than in the Dockerfile: this is the path that
-# builds against an UNPUBLISHED engine, which is exactly where the wire floors can
-# disagree and where a moved module can vanish from the emit.
-#
-# Not for CI or release — the Dockerfile fetches the published packages instead.
-# Override the sibling checkouts with ENGINE_DIR=... / UI_DIR=...
+# Local dev build against the working-tree engine (../web-terminal-engine) and
+# UI (../web-terminal-ui), before either is published. Shares vendor-tsc.sh /
+# assert-emit.sh / css-bundle.sh with the Dockerfile so the two paths can't
+# drift — load-bearing here since this path builds against an UNPUBLISHED
+# engine, where the wire floors can disagree and a moved module can vanish.
+# Produces ./web-terminal-server-bin. Not for CI or release.
+# Override sibling checkouts with ENGINE_DIR=... / UI_DIR=...
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,17 +13,14 @@ ENGINE_DIR="${ENGINE_DIR:-../web-terminal-engine}"
 UI_DIR="${UI_DIR:-../web-terminal-ui}"
 NM="build/node_modules/@cplieger" # overlay root (gitignored)
 
-# dockerfileArg reads one ARG's value, stopping at whitespace or a `#` comment. The
-# unanchored `s/^ARG X=//p` form this used to carry swallowed any trailing
-# `# <name> <version>` trailer, which the digest pins below now have.
+# Reads one ARG's value, stopping at whitespace or a `#` comment (a trailing
+# `# <name> <version>` trailer follows the digest pins below).
 dockerfileArg() {
   sed -n "s/^ARG $1=\\([^[:space:]#]*\\).*/\\1/p" Dockerfile
 }
 
-# --- preflight: validate every input BEFORE the destructive overlay -----------------
-# rm -rf comes next, so a missing input must be reported while the tree is still intact.
-# The file lists captured here are the SAME lists the copy step consumes, so preflight and
-# execution cannot disagree about what exists.
+# Validate every input before the destructive rm -rf below, and capture the
+# SAME file lists the copy step consumes, so the two can't disagree.
 [ -d "$ENGINE_DIR/web/src" ] || {
   echo "error: need the engine's TS at $ENGINE_DIR/web/src (override with ENGINE_DIR=)" >&2
   exit 1
@@ -81,21 +68,19 @@ for f in "${engine_sources[@]}"; do
   cp "$f" "$NM/web-terminal-engine/src/"
 done
 cp "$UI_DIR/package.json" "$NM/web-terminal-ui/package.json"
-# The UI ships a nested src tree (src/kernel/, src/features/) since v3, so preserve
-# subdirectories.
+# UI ships a nested src tree (src/kernel/, src/features/) since v3.
 for f in "${ui_sources[@]}"; do
   mkdir -p "$NM/web-terminal-ui/src/$(dirname "$f")"
   cp "$UI_DIR/src/$f" "$NM/web-terminal-ui/src/$f"
 done
-# The wire-floor gate reads the engine's published manifest from the package root, the
-# same file the npm tarball carries.
+# Wire-floor gate reads the engine's manifest from the package root, same file
+# the npm tarball carries.
 if [ -f "$ENGINE_DIR/web/wire-compatibility.json" ]; then
   cp "$ENGINE_DIR/web/wire-compatibility.json" "$NM/web-terminal-engine/wire-compatibility.json"
 fi
 
-# No local package.json here; fetch the pinned native TS7 compiler (tsc) on demand,
-# matching the Dockerfile's TS_VERSION so the local bundle reproduces the shipped one
-# (`typescript@7` ships the native Go compiler as `tsc`).
+# Fetch the pinned native TS7 compiler on demand (typescript@7 ships the
+# native Go compiler as `tsc`), matching the Dockerfile's TS_VERSION.
 TSC_BIN="build/tsc-bin/tsc"
 mkdir -p build/tsc-bin
 cat >"$TSC_BIN" <<EOF
@@ -116,13 +101,9 @@ bash scripts/assert-emit.sh static/index.html static
 echo "[4/6] CSS bundle + verified font"
 bash scripts/css-bundle.sh "$UI_DIR/css" static/style.css
 
-# The SAME source, filenames AND digests the Dockerfile uses. A dev build that fetched a
-# different family served files the CSS does not reference, so every @font-face 404'd and
-# the terminal sized itself against fallback metrics — silently, because
-# document.fonts.load() resolves on zero matches. The digests come from the Dockerfile's
-# own pins, so the two paths cannot embed different bytes, and a failed fetch is FATAL
-# here rather than a warning: a dev build that silently drops the font reproduces the
-# fallback-metrics bug this comment exists about.
+# Same source, filenames and digests as the Dockerfile. A silently-missing
+# font resolves document.fonts.load() on zero matches and the terminal sizes
+# itself against fallback metrics with no error — so a failed fetch is FATAL.
 faces=(Regular Bold Italic BoldItalic)
 declare -A face_sha=(
   [Regular]="$(dockerfileArg MONASPACE_REGULAR_SHA256)"
@@ -137,8 +118,8 @@ for face in "${faces[@]}"; do
   }
 done
 
-# Key the cache on the version AND a digest of all four pins, so a repin with an unchanged
-# version still invalidates it, and mark it complete only once every face verified.
+# Key the cache on version + a digest of all four pins so a repin with an
+# unchanged version still invalidates it.
 pin_key="$(printf '%s\n' "$FONT_VER" "${face_sha[@]}" | sha256sum | cut -c1-16)"
 FONT_CACHE="${HOME}/.cache/web-terminal-fonts/${FONT_VER}-${pin_key}"
 FONT_BASE="https://raw.githubusercontent.com/githubnext/monaspace/${FONT_VER}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon"
@@ -155,17 +136,15 @@ if [ ! -f "$FONT_CACHE/.complete" ]; then
   done
   touch "$FONT_CACHE/.complete"
 fi
-# Replace rather than merge, so a face dropped from the list cannot survive in the embed.
+# Replace, not merge, so a face dropped from the list can't survive the embed.
 rm -rf static/vendor/fonts
 mkdir -p static/vendor/fonts
 cp "$FONT_CACHE"/MonaspaceNeonNF-*.woff2 static/vendor/fonts/
 
 echo "[5/6] wire-floor gate (local engine vs the client half it ships)"
-# This is the path where the two halves can genuinely disagree: the Go module resolves
-# through go.work to the local checkout while the client half comes from that same
-# checkout's manifest, so a half-finished wire change is caught here rather than at a
-# browser's first connect (close 4002). Built to a temp path and removed on exit,
-# including the failure exit that is the gate's whole purpose.
+# Catches a half-finished wire change here rather than at the browser's first
+# connect (close 4002): the Go module resolves through go.work to the local
+# checkout while the client half comes from that checkout's own manifest.
 wirecheck_bin="$(mktemp)"
 trap 'rm -f "$wirecheck_bin"' EXIT
 manifest="$NM/web-terminal-engine/wire-compatibility.json"
