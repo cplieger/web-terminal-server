@@ -14,5 +14,5 @@ require (
 	github.com/cplieger/pathinside/v2 v2.0.1 // indirect
 	github.com/cplieger/runesafe/v2 v2.0.1 // indirect
 	github.com/creack/pty v1.1.24 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )
