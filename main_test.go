@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/cplieger/web-terminal-engine/v5/terminal"
-	"github.com/cplieger/webhttp/v2"
+	"github.com/cplieger/webhttp/v3"
 )
 
 // saveLogGlobals captures the three globals slog.SetDefault mutates and restores
