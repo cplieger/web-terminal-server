@@ -122,23 +122,37 @@ RUN bash scripts/vendor-tsc.sh /tmp/package/lib/tsc engine \
     bash scripts/assert-emit.sh static/index.html static && \
     bash scripts/css-bundle.sh node_modules/@cplieger/web-terminal-ui/css static/style.css
 
-# Monaspace Neon NF webfonts for the monospace terminal display (box-drawing +
-# icon glyphs that system monospace fonts render as tofu). Fetched from
-# GitHub's own Monaspace repo, which publishes official nerd-fonts-patched
-# WOFF2 webfonts (the nerd-fonts release repo is OTF-only; WOFF2 halves the
-# served bytes, and outlines + PUA icon advances are identical to the
-# previously bundled MonaspiceNe NFM OTFs — HORIZONTAL metrics only. The
-# vertical ones are not: these faces declare 0.945em ascent + 0.200em descent
-# where the patched OTFs carried 0.995em + 0.250em, which is shorter than the
-# terminal's 17px cell and left a 1px unpainted stripe on every row of
-# application background. web-terminal-ui's page.css restores the OTF pair with
-# ascent-override/descent-override and pins it against the cell height in its
-# own suite; a Monaspace bump that changes those tables again needs that
-# override re-measured, not just these sha pins refreshed). sha256 per face:
-# raw files at a git tag are as mutable as release assets, so the hashes are
-# the integrity anchor.
+# The terminal's two web fonts, both fetched into static/vendor/fonts/ so they
+# land in the //go:embed static tree, and both TAG- or RELEASE-PINNED with a
+# sha256 per asset: raw files at a git tag are as mutable as release assets, so
+# the hashes are the integrity anchor rather than the ref.
+#
+# Monaspace Neon NF is the text face (box-drawing + icon glyphs that system
+# monospace fonts render as tofu). Fetched from GitHub's own Monaspace repo,
+# which publishes official nerd-fonts-patched WOFF2 webfonts (the nerd-fonts
+# release repo is OTF-only; WOFF2 halves the served bytes, and outlines + PUA
+# icon advances are identical to the previously bundled MonaspiceNe NFM OTFs).
+# Its LICENSE travels with the faces: the SIL Open Font License 1.1 requires the
+# copyright notice and the licence text to accompany every copy of the font, and
+# serving the four woff2 files IS a copy. Every licence file lands under the
+# name of the family it covers, because two differently-licensed families share
+# this directory and a bare LICENSE beside five woff2 files names neither.
+#
+# The faces declare 0.945em ascent + 0.200em descent, which is shorter than the
+# terminal's 17px cell. That used to leave a 1px unpainted stripe on every row
+# of application background, and page.css used to answer it with
+# ascent-override/descent-override — it no longer does, because the row
+# background is the run padding now, so the cell owes the metrics nothing. What
+# a Monaspace bump that moves those tables DOES need is the overlay's copied
+# metrics re-measured — and no gate in this image can do that. The cell-contract
+# gate below opens no font file, and the overlay's own build is forbidden from
+# reading a Monaspace one, so its companion numbers are constants in cell.json
+# rather than a measurement. Re-measuring them is a manual step in
+# cplieger/web-terminal-glyphs whenever this pin moves.
 # renovate: datasource=github-releases depName=githubnext/monaspace
 ARG MONASPACE_VERSION=v1.400
+# repin: dep=githubnext/monaspace url=https://raw.githubusercontent.com/githubnext/monaspace/{version}/LICENSE dest=MonaspaceNeonNF-LICENSE
+ARG MONASPACE_LICENSE_SHA256=0e84e5f7dd6f05e74a00f2fb828ca43e489d954f5509ff0fa439ea18c0d35fe9
 # repin: dep=githubnext/monaspace url=https://raw.githubusercontent.com/githubnext/monaspace/{version}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon/MonaspaceNeonNF-Regular.woff2
 ARG MONASPACE_REGULAR_SHA256=8063ea45b6997c658035a4d876f996ecfa306c88fd0541d35d533fb1f9400c84
 # repin: dep=githubnext/monaspace url=https://raw.githubusercontent.com/githubnext/monaspace/{version}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon/MonaspaceNeonNF-Bold.woff2
@@ -147,6 +161,41 @@ ARG MONASPACE_BOLD_SHA256=45f56dceff8e569d61b6e3168fe208432e7bf0bc3e56e41b4d754c
 ARG MONASPACE_ITALIC_SHA256=3d77eb9a5ec9e32c5ac7ea49c4325e5d6c8e5fefda7317527de905130a88f3cf
 # repin: dep=githubnext/monaspace url=https://raw.githubusercontent.com/githubnext/monaspace/{version}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon/MonaspaceNeonNF-BoldItalic.woff2
 ARG MONASPACE_BOLDITALIC_SHA256=5dffc9465be18eb63263671f1f3ba266ede49043cb6b3edcd65ea993c909b3aa
+
+# cplieger/web-terminal-glyphs is the tiling-glyph overlay: box drawing, block
+# elements, shades, braille, Powerline and the Unicode mosaic blocks, drawn for
+# Monaspace Neon NF's 1240/2000 em advance at 14px on a 17px row. It carries no
+# letters, no digits and no space, which is why 00-tokens.css lists it FIRST in
+# --font-mono and the text face behind it keeps its metrics and its look. One
+# asset serves four @font-face descriptor sets; the outlines are upright by
+# design and must never be slanted or thickened.
+#
+# LICENSE and NOTICE are served beside the font: this repo is public and the font
+# file is redistributed under Apache-2.0, whose section 4 requires both to travel
+# with it. cell.json is the released CELL CONTRACT — the companion's advance and
+# metrics, and the 14px/17px cell those glyphs are drawn for — and it is fetched
+# for the gate below rather than for the browser. The gate reads the CSS-side
+# half of it (the stack and the cell numbers); the companion fields describe the
+# font FILE, travel under the same release digest as the font, and are asserted
+# against it in the overlay repo's own geometry tier. It lands in the same
+# directory under the same per-family name so one derivation serves the image and
+# scripts/dev-build.sh.
+# renovate: datasource=github-releases depName=cplieger/web-terminal-glyphs
+ARG WEB_TERMINAL_GLYPHS_VERSION=v1.0.0
+# repin: dep=cplieger/web-terminal-glyphs url=https://github.com/cplieger/web-terminal-glyphs/releases/download/{version}/WebTerminalGlyphs.woff2
+ARG WEB_TERMINAL_GLYPHS_SHA256=96985da8241efdad06fc3d9e95030bb3c3e0fe93733f2885e81e538f7865dc9c
+# repin: dep=cplieger/web-terminal-glyphs url=https://github.com/cplieger/web-terminal-glyphs/releases/download/{version}/cell.json dest=WebTerminalGlyphs-cell.json
+ARG WEB_TERMINAL_GLYPHS_CELL_SHA256=794cc28b5b2fbcf34e860911a6a8bb11bc1628a10ced27ce76cd038a240b35eb
+# repin: dep=cplieger/web-terminal-glyphs url=https://github.com/cplieger/web-terminal-glyphs/releases/download/{version}/LICENSE dest=WebTerminalGlyphs-LICENSE
+ARG WEB_TERMINAL_GLYPHS_LICENSE_SHA256=c95bae1d1ce0235ecccd3560b772ec1efb97f348a79f0fbe0a634f0c2ccefe2c
+# repin: dep=cplieger/web-terminal-glyphs url=https://github.com/cplieger/web-terminal-glyphs/releases/download/{version}/NOTICE dest=WebTerminalGlyphs-NOTICE
+ARG WEB_TERMINAL_GLYPHS_NOTICE_SHA256=fceae1c7790ae9ae77e0dd0e4241c342bde487b2f50a4a09576b779c34c7b2a9
+
+# `set -eu` plus a per-iteration `sha256sum -c` is the whole gate: a for-loop's
+# exit status is only its LAST iteration's, so verifying after the loop would
+# accept every earlier asset unchecked. Each `*)` arm fails the build when an
+# asset has no matching sha ARG, so adding one to a list without its pin cannot
+# ship unverified bytes.
 RUN set -eu; mkdir -p static/vendor/fonts && \
     for face in Regular Bold Italic BoldItalic; do \
       case "$face" in \
@@ -160,7 +209,52 @@ RUN set -eu; mkdir -p static/vendor/fonts && \
         -o "static/vendor/fonts/MonaspaceNeonNF-${face}.woff2" \
         "https://raw.githubusercontent.com/githubnext/monaspace/${MONASPACE_VERSION}/fonts/Web%20Fonts/NerdFonts%20Web%20Fonts/Monaspace%20Neon/MonaspaceNeonNF-${face}.woff2"; \
       printf '%s  static/vendor/fonts/MonaspaceNeonNF-%s.woff2\n' "$face_sha" "$face" | sha256sum -c -; \
+    done; \
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
+      -o static/vendor/fonts/MonaspaceNeonNF-LICENSE \
+      "https://raw.githubusercontent.com/githubnext/monaspace/${MONASPACE_VERSION}/LICENSE"; \
+    printf '%s  static/vendor/fonts/MonaspaceNeonNF-LICENSE\n' "$MONASPACE_LICENSE_SHA256" | sha256sum -c -; \
+    for asset in WebTerminalGlyphs.woff2 cell.json LICENSE NOTICE; do \
+      case "$asset" in \
+        WebTerminalGlyphs.woff2) asset_sha="$WEB_TERMINAL_GLYPHS_SHA256";         dest=WebTerminalGlyphs.woff2 ;; \
+        cell.json)               asset_sha="$WEB_TERMINAL_GLYPHS_CELL_SHA256";    dest=WebTerminalGlyphs-cell.json ;; \
+        LICENSE)                 asset_sha="$WEB_TERMINAL_GLYPHS_LICENSE_SHA256"; dest=WebTerminalGlyphs-LICENSE ;; \
+        NOTICE)                  asset_sha="$WEB_TERMINAL_GLYPHS_NOTICE_SHA256";  dest=WebTerminalGlyphs-NOTICE ;; \
+        *) echo "ERROR font-sha-missing: no digest pinned for glyph asset $asset" >&2; exit 1 ;; \
+      esac; \
+      curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
+        -o "static/vendor/fonts/${dest}" \
+        "https://github.com/cplieger/web-terminal-glyphs/releases/download/${WEB_TERMINAL_GLYPHS_VERSION}/${asset}"; \
+      printf '%s  static/vendor/fonts/%s\n' "$asset_sha" "$dest" | sha256sum -c -; \
     done
+
+# Cell-contract gate (the served CSS vs the released contract): the overlay's
+# glyphs are drawn for ONE cell — Monaspace's 1240/2000 em advance, its metrics
+# copied, at 14px on a 17px row — and are wrong at any other, while the overlay
+# pin and the UI pin move in separate Renovate PRs. So the pairing is governed by
+# the released cell.json rather than by version strings, and a bump on either
+# side that moves the cell must fail HERE: the alternative is a silently
+# reflowed terminal, or an emboldened stand-in drawn over box drawing, behind a
+# green build and a healthy /healthz. It runs after the fonts AND after the CSS
+# bundle, because what it compares is the bundle this build just served plus the
+# assets beside it.
+#
+# It opens NO font file, and that is the design rather than a gap: every asset
+# fetched above is pinned by sha256 from the same release as cell.json, so the
+# bytes are already fixed, and the font's own agreement with that document is
+# asserted in the overlay repo's geometry tier. What only this image can see is
+# the CSS a DIFFERENT release built beside the fonts a third pin fetched.
+# `fontcheck -h` states the whole chain.
+#
+# BUILT, not `go run`, for the reason the wire-floor gate below states: the exit
+# code is the contract (0 the contract holds, 1 a pin or the CSS has to move,
+# 2 the gate itself is broken and no pin should move), and `go run` reports its
+# own 1 for any non-zero program exit, collapsing "fix the gate" into "bump a
+# pin". The binary goes into a tmpfs mount, so it lands in no layer.
+RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=tmpfs,target=/tmp/fontcheck-bin \
+    go build -o /tmp/fontcheck-bin/fontcheck ./scripts/fontcheck && \
+    /tmp/fontcheck-bin/fontcheck -cell static/vendor/fonts/WebTerminalGlyphs-cell.json -css static/style.css -fonts static/vendor/fonts
 
 # Wire-floor gate (cross-language compatibility): go.mod's engine module and
 # the ARG-pinned npm client version move INDEPENDENTLY (Renovate bumps them in

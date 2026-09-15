@@ -231,7 +231,8 @@ restart loop.
 | `@cplieger/web-terminal-ui` | The touch-first browser UI served to the client. |
 | `github.com/cplieger/webhttp` | Server HTTP plumbing: access logging, middleware chain, security headers, static serving, rate limiting. |
 | `github.com/cplieger/envx`, `slogx` | Typed environment parsing and the fleet-standard slog setup. |
-| Monaspace Neon NF | The terminal webfont, fetched at build time and digest-verified per face. |
+| Monaspace Neon NF | The terminal's text webfont, fetched at build time and digest-verified per face. |
+| `cplieger/web-terminal-glyphs` | The tiling-glyph overlay listed ahead of it (box drawing, blocks, shades, braille, mosaics), fetched at build time and digest-verified. Its released cell contract gates the build against the CSS actually served. |
 | Go toolchain, TypeScript compiler | Build-time only, both digest-verified per architecture. |
 
 Every version is pinned, and every build-time download is checked against a
@@ -266,3 +267,10 @@ This project was built with AI-assisted tooling using [Claude](https://claude.co
 ## License
 
 MPL-2.0. See [LICENSE](LICENSE).
+
+The image redistributes two web fonts under their own licences, each served
+beside the font it covers. Monaspace Neon NF is under the SIL Open Font License
+1.1 (`/vendor/fonts/MonaspaceNeonNF-LICENSE`). Web Terminal Glyphs, the tiling
+overlay listed ahead of it, is under Apache-2.0
+(`/vendor/fonts/WebTerminalGlyphs-LICENSE`, with its
+`/vendor/fonts/WebTerminalGlyphs-NOTICE`).
