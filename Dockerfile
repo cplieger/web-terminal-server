@@ -181,7 +181,7 @@ ARG MONASPACE_BOLDITALIC_SHA256=5dffc9465be18eb63263671f1f3ba266ede49043cb6b3edc
 # directory under the same per-family name so one derivation serves the image and
 # scripts/dev-build.sh.
 # renovate: datasource=github-releases depName=cplieger/web-terminal-glyphs
-ARG WEB_TERMINAL_GLYPHS_VERSION=v1.0.0
+ARG WEB_TERMINAL_GLYPHS_VERSION=v1.0.1
 # repin: dep=cplieger/web-terminal-glyphs url=https://github.com/cplieger/web-terminal-glyphs/releases/download/{version}/WebTerminalGlyphs.woff2
 ARG WEB_TERMINAL_GLYPHS_SHA256=96985da8241efdad06fc3d9e95030bb3c3e0fe93733f2885e81e538f7865dc9c
 # repin: dep=cplieger/web-terminal-glyphs url=https://github.com/cplieger/web-terminal-glyphs/releases/download/{version}/cell.json dest=WebTerminalGlyphs-cell.json
