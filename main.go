@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -523,17 +524,44 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 	return handler, nil
 }
 
+const (
+	fontAssetPrefix    = "vendor/fonts/"
+	fingerprintedAsset = "public, max-age=31536000, immutable"
+	revalidatedAsset   = "no-cache, must-revalidate"
+)
+
 // staticCacheControl is the per-asset Cache-Control policy for
-// webhttp.StaticHandler. Everything but fonts revalidates on every load: the
-// vendored asset paths are stable rather than content-hashed, so a TTL would
-// serve stale JS after a bump. Fonts get 30 days but not `immutable` — their
-// @font-face URLs use fixed names, so bytes change under one filename on a
-// Monaspace bump and a reload must still revalidate against the ETag.
+// webhttp.StaticHandler. Asset paths arrive normalized, no leading slash.
+//
+// Reading the hash off the NAME rather than trusting the directory is what makes
+// dropping scripts/font-fingerprint.sh degrade to revalidation instead of to a
+// stale face, and it keeps the unhashed licence texts beside the fonts out of a
+// year-long promise.
 func staticCacheControl(assetPath string) string {
-	if strings.HasPrefix(assetPath, "vendor/fonts/") {
-		return "public, max-age=2592000"
+	if strings.HasPrefix(assetPath, fontAssetPrefix) && fingerprintedName(path.Base(assetPath)) {
+		return fingerprintedAsset
 	}
-	return "no-cache, must-revalidate"
+	return revalidatedAsset
+}
+
+// fingerprintedName reports whether name carries the `<stem>.<8 lowercase hex>.<ext>`
+// hash scripts/font-fingerprint.sh stamps.
+func fingerprintedName(name string) bool {
+	ext := path.Ext(name)
+	if ext == "" {
+		return false
+	}
+	stem := strings.TrimSuffix(name, ext)
+	hash := path.Ext(stem)
+	if len(hash) != 9 { // a dot plus eight hex digits
+		return false
+	}
+	for _, r := range hash[1:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // wsAttachMsg is the /ws attach record's message, named so a test can pin it

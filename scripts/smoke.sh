@@ -88,11 +88,18 @@ echo "[smoke] PASS  / (authenticated) = 200, serves scaffold"
 #     silently unchecked.
 importmap_targets=$(printf '%s' "$body" | sed -n '/<script type="importmap">/,/<\/script>/p' | grep -o '"/[^"]*"' | tr -d '"' || true)
 [ -n "$importmap_targets" ] || fail "no importmap module paths found in the served page (the page lost its importmap, or the extraction is broken)"
-for asset in $importmap_targets /style.css /vendor/fonts/MonaspaceNeonNF-Regular.woff2; do
+# The font names carry a content hash, so they are derived from the served bundle for the
+# same reason the JS list is derived from the served importmap.
+css=$(curl -s -u "admin:${PASSWORD}" "${BASE}/style.css")
+font_targets=$(printf '%s' "$css" \
+  | grep -oE "url\([[:space:]]*[\"']?/vendor/fonts/[^\"')[:space:]]+" \
+  | sed 's|.*/vendor/fonts/|/vendor/fonts/|' | sort -u || true)
+[ -n "$font_targets" ] || fail "the served bundle names no /vendor/fonts asset (the CSS bundle is empty, or the extraction is broken)"
+for asset in $importmap_targets /style.css $font_targets; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -u "admin:${PASSWORD}" "${BASE}${asset}")
   [ "$code" = "200" ] || fail "bundle asset ${asset} = $code, want 200 (UI bundle incomplete)"
 done
-echo "[smoke] PASS  every importmap module the served page names is reachable, plus CSS + font"
+echo "[smoke] PASS  every importmap module and font the served page names is reachable, plus CSS"
 
 # 2c. Hardened headers: CSP hash-pinning stops injected script in a page
 #     driving a root shell; COOP/Referrer-Policy keep a clicked OSC 8
