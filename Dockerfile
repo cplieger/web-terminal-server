@@ -228,6 +228,14 @@ RUN set -eu; mkdir -p static/vendor/fonts && \
       printf '%s  static/vendor/fonts/%s\n' "$asset_sha" "$dest" | sha256sum -c -; \
     done
 
+# Content-address the fonts the bundle names, so a face whose bytes change under one
+# upstream filename reaches a returning reader on the next load rather than when its
+# max-age expires. main.go's staticCacheControl grants `immutable` off the NAME, so
+# dropping this step degrades to revalidation instead of to a stale face. index.html is
+# rewritten too: its font preload gates the first frame, so a stale href there spends a
+# round trip on a 404 instead of starting the fetch the hint exists for.
+RUN bash scripts/font-fingerprint.sh static/vendor/fonts static/style.css static/index.html
+
 # Cell-contract gate (the served CSS vs the released contract): the overlay's
 # glyphs are drawn for ONE cell — Monaspace's 1240/2000 em advance, its metrics
 # copied, at 14px on a 17px row — and are wrong at any other, while the overlay

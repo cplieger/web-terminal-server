@@ -2075,25 +2075,30 @@ func unreadableChildPath(t *testing.T) string {
 // which asserts the non-font value on a served response and therefore fails if the
 // WithStaticCacheControl option is dropped and the library default returns.
 //
-// Fonts carry no `immutable`: the @font-face URLs come from the vendored UI's own CSS
-// under fixed names, so the bytes change under one filename on a Monaspace bump and a
-// reload must be able to revalidate against the content-hash ETag.
+// The un-stamped cases are the load-bearing ones: they pin that dropping the
+// fingerprint step costs a revalidation round trip rather than serving a stale face.
 func TestStaticCacheControl(t *testing.T) {
 	t.Parallel()
 	const (
-		fontPolicy  = "public, max-age=2592000"
+		fontPolicy  = "public, max-age=31536000, immutable"
 		assetPolicy = "no-cache, must-revalidate"
 	)
 	for name, tc := range map[string]struct {
 		asset string
 		want  string
 	}{
-		"font":                {asset: "vendor/fonts/MonaspaceNeonNF-Regular.woff2", want: fontPolicy},
-		"index":               {asset: "index.html", want: assetPolicy},
-		"vendored js":         {asset: "vendor/cplieger-web-terminal-ui/index.js", want: assetPolicy},
-		"font-like sibling":   {asset: "vendor/fonts-notes.txt", want: assetPolicy},
-		"root of the tree":    {asset: "", want: assetPolicy},
-		"icon beside the app": {asset: "favicon.svg", want: assetPolicy},
+		"fingerprinted font":       {asset: "vendor/fonts/MonaspaceNeonNF-Regular.a1b2c3d4.woff2", want: fontPolicy},
+		"un-stamped font":          {asset: "vendor/fonts/MonaspaceNeonNF-Regular.woff2", want: assetPolicy},
+		"licence beside the fonts": {asset: "vendor/fonts/MonaspaceNeonNF-LICENSE", want: assetPolicy},
+		"hash too short":           {asset: "vendor/fonts/mono.a1b2c3d.woff2", want: assetPolicy},
+		"hash is not hex":          {asset: "vendor/fonts/mono.a1b2c3g4.woff2", want: assetPolicy},
+		"hash is uppercase":        {asset: "vendor/fonts/mono.A1B2C3D4.woff2", want: assetPolicy},
+		"stamped outside fonts":    {asset: "vendor/cplieger-web-terminal-ui/index.a1b2c3d4.js", want: assetPolicy},
+		"index":                    {asset: "index.html", want: assetPolicy},
+		"vendored js":              {asset: "vendor/cplieger-web-terminal-ui/index.js", want: assetPolicy},
+		"font-like sibling":        {asset: "vendor/fonts-notes.txt", want: assetPolicy},
+		"root of the tree":         {asset: "", want: assetPolicy},
+		"icon beside the app":      {asset: "favicon.svg", want: assetPolicy},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
