@@ -300,6 +300,10 @@ RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.
 RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /web-terminal-server .
 
+COPY scripts/collect-licenses.sh scripts/
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    sh scripts/collect-licenses.sh --name web-terminal-server .
+
 # --- Runtime: minimal Debian with a shell for the default SESSION_CMD ---
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
@@ -327,6 +331,7 @@ RUN echo "OS package refresh: ${PKG_REFRESH}" \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /web-terminal-server /usr/local/bin/web-terminal-server
+COPY --from=builder /out/usr/share/licenses /usr/share/licenses
 
 # In a container the server must listen on all interfaces to be reachable via
 # the published port or a reverse proxy (the binary's own default is loopback).

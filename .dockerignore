@@ -6,6 +6,7 @@
 .gitignore
 .dockerignore
 *.md
+!THIRD_PARTY_NOTICES.md
 build/
 node_modules/
 web-terminal-server-bin
