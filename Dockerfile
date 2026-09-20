@@ -63,23 +63,19 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/root/go/pkg/mod go mod download
 COPY . ./
 
-# Fetch the engine + UI TypeScript from the npm registry (both publish TS
-# source only, like @cplieger/reactive). Extracted side by side under one
-# node_modules/@cplieger so tsc's bundler resolution finds the engine when
-# compiling the UI's `@cplieger/web-terminal-engine` import.
-#
-# Both are digest-verified: these two tarballs ARE the served client bundle, so an
-# unverified fetch would let a registry compromise put arbitrary JS into the page
-# that drives a remote shell. Downloaded to a file first because a pipe cannot be
-# hashed before it is consumed.
+# Both publish TypeScript source only; extracted side by side under one
+# node_modules/@cplieger so tsc's bundler resolution finds the engine when it
+# compiles the UI. These two tarballs ARE the served client bundle, so each is
+# downloaded to a file (a pipe cannot be hashed before it is consumed) and
+# digest-verified before extraction.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=5.2.0
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.0.0
 # repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=75245585ffff54f64e89a05f6b1b715dd234fbfc3952768277c01268ff69f129
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=0bbd2d0e427589051bf32fc419e0ae7c357e1e0a3515b44cef7036d1e7ac3697
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
-ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=7.3.2
+ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.0.0
 # repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=da6099b24f4d22cbcd27f3c6bc76f27b2b7a0e2a26fb23155b3121248b9957ef
+ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=e4c9cd042f21f716303a3e6936f775c6a8b4f59f4c21be3fbcc6fb79a4a063d9
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
       -o /tmp/engine.tgz "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" && \

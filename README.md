@@ -56,7 +56,11 @@ It starts one command per terminal tab in a real PTY and streams that terminal
 to a browser: full VT screen buffer, scrollback, mouse, colours and clickable
 hyperlinks, driven by touch on a phone as well as a keyboard on a desktop. Tabs
 live on the server, so closing the page does not kill what is running, and
-reopening it reattaches to the same terminals from any device.
+reopening it reattaches to the same terminals from any device. Two terminals can
+sit side by side: the split button at the end of the tab row opens a second pane,
+and a tab moves to either side from its right-click menu or by dragging it onto
+that half of the screen. Which tab is in which pane is stored on the server with
+the tabs, so a reload or another device shows the same arrangement.
 
 It is deliberately thin. The terminal itself is two shared libraries (the engine
 and its reference UI); this repo is two small Go files that start the PTY, serve

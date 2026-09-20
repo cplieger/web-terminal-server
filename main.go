@@ -1,6 +1,6 @@
 // Command web-terminal-server is a thin, generic web terminal: it runs a
 // configured command in a PTY and serves the @cplieger/web-terminal-ui front
-// end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v5.
+// end over HTTP + WebSocket, using github.com/cplieger/web-terminal-engine/v6.
 //
 // SECURITY: this is a remote shell. Anyone who can reach the listen address
 // and pass auth (if any) gets an interactive process running SESSION_CMD with this
@@ -28,7 +28,7 @@ import (
 
 	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/slogx"
-	"github.com/cplieger/web-terminal-engine/v5/terminal"
+	"github.com/cplieger/web-terminal-engine/v6/terminal"
 	"github.com/cplieger/webhttp/v3"
 )
 
