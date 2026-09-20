@@ -28,7 +28,7 @@ import (
 
 	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/slogx"
-	"github.com/cplieger/web-terminal-engine/v5/terminal"
+	"github.com/cplieger/web-terminal-engine/v6/terminal"
 	"github.com/cplieger/webhttp/v3"
 )
 
