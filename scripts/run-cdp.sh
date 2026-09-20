@@ -122,7 +122,7 @@ run() { # label script
 
 # Group 1: harnesses run against the continuous-emitter fixture, listed once
 # so a new harness can't be silently dropped from either branch.
-GROUP1=(render resume input viewport resize)
+GROUP1=(render resume input viewport resize split)
 run_group1() { for h in "${GROUP1[@]}"; do run "$h" "cdp-$h.cjs"; done; }
 
 # --- provision the DevTools endpoint ---

@@ -4,15 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark">
-<!-- Whether this deployment persists terminal scrollback in the browser. The
-     server stamps the resolved value here at startup from PERSIST_SCROLLBACK
-     (main.go applyPersistFlag), in either direction, so this committed value is
-     documentation of the default rather than a load-bearing input. On by default
-     because without it a reloaded or discarded tab refills its whole buffer over
-     the wire, which is the normal case on a phone; PERSIST_SCROLLBACK=false is
-     the opt-out for a shared device or a compliance constraint. The exact byte
-     string is matched by the server and startup FAILS if it is missing, so edit it
-     only alongside main.go's constants. -->
+<!-- Stamped at startup from PERSIST_SCROLLBACK (static_persist.go applyPersistFlag),
+     which matches this exact byte string and fails startup if it is missing. -->
 <meta name="wt-persist-scrollback" content="on">
 <title>Web Terminal</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -20,48 +13,29 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.json">
-<!-- The first frame is gated on this fetch: createTerminal awaits
-     document.fonts.load('14px "Monaspace Neon NF"') before its first resize, and nothing
-     else requests the file — the @font-face rule in the bundled page.css is never
-     render-triggered. crossorigin is mandatory even same-origin, or the font downloads
-     twice into a separate cache partition. Regular only: it is the face the metrics
-     measurement uses, and preloading all four would spend bandwidth before first paint. -->
+<!-- createTerminal awaits document.fonts.load for this face before its first
+     resize and nothing else requests the file. crossorigin is mandatory even
+     same-origin, or the font downloads twice into a separate cache partition. -->
 <link rel="preload" href="/vendor/fonts/MonaspaceNeonNF-Regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/style.css">
 <!-- [html-validate-disable-next no-style-tag -- brand token for the loading overlay] -->
 <style>
-/* The loading overlay's appearance lives in web-terminal-ui's css/page.css, which
-   /style.css above concatenates; this page used to carry a byte-identical copy of
-   it inline for no benefit (that link is render-blocking, so nothing painted
-   sooner either way) and the one loading screen therefore existed three times
-   across the family. All that is left here is this server's own accent, set as
-   the library's overlay token -- the same override mechanism the component tokens
-   use, except the overlay is our element so no JS is involved.
-   Keep exactly ONE inline <style> in this file: buildCSPPolicy (main.go) hashes it
-   for style-src and fails startup loudly on any other count. */
+/* Keep exactly ONE inline <style> in this file: buildCSPPolicy (main.go) hashes it
+   for style-src and fails startup on any other count. */
 #loading {
   --wt-loading-accent: #6ea8ff;
 }
 </style>
 </head>
 <body>
-<!-- createTerminal() builds the entire terminal UI inside this root element;
-     the loading overlay is a sibling so it is never cleared (it fades on the
-     first frame). -->
+<!-- The loading overlay is a sibling of the root so createTerminal never clears it. -->
 <div id="terminal"></div>
-<!-- Styled by css/page.css through the wt-loading* CLASSES, not by this id.
-     role="status" is load-bearing: once startup takes more than a few seconds the
-     kernel writes a progressive status line in here (and the session owner can
-     replace it with the server's own reason), which is the feedback this page
-     previously had no way to show at all -- the library's toast and banner both
-     live inside .wt-root and paint UNDER this overlay. -->
+<!-- role="status" is load-bearing: the kernel writes its progressive startup
+     line in here, and the library's toast and banner paint UNDER this overlay. -->
 <div id="loading" class="wt-loading" role="status" aria-label="Loading">
   <div class="wt-loading-bar" aria-hidden="true"></div>
 </div>
-<!-- The importmap resolves the bare package specifiers to the JS the server
-     compiles into /vendor/ at build time; the engine specifier is resolved
-     transitively from the UI package's emitted imports, and the UI's ./presets
-     subpath maps to its compiled presets.js. -->
+<!-- The engine specifier is resolved transitively from the UI package's emitted imports. -->
 <script type="importmap">
 {
   "imports": {
@@ -74,39 +48,20 @@
 <script type="module">
   import { createTerminal, localScrollbackStorage } from "@cplieger/web-terminal-ui";
   import { presetTabbed } from "@cplieger/web-terminal-ui/presets";
-  // The root goes in as a SELECTOR and the preset as a FUNCTION, and both are
-  // load-bearing rather than stylistic. createTerminal resolves the selector and
-  // calls the preset inside its own failure boundary, so a missing #terminal or a
-  // preset that throws lowers the overlay and renders the library's "Terminal
-  // failed to start" panel with a Reload button. This script is inline, so tsc
-  // never sees it: written the old way -- passing document.getElementById("terminal")
-  // and presetTabbed() -- a missing root reached the library as null and threw a
-  // SECOND error out of its own catch, and a throwing preset never reached it at
-  // all. Either way this page had no recovery surface of its own, so the user got
-  // a spinner that never stops.
-  //
-  // Scrollback persistence is the operator's call, read from the meta tag the
-  // server stamps from PERSIST_SCROLLBACK. It is OMITTED rather than passed as
-  // undefined when off, because the option's presence is what enables the feature.
-  // The store is the library's own, so this page carries no storage code and no
-  // orphan sweep of its own to get wrong.
+  // The root goes in as a SELECTOR and the preset as an ARROW so both resolve
+  // inside createTerminal's failure boundary: a missing #terminal or a throwing
+  // preset renders the library's "Terminal failed to start" panel instead of a
+  // spinner that never stops.
   const persist =
     document.querySelector('meta[name="wt-persist-scrollback"]')?.getAttribute("content") === "on";
-  // The preset now takes options, so it goes in as an ARROW rather than a bare
-  // reference. Same contract either way: the call happens inside createTerminal's
-  // failure boundary, so a preset that throws renders the library's panel.
+  // persistScrollback is OMITTED rather than passed as undefined when off,
+  // because the option's presence is what enables the feature.
   //
-  // attentionIcons opts into the tab-icon half of the attention surfaces: while a
-  // BACKGROUND session wants the user, every link[rel=icon] points at a variant
-  // carrying the same coloured dot that session's chip shows. It is a promise that
-  // static/ serves favicon-{input,done,alert} in all three icon formats, which
-  // main_test.go asserts against the embedded tree because a missing variant is a
-  // blank tab icon. Those assets are generated by the fleet's
-  // .kiro/scripts/gen-attention-icons.py from the library's default --status-* tokens,
-  // which this app does not override. The title count and the installed-app badge
-  // need no assets and no opt-in.
+  // attentionIcons promises that static/ serves favicon-{input,done,alert} in all
+  // three icon formats (main_test.go asserts it against the embedded tree).
   createTerminal("#terminal", {
     features: () => presetTabbed({ attentionIcons: true }),
+    split: true,
     loading: document.getElementById("loading"),
     ...(persist ? { persistScrollback: localScrollbackStorage() } : {}),
   });
