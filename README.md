@@ -248,7 +248,7 @@ The web-terminal family:
 
 Apps built on the same engine:
 
-- [`vibekit`](https://github.com/cplieger/vibekit): a chat-first browser front end for the Kiro CLI (chat history, MCP, editor, git/forge workflows).
+- [`marotte`](https://github.com/cplieger/marotte): a chat-first browser front end for the Kiro CLI (chat history, MCP, editor, git/forge workflows).
 - [`web-terminal-kiro`](https://github.com/cplieger/web-terminal-kiro): a touch-first, multi-tab browser terminal wired to the Kiro CLI (`kiro-cli`), on desktop or phone.
 
 ## Contributing
