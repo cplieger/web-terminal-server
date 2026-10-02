@@ -23,6 +23,9 @@ static/style.css.*
 **/.code-review/
 **/.judgement/
 **/.app-review/
+# Runtime image tests, run on the CI runner against the built image; nothing in
+# the build reads them.
+tests/
 # scripts/ is deliberately NOT excluded: the wire-floor gate compiles
 # scripts/wirecheck inside the builder stage, so it must be in the build
 # context. Only the built binary is copied into the final image.
