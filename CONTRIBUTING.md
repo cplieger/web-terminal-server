@@ -157,8 +157,11 @@ go test -count=1 -race ./...
 golangci-lint run
 hadolint Dockerfile
 shellcheck scripts/*.sh
+shellcheck -s sh -S info -e SC2034 tests/image-smoke.conf
+shfmt -d -ln posix -i 2 -ci -bn tests/image-smoke.conf
 bash scripts/run-cdp.sh          # real-browser display checks (see below)
-bash scripts/smoke.sh            # needs a built image; see .github/workflows/smoke.yml
+docker build -t web-terminal-server:dev .
+sh tests/image-smoke.sh web-terminal-server:dev   # runtime checks; CI runs the same in its docker job
 ```
 
 `go test` covers the env parsing, the CSP contract, the middleware chain, the
