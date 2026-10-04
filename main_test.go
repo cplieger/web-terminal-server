@@ -972,7 +972,7 @@ func hostPolicyFor(t *testing.T, entries ...string) *webhttp.HostPolicy {
 	policy, invalid := webhttp.ParseHostList(entries,
 		webhttp.WithLoopbackExempt(true),
 		webhttp.WithHostAllowlistError("host_not_allowed",
-			"host not allowed; add it to ALLOWED_HOSTS to serve this hostname"))
+			"host not allowed. Add it to ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
 		t.Fatalf("test allowlist has invalid entries: %v", invalid)
 	}
