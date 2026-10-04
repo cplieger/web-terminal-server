@@ -70,7 +70,7 @@ services:
 
 Run `docker logs web-terminal-server`. You should see `web-terminal-server listening`. If the container stops with `web-terminal-server exited with error`, the `error` field of that line names the setting to fix.
 
-The example port answers on the Docker host only. To use the terminal from a phone or another computer, put a reverse proxy with a login in front of it, as [Security](docs/security.md) describes. On a private network you can instead change the port line to `"7681:7681"` and keep the password.
+The example port answers on the Docker host only. To use the terminal from a phone or another computer, put a reverse proxy with a login in front of it, as [Security](docs/hardening.md) describes. On a private network you can instead change the port line to `"7681:7681"` and keep the password.
 
 ## Naming and arranging terminals
 
@@ -115,7 +115,7 @@ Whoever passes the login gets a shell inside the container, as root by default. 
 - Anyone who has a terminal's id in `/ws?session=<id>` can join it. Keep that query string out of your proxy's access log.
 - The browser keeps each tab's newest 200 lines for up to seven days, readable by anyone using that browser without the password. Set `PERSIST_SCROLLBACK=false` on a shared device.
 
-[Security](docs/security.md) covers the reverse proxy, the stored lines, hardening and what the image contains.
+[Security](docs/hardening.md) covers the reverse proxy, the stored lines, hardening and what the image contains.
 
 ## Troubleshooting
 
@@ -131,7 +131,7 @@ The healthcheck asks `/healthz` on `127.0.0.1` every 30 seconds, after a 15-seco
 ## Documentation
 
 - [Configuration](docs/configuration.md) explains every setting, the mounts and the ports.
-- [Security](docs/security.md) covers the reverse proxy, the lines stored in the browser, hardening and what the image contains.
+- [Security](docs/hardening.md) covers the reverse proxy, the lines stored in the browser, hardening and what the image contains.
 - [How it works](docs/how-it-works.md) covers sessions, startup failures, the logs and the healthcheck.
 
 ## Credits
