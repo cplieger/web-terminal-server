@@ -4,24 +4,21 @@ services:
     image: ghcr.io/cplieger/web-terminal-server:latest
     container_name: web-terminal-server
     restart: unless-stopped
-    # Required, not optional. Whatever the shell runs can orphan a child, and the
-    # server waits only for its own; without an init it is PID 1 and those orphans
-    # stay zombies for the container's life. See README "Run".
+    # Required. An init at PID 1 cleans up the processes each terminal leaves behind.
     init: true
 
     environment:
-      # Set this. Without it every route, including the terminal WebSocket, is unauthenticated.
+      # Change this before the first start. Without a password there is no login.
       AUTH_PASSWORD: "your-terminal-password"
-      # Exact hostnames this server answers for: the DNS-rebinding guard. Loopback is always admitted.
+      # Every host name or IP you open the terminal at. Any other name is refused.
       ALLOWED_HOSTS: "localhost,term.example.com"
-      # Working directory for the shell. Must exist in the container.
+      # The folder each new terminal starts in. It must exist in the container.
       WORK_DIR: "/work"
 
     ports:
-      # Loopback only. A shell behind basic auth still does not belong on an untrusted network;
-      # see README "Security: this is a remote shell" for the reverse-proxy setup.
+      # Reachable from this host only. Read README "Security" before opening it wider.
       - "127.0.0.1:7681:7681"
 
     volumes:
-      # The container runs as root, so files the shell creates here are root-owned on the host.
+      # The container runs as root, so files created here belong to root on the host.
       - "./work:/work"

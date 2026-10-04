@@ -3,258 +3,144 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/web-terminal-server/badges/size.json)](https://github.com/cplieger/web-terminal-server/pkgs/container/web-terminal-server) [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](https://github.com/cplieger/web-terminal-server/pkgs/container/web-terminal-server) [![base: Debian](https://img.shields.io/badge/base-Debian-A81D33?logo=debian)](https://github.com/cplieger/web-terminal-server/blob/main/Dockerfile) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/web-terminal-server/badges/mutation.json)](https://github.com/cplieger/web-terminal-server/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/web-terminal-server/releases)
 
 <!-- hub-overview BEGIN -->
-A small, generic web terminal: it runs a configured command in a PTY and serves
-the [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui)
-front end over HTTP + WebSocket, built on the
-[`github.com/cplieger/web-terminal-engine`](https://github.com/cplieger/web-terminal-engine)
-engine. A native-touch terminal in the browser for any command, on phone and
-desktop alike.
+web-terminal-server puts a shell in your browser, on a phone or a desktop, running in a container on your server. Each tab runs bash or a command you choose, and works on the folders you mount into the container.
 
-Published as a multi-arch (amd64 + arm64) container image on **GHCR** (`ghcr.io/cplieger/web-terminal-server`) and **Docker Hub** (`cplieger/web-terminal-server`).
-
-![web-terminal-server in the browser: a multi-tab, touch-first terminal with a shell prompt and a tab bar across the bottom.](docs/screenshot.png)
-
-## ⚠️ Security: this is a remote shell
-
-Anyone who can reach the server **and pass auth (if configured)** gets an
-interactive process running `SESSION_CMD` with this server's privileges. Treat it
-like exposing SSH.
-
-- **The binary binds `127.0.0.1` by default.** Reachable only from the same
-  host until you change `LISTEN_ADDR`.
-- **The container image binds `:7681`** (it has to, to be reachable via a
-  published port) and so is **unauthenticated and network-exposed by default**.
-  Before exposing it beyond a trusted host, do **one** of:
-  - set `AUTH_PASSWORD` (enables HTTP Basic auth on every route, including the
-    WebSocket handshake), and/or
-  - front it with an authenticating reverse proxy (Caddy + forward-auth,
-    oauth2-proxy, Authentik, …), and/or
-  - keep the published port bound to loopback / a private network only.
-- The server logs a loud warning at startup when it is listening on a
-  non-loopback address without `AUTH_PASSWORD` set.
-- Each session's recent output (200 lines) is kept in the browser's `localStorage` by default so a
-  reloaded tab does not refill over the wire. It is readable from that browser without
-  passing `AUTH_PASSWORD` and outlives the tab; set `PERSIST_SCROLLBACK=false` on a
-  shared device or where storing command output at rest is unacceptable. See
-  [Persisted scrollback](#persisted-scrollback).
-- **DNS rebinding reaches even loopback binds** through your own browser: an
-  attacker's page makes its hostname resolve to this server, and same-origin
-  checks then pass because `Origin` and `Host` agree. Set `ALLOWED_HOSTS`
-  to the exact hostnames you browse to (rejects every other `Host`), or set
-  `AUTH_PASSWORD` (the attacker's page cannot present credentials). The server
-  warns at startup when neither is set.
-
-Built-in Basic auth is a convenience for simple setups; a reverse proxy with
-real identity is the recommended posture for anything internet-facing. The
-process runs as the container user (root by default); restrict it with a
-non-root `SESSION_CMD` target, a read-only root filesystem, dropped capabilities,
-and a scoped work directory as your threat model requires.
+![web-terminal-server in the browser with five named tabs along the bottom and the split view open. The left pane shows a git log, a directory listing and a passing test run. The right pane shows curl requests, a tail of JSON logs, go vet and git status.](docs/images/header.png)
 
 ## What it does
 
-It starts one command per terminal tab in a real PTY and streams that terminal
-to a browser: full VT screen buffer, scrollback, mouse, colours and clickable
-hyperlinks, driven by touch on a phone as well as a keyboard on a desktop. Tabs
-live on the server, so closing the page does not kill what is running, and
-reopening it reattaches to the same terminals from any device. Two terminals can
-sit side by side: the split button at the end of the tab row opens a second pane,
-and a tab moves to either side from its right-click menu or by dragging it onto
-that half of the screen. Which tab is in which pane is stored on the server with
-the tabs, so a reload or another device shows the same arrangement.
+Use a terminal on your server from any browser, and pick it up again from any device.
 
-It is deliberately thin. The terminal itself is two shared libraries (the engine
-and its reference UI); this repo is two small Go files that start the PTY, serve
-the bundled front end, and apply the security posture described above.
+- Gives each tab its own terminal, with a two-pane split view for two at once.
+- Works on a phone, with on-screen keys for Tab, Esc, the arrows, Enter and Ctrl.
+- Keeps every terminal running when you close the page, and reopens the same tabs on any device.
+- Names each tab after what runs in it, or after a name you type.
+
+## Who it is for
+
+web-terminal-server is built for people who want a shell on their own server from a phone or a laptop, with nothing to install on them. Everyone who logs in shares the same tabs, and restarting the container ends them.
+
+You need a Docker host, and a private network or a reverse proxy with a login in front of it.
+
+Other tools suit a different setup:
+
+- Consider [ttyd](https://github.com/tsl0922/ttyd) if you want a single command-line tool that shares a terminal, read-only by default.
+- Consider [WeTTY](https://github.com/butlerx/wetty) if you want a browser login to SSH on any host.
+- Consider [Web Terminal for Kiro](https://github.com/cplieger/web-terminal-kiro), by the same author, if you want the Kiro agent in each tab.
+
+web-terminal-server is free software under the MPL-2.0 license.
 <!-- hub-overview END -->
 
-## Run
+## Quick start
 
-[`compose.yaml`](compose.yaml) in this repo is a working example: loopback-bound,
-password set, a work directory mounted, and `init: true`. Copy it and adjust.
+The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. This is the [`compose.yaml`](compose.yaml) in this repository.
 
-Or as a one-shot run:
+```yaml
+services:
+  web-terminal-server:
+    image: ghcr.io/cplieger/web-terminal-server:latest
+    container_name: web-terminal-server
+    restart: unless-stopped
+    # Required. An init at PID 1 cleans up the processes each terminal leaves behind.
+    init: true
 
-```sh
-docker run --rm --init -p 127.0.0.1:7681:7681 \
-  -e AUTH_PASSWORD=changeme \
-  -v "$PWD":/work -e WORK_DIR=/work \
-  ghcr.io/cplieger/web-terminal-server
+    environment:
+      # Change this before the first start. Without a password there is no login.
+      AUTH_PASSWORD: "your-terminal-password"
+      # Every host name or IP you open the terminal at. Any other name is refused.
+      ALLOWED_HOSTS: "localhost,term.example.com"
+      # The folder each new terminal starts in. It must exist in the container.
+      WORK_DIR: "/work"
+
+    ports:
+      # Reachable from this host only. Read README "Security" before opening it wider.
+      - "127.0.0.1:7681:7681"
+
+    volumes:
+      # The container runs as root, so files created here belong to root on the host.
+      - "./work:/work"
 ```
 
-Open <http://127.0.0.1:7681>. Both examples bind the published port to loopback
-and set a password; adjust for your environment.
+1. Save the file as `compose.yaml`.
+2. Replace `your-terminal-password` with a password of your own.
+3. Set `ALLOWED_HOSTS` to every host name or IP you will open the terminal at, for example `localhost,192.0.2.10,term.example.com`.
+4. Run `docker compose up -d` in the same folder. Docker creates the `work` folder next to the file.
+5. On the Docker host, open `http://localhost:7681`.
+6. Log in as `admin` with your password.
 
-**`--init` / `init: true` is required, not cosmetic.** Whatever `SESSION_CMD` runs can
-fork a child that outlives its own parent, and the kernel reparents that orphan
-onto PID 1. This server waits only for the processes it started itself, so with no
-init it is PID 1 and every orphan stays a zombie for the container's lifetime.
-Docker's `--init` puts a small reaper there instead, which owns nothing anything
-else is waiting on. The server logs a warning at startup when it finds itself
-running as PID 1.
+Run `docker logs web-terminal-server`. You should see `web-terminal-server listening`. If the container stops with `web-terminal-server exited with error`, the `error` field of that line names the setting to fix.
 
-## Naming terminals
+The example port answers on the Docker host only. To use the terminal from a phone or another computer, put a reverse proxy with a login in front of it, as [Security](docs/security.md) describes. On a private network you can instead change the port line to `"7681:7681"` and keep the password.
 
-Each terminal tab is labelled automatically: whatever is running in it (the foreground command), or the directory it sits in when the shell is idle, or the window title the program set for itself. Right-click a tab (press `F2`, or double-click it) to type your own name instead, which then sticks for the life of that terminal and shows on every device you have the page open on. The same menu offers **Use automatic name** to remove it again.
+## Naming and arranging terminals
 
-Names live on the server, not in your browser, so they survive a reload and are the same in every window.
+Each tab is named after the command running in it, the folder an idle shell sits in, or the title a program sets. To type your own name, double-click the tab, press `F2` on it, or right-click it and choose **Rename**. **Use automatic name** in the same menu removes it again.
 
-## Persisted scrollback
-
-On by default. Set `PERSIST_SCROLLBACK=false` to turn it off.
-
-What it does: the browser keeps the newest 200 lines of each session, so a reload
-asks the server only for what was printed while the page was gone. Without it the
-terminal comes back holding nothing and pulls the whole retained scrollback back
-over the wire: you see the history filling in, and on a phone that is the normal
-case rather than an edge case, because iOS discards backgrounded tabs under memory
-pressure and returning to one re-runs the page. A warm reconnect and switching
-between tabs in one page already replay nothing, so this only changes the
-fresh-load case.
-
-What it stores, which is the reason there is a switch at all: up to 200 lines of
-each session's output, in this origin's `localStorage`, and at most about 1 MB in
-total across every session. That is readable from that
-browser without reaching this server and without passing `AUTH_PASSWORD`, and it
-outlives the tab that produced it; an entry is deleted when you close its
-terminal, and otherwise after seven days. `SESSION_CMD` decides what ends up in there.
-
-Most ways to read it also hand over a live shell, so the snapshot is rarely the
-weakest thing available. The exception worth knowing is a window where the snapshot
-is readable and the shell is not: a laptop off the VPN, a stopped container, an
-expired credential. **Turn it off on a shared or borrowed device, or where storing
-command output at rest is not acceptable.**
-
-Nothing is ever sent anywhere: the server neither reads nor receives these
-snapshots, and it does not know whether a browser kept one. No permission prompt is
-involved (`localStorage` needs none), and a browser that blocks site data, or a
-private window, simply restores nothing and replays over the wire as before.
-
-Restored content is checked against the running server on the first reconnect and
-cleared if it came from a previous run, which covers the confusing case: a restarted
-server numbers its output from the beginning again. If that session is already gone
-(which is what a restart usually leaves) the restore is discarded outright rather
-than shown behind a “Session ended” banner.
+The split button at the end of the tab row opens a second pane. To show a tab in one pane, choose **Snap to left** or **Snap to right** in its menu, or drag it onto that half of the screen. Names and the layout are stored on the server, so every device and window shows the same tabs.
 
 ## Configuration reference
 
-All configuration is via environment variables. Where the binary and image
-defaults differ, the Default column shows them as binary / image.
+Each setting is an environment variable in `compose.yaml`. The server reads them once at start, so run `docker compose up -d` again after a change. Every setting is optional, and the defaults below are the image's.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `LISTEN_ADDR` | Listen address. The binary defaults to loopback; the image must listen on all interfaces. The baked healthcheck derives its port from this value and probes `127.0.0.1`, so changing the port is safe but pinning the bind to one non-loopback interface makes the container report `unhealthy` while serving normally. | `127.0.0.1:7681` / `:7681` |
-| `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error` (case-insensitive; slog offset syntax like `warn+1` also parses). An unparseable value falls back to `info` with a startup warning. | `info` |
-| `SESSION_CMD` | Command to run in the PTY, whitespace-split (use a wrapper script for complex commands). | `/bin/bash` |
-| `WORK_DIR` | Working directory for the command. Must be an existing directory if set. | _(process default)_ |
-| `SCROLLBACK` | Lines of history the server retains per session: how far back a user can scroll, and what a reconnect can replay. Kept in memory and grown as history is produced, so a large value costs nothing until a session actually reaches it: to say "never truncate", set a number no session will hit. `0` retains nothing beyond the live screen. Values between `1` and `2000` are raised to `2001` with a warning, because at or below the depth a reconnect replays in full there is nothing left to page for, so the browser falls back to holding its whole buffer, so asking for less server history would cost the phone more. This is the terminal engine's own variable, shared verbatim with every app built on it, which is why this server holds no default of its own. | `100000` |
-| `PERSIST_SCROLLBACK` | Keep each session's recent scrollback in the browser's `localStorage`, so a reloaded or browser-discarded tab resumes with a delta instead of refilling its whole buffer over the wire. Set `false` to turn it off; see [Persisted scrollback](#persisted-scrollback). | `true` |
-| `IDLE_TIMEOUT` | Go duration (e.g. `30m`); when > 0, idle sessions are reaped after this long. | _(unset → disabled)_ |
-| `AUTH_USERNAME` | Basic-auth username (only used when `AUTH_PASSWORD` is set). | `admin` |
-| `AUTH_PASSWORD` | Basic-auth password. When set, every route (including `/ws`) requires it. | _(unset → no auth)_ |
-| `ALLOWED_HOSTS` | Comma-separated exact hostnames/IPs the server answers for; any other `Host` header is rejected (the DNS-rebinding guard; see the security warning above). The carve-out needs loopback on **both** ends (a loopback client address _and_ a loopback `Host`), so the image healthcheck and a same-host `curl` keep working while a forged loopback `Host` from a remote peer does not. Any other name you browse to must be listed. Malformed entries are dropped with a warning; a list whose entries are **all** malformed fails closed, rejecting every non-loopback request. | _(unset)_ |
-| `TRUSTED_PROXIES` | Comma-separated reverse-proxy CIDRs / bare IPs whose `X-Forwarded-For` the access log trusts to resolve `client_ip`. See [Client IP logging](#client-ip-logging). | _(unset → socket peer)_ |
+| `AUTH_PASSWORD` | Password for HTTP Basic auth on every page and terminal connection. Unset means no login. | _(unset)_ |
+| `AUTH_USERNAME` | User name for that login, used only when `AUTH_PASSWORD` is set. | `admin` |
+| `ALLOWED_HOSTS` | Comma-separated host names and IPs you open the terminal at. Any other host name is refused. | _(unset)_ |
+| `WORK_DIR` | The folder each new terminal starts in. It must exist. | _(unset)_ |
+| `SESSION_CMD` | The command each terminal runs, split on spaces. Use a script for anything more complex. | `/bin/bash` |
+| `IDLE_TIMEOUT` | Close terminals nobody has had open for this long, as a duration such as `30m`. | _(unset)_ |
+| `PERSIST_SCROLLBACK` | Keep each tab's newest 200 lines in the browser, so a reloaded page fills in faster. `false` turns it off. | `true` |
+| `SCROLLBACK` | Lines of history kept per terminal on the server. | `100000` |
+| `TRUSTED_PROXIES` | Reverse-proxy CIDRs or IPs whose `X-Forwarded-For` the access log trusts to name the real client. | _(unset)_ |
+| `LISTEN_ADDR` | Listen address as `host:port`. Keep the host part empty so the healthcheck can still reach it. | `:7681` |
+| `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. An unknown value falls back to `info` with a warning. | `info` |
 
-Endpoints: `/` (UI), `/ws?session=<id>` (per-session terminal WebSocket), `/api/sessions` (create/list/close), `/api/sessions/{id}/pinned-title` (name a terminal; `PUT` to set, `DELETE` to go back to the automatic name), `/api/sessions/events` (status SSE), `/healthz` (readiness).
-
-The variables above are the whole operator surface. Separately, the terminal
-engine injects one `WT_`-prefixed key into each session's OWN environment,
-`WT_SESSION_REAP`, so you see it in `env` inside a terminal. It is internal
-plumbing, not a setting: the session reaper matches it on the exact `KEY=VALUE`
-pair. Do not set it.
-
-### Volumes
+[Configuration](docs/configuration.md) has the details of each setting.
 
 | Mount | Description |
 | --- | --- |
-| _(any path)_ | Nothing is required. Mount whatever the command needs to reach and point `WORK_DIR` at it; the examples above mount the current directory at `/work`. |
-
-### Ports
+| _(any path)_ | Nothing is required. Mount what the terminals should reach and point `WORK_DIR` at it. |
 
 | Port | Description |
 | --- | --- |
-| `7681` | HTTP + WebSocket. Serves the UI, the session API and the terminal socket. Change the listen address with `LISTEN_ADDR`; the healthcheck follows it. |
+| `7681` | The web page, the terminal API and the terminal connections |
 
-## Startup failures
+## Security
 
-A startup failure produces exactly one `ERROR` line, `web-terminal-server exited
-with error`. The remedy is in its `error` field, and a `stage` field names which
-step failed:
+Whoever passes the login gets a shell inside the container, as root by default. Treat the port like SSH. The image listens on every interface inside the container, so the published port decides who reaches it.
 
-| `stage` | What failed |
-| --- | --- |
-| `config` | The environment is invalid: a `WORK_DIR` that is missing, unreadable or not a directory, an empty `SESSION_CMD`, or an unparseable `PERSIST_SCROLLBACK`, `SCROLLBACK` or `IDLE_TIMEOUT`. |
-| `static` | The embedded front end or its Content-Security-Policy is unusable. A build defect, not a setting: no environment change fixes it. |
-| `listen` | The address in `LISTEN_ADDR` could not be bound. |
-| `serve` | The HTTP server exited with an error while running. |
-| `unknown` | A failure nothing attributed. |
+- Set `AUTH_PASSWORD`, or put a reverse proxy with its own login in front. Failed logins are rate-limited.
+- Set `ALLOWED_HOSTS` to the exact names you open it at. With neither it nor a password, a malicious web page can reach even a loopback-only terminal through your browser, a trick called DNS rebinding.
+- Anyone who has a terminal's id in `/ws?session=<id>` can join it. Keep that query string out of your proxy's access log.
+- The browser keeps each tab's newest 200 lines for up to seven days, readable by anyone using that browser without the password. Set `PERSIST_SCROLLBACK=false` on a shared device.
 
-Key log queries and alert rules on `stage` rather than on the message text: the
-values are a stable contract with a test behind them, the prose is not.
+[Security](docs/security.md) covers the reverse proxy, the stored lines, hardening and what the image contains.
 
-A rejected environment value is never echoed into that line. Only the variable's
-name and the accepted shape appear, because a compose interpolation mistake is
-what puts a credential on a variable in the first place.
+## Troubleshooting
 
-## Client IP logging
+The healthcheck asks `/healthz` on `127.0.0.1` every 30 seconds, after a 15-second start period. It answers `200` once the server listens and `503` while it starts or shuts down. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running.
 
-The access log records a `client_ip` per request. By default (`TRUSTED_PROXIES` unset) it logs the direct socket peer and ignores any `X-Forwarded-For` header, so the logged IP cannot be spoofed; that's the correct choice when the server is directly exposed. Behind a reverse proxy the socket peer is the proxy, not the user, so set `TRUSTED_PROXIES` to the proxy's address(es), a comma-separated list of CIDRs or bare IPs (e.g. `TRUSTED_PROXIES=10.0.0.0/8,192.0.2.10`), and the log resolves the real client from a trusted `X-Forwarded-For`. Only a request whose socket peer is inside the set has its `X-Forwarded-For` trusted (spoof-safe); a malformed entry is logged and skipped rather than aborting startup. Log timestamps are UTC regardless of the container's `TZ`, so lines stay zone-stable for ingest.
+- `docker ps` shows `unhealthy` while the page works. `LISTEN_ADDR` names one interface. Keep its host part empty, as in `:7681`.
+- The log warns that the server runs as PID 1. Add `init: true` to the service, or `--init` to `docker run`.
+- The browser shows `host not allowed`. Add that host name to `ALLOWED_HOSTS`.
+- The container stops with `web-terminal-server exited with error`. Its `error` field names the problem and its `stage` field names the step that failed.
 
-A terminal that successfully attaches (the `/ws` WebSocket handshake) gets no line: the handshake ends the HTTP exchange, so the line could only be written when the socket finally closes, reporting a session-long duration and a status the server never sent. Every attach ATTEMPT is recorded separately, before the handshake runs, with a truncated session id, the client IP and the request id. That record is the audit trail for a socket that presents a session credential. A handshake that is _refused_ is also logged with its real status (a rejected `Host`, a cross-origin request, missing credentials, a plain HTTP request with no upgrade headers), so that is what to grep when a browser cannot attach.
+[How it works](docs/how-it-works.md) lists every startup stage and what the logs record.
 
-The session id in `/ws?session=<id>` is a **capability**: holding it is enough to attach to that terminal. This server keeps it out of its own logs (the access log records the route template for session paths, and the attach record truncates the id), but a fronting reverse proxy logs full request URIs by default and would capture it in the clear. Drop or redact the `/ws` query string in the proxy's own access log.
+## Documentation
 
-## Healthcheck
+- [Configuration](docs/configuration.md) explains every setting, the mounts and the ports.
+- [Security](docs/security.md) covers the reverse proxy, the lines stored in the browser, hardening and what the image contains.
+- [How it works](docs/how-it-works.md) covers sessions, startup failures, the logs and the healthcheck.
 
-The image ships a `HEALTHCHECK` that probes `/healthz` on loopback every 30s,
-after a 15s start period. `/healthz` answers `200 {"status":"ok"}` once the
-listener is bound and `503` during startup and the graceful-shutdown drain, so a
-load balancer stops sending traffic while the server is draining.
+## Credits
 
-Two details worth knowing. The probe derives its port from `LISTEN_ADDR`, so moving
-the listener keeps it working. And when `AUTH_PASSWORD` is set the probe
-authenticates with `AUTH_USERNAME`/`AUTH_PASSWORD` through a curl config file on
-stdin rather than a command-line flag, so the password never appears in the
-container's process list.
-
-It is a readiness signal, not liveness: nothing restarts the container on an
-unhealthy state, so a problem surfaces as `unhealthy` in `docker ps` without a
-restart loop.
-
-## Dependencies
-
-| Dependency | Source |
-| --- | --- |
-| Debian trixie-slim | Base image, pinned by digest. `apt-get upgrade` runs at build time so security updates ship with each release. |
-| `github.com/cplieger/web-terminal-engine` | The Go PTY/VT session engine and its TypeScript browser renderer. |
-| `@cplieger/web-terminal-ui` | The touch-first browser UI served to the client. |
-| `github.com/cplieger/webhttp` | Server HTTP plumbing: access logging, middleware chain, security headers, static serving, rate limiting. |
-| `github.com/cplieger/envx`, `slogx` | Typed environment parsing and the fleet-standard slog setup. |
-| Monaspace Neon NF | The terminal's text webfont, fetched at build time and digest-verified per face. |
-| `cplieger/web-terminal-glyphs` | The tiling-glyph overlay listed ahead of it (box drawing, blocks, shades, braille, mosaics), fetched at build time and digest-verified. Its released cell contract gates the build against the CSS actually served. |
-| Go toolchain, TypeScript compiler | Build-time only, both digest-verified per architecture. |
-
-Every version is pinned, and every build-time download is checked against a
-recorded sha256, so a compromised registry cannot change what the image contains.
-Updates arrive as automated pull requests and ship through a fresh image build.
-
-## Related projects
-
-The web-terminal family:
-
-- [`web-terminal-engine`](https://github.com/cplieger/web-terminal-engine): the
-  Go session engine + TypeScript browser renderer this server embeds.
-- [`@cplieger/web-terminal-ui`](https://github.com/cplieger/web-terminal-ui):
-  the touch-first browser UI this server ships to the client.
-
-Apps built on the same engine:
-
-- [`marotte`](https://github.com/cplieger/marotte): a chat-first browser front end for the Kiro CLI (chat history, MCP, editor, git/forge workflows).
-- [`web-terminal-kiro`](https://github.com/cplieger/web-terminal-kiro): a touch-first, multi-tab browser terminal wired to the Kiro CLI (`kiro-cli`), on desktop or phone.
+The terminal is [web-terminal-engine](https://github.com/cplieger/web-terminal-engine) and [web-terminal-ui](https://github.com/cplieger/web-terminal-ui), both by the same author. Its text font is [Monaspace](https://github.com/githubnext/monaspace) Neon NF, by GitHub Next.
 
 ## Contributing
 
-Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-conventions and how to run the checks locally.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the conventions and how to run the checks locally.
 
 ## Disclaimer
 
@@ -264,12 +150,6 @@ This project was built with AI-assisted tooling using [Claude](https://claude.co
 
 ## License
 
-MPL-2.0. See [LICENSE](LICENSE). The image carries the license text of every
-bundled component under `/usr/share/licenses/`.
+MPL-2.0. See [LICENSE](LICENSE). The image carries the license text of every bundled component under `/usr/share/licenses/`.
 
-The image redistributes two web fonts under their own licences, each served
-beside the font it covers. Monaspace Neon NF is under the SIL Open Font License
-1.1 (`/vendor/fonts/MonaspaceNeonNF-LICENSE`). Web Terminal Glyphs, the tiling
-overlay listed ahead of it, is under Apache-2.0
-(`/vendor/fonts/WebTerminalGlyphs-LICENSE`, with its
-`/vendor/fonts/WebTerminalGlyphs-NOTICE`).
+The image redistributes two web fonts under their own licences, each served beside the font it covers. Monaspace Neon NF is under the SIL Open Font License 1.1 (`/vendor/fonts/MonaspaceNeonNF-LICENSE`). Web Terminal Glyphs, the tiling overlay listed ahead of it, is under Apache-2.0 (`/vendor/fonts/WebTerminalGlyphs-LICENSE`, with its `/vendor/fonts/WebTerminalGlyphs-NOTICE`).
