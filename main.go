@@ -133,7 +133,7 @@ func parseAllowedHosts(key string) *webhttp.HostPolicy {
 	policy, invalid := webhttp.ParseHostList(strings.Split(os.Getenv(key), ","),
 		webhttp.WithLoopbackExempt(true),
 		webhttp.WithHostAllowlistError("host_not_allowed",
-			"host not allowed; add it to ALLOWED_HOSTS to serve this hostname"))
+			"host not allowed. Add it to ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
 		// Count-only, like parseTrustedProxies: a mis-expanded variable could
 		// carry a credential.
@@ -471,7 +471,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 		// credential (including the baked healthcheck) is never throttled.
 		authThrottleMW = webhttp.FailedAuthRateLimit(
 			func(r *http.Request) bool { return !gate.presentsValidCredentials(r) },
-			"too many failed authentication attempts; check the credentials in AUTH_USERNAME/AUTH_PASSWORD",
+			"too many failed authentication attempts. Check the credentials in AUTH_USERNAME/AUTH_PASSWORD",
 		)
 		authMW = gate.middleware
 	}
@@ -725,8 +725,8 @@ func (g *basicAuthGate) middleware(next http.Handler) http.Handler {
 // canonicalPathRefusal is the guard's response message, a const so a test
 // can pin the wording. Echoes no part of the request, since net/http accepts
 // up to MaxHeaderBytes of request line.
-const canonicalPathRefusal = "request path is not canonical; send the route path exactly, without empty, dot, or dot-dot segments " +
-	"(this route refuses rather than redirecting, because a redirect is a success status to a client without -L)"
+const canonicalPathRefusal = "request path is not canonical. Send the route path exactly, without empty, dot, or dot-dot segments. " +
+	"This route refuses rather than redirecting, because a redirect is a success status to a client without -L."
 
 // canonicalPathGuard refuses a request whose path is not the spelling
 // http.ServeMux will route, when the cleaned path falls under one of
