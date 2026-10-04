@@ -17,7 +17,7 @@ A password made only of spaces gives almost no protection, and the server warns 
 
 ## Host names
 
-`ALLOWED_HOSTS` is a comma-separated list of exact host names and IPs this server answers for. A request with any other `Host` header is refused with `host not allowed`. This is what stops DNS rebinding, explained in [Security](security.md#dns-rebinding).
+`ALLOWED_HOSTS` is a comma-separated list of exact host names and IPs this server answers for. A request with any other `Host` header is refused with `host not allowed`. This is what stops DNS rebinding, explained in [Security](hardening.md#dns-rebinding).
 
 - Write bare names or IPs, such as `localhost,192.0.2.10,term.example.com`. A scheme, a path, a CIDR or a port does not belong here.
 - A request from a loopback client to a loopback host name is always accepted. That keeps the healthcheck and a `curl` on the same host working, while a remote client sending a loopback `Host` is still refused.
@@ -35,7 +35,7 @@ A password made only of spaces gives almost no protection, and the server warns 
 - `SCROLLBACK` is how many lines of history the server keeps per terminal. That is how far back you can scroll, and what a reconnecting page can replay. It defaults to `100000`. Memory is used only as history is produced, so a large value costs nothing until a terminal reaches it. To keep everything, set a number no terminal will reach. `0` keeps nothing beyond the screen.
 - A value from `1` to `2000` is raised to `2001` with a warning. Below that depth the browser cannot load older history on demand and keeps its whole buffer instead, so less server history would cost the phone more memory.
 - `SCROLLBACK` is the terminal engine's own variable, which is why its name has no prefix and why this server sets no default of its own.
-- `PERSIST_SCROLLBACK` keeps each tab's newest 200 lines in the browser, so a reloaded page asks the server only for what it missed. It defaults to `true`. Set `false` to turn it off. Any value other than a boolean stops startup. What the browser stores, and for how long, is in [Security](security.md#lines-stored-in-the-browser).
+- `PERSIST_SCROLLBACK` keeps each tab's newest 200 lines in the browser, so a reloaded page asks the server only for what it missed. It defaults to `true`. Set `false` to turn it off. Any value other than a boolean stops startup. What the browser stores, and for how long, is in [Security](hardening.md#lines-stored-in-the-browser).
 
 ## Network and logs
 

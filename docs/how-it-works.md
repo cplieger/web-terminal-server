@@ -16,7 +16,7 @@ Whatever `SESSION_CMD` runs can start a child process that outlives its own pare
 
 With `PERSIST_SCROLLBACK` on, the browser keeps the newest 200 lines of each terminal. A reload then asks the server only for what was printed while the page was gone. Without it, the terminal comes back empty and loads the whole history the server keeps, and you see it fill in. On a phone that is the normal case. iOS discards background tabs when memory runs low, and returning to one loads the page again. Reconnecting an open page and switching tabs within one page already replay nothing, so the setting changes only a fresh page load.
 
-On the first reconnect, the stored lines are checked against the running server. They are cleared if they came from an earlier run, because a restarted server numbers its output from the start again. A restart usually leaves that terminal gone. The stored lines are then discarded rather than shown behind a "Session ended" banner. What is stored, and the privacy side of it, is in [Security](security.md#lines-stored-in-the-browser).
+On the first reconnect, the stored lines are checked against the running server. They are cleared if they came from an earlier run, because a restarted server numbers its output from the start again. A restart usually leaves that terminal gone. The stored lines are then discarded rather than shown behind a "Session ended" banner. What is stored, and the privacy side of it, is in [Security](hardening.md#lines-stored-in-the-browser).
 
 ## Startup failures
 
@@ -63,6 +63,6 @@ The image's `HEALTHCHECK` calls `/healthz` on `127.0.0.1` every 30 seconds, afte
 
 ## What this repository holds
 
-The terminal itself is two shared libraries by the same author, [web-terminal-engine](https://github.com/cplieger/web-terminal-engine), the Go engine and its browser renderer, and [web-terminal-ui](https://github.com/cplieger/web-terminal-ui), the touch-first interface. This repository is two Go files that start each terminal, serve the bundled page and apply the security settings described in [Security](security.md).
+The terminal itself is two shared libraries by the same author, [web-terminal-engine](https://github.com/cplieger/web-terminal-engine), the Go engine and its browser renderer, and [web-terminal-ui](https://github.com/cplieger/web-terminal-ui), the touch-first interface. This repository is two Go files that start each terminal, serve the bundled page and apply the security settings described in [Security](hardening.md).
 
 Two other apps run on the same engine. [Web Terminal for Kiro](https://github.com/cplieger/web-terminal-kiro) is a touch-first, multi-tab terminal wired to the Kiro CLI, on desktop or phone. [marotte](https://github.com/cplieger/marotte) puts Kiro in your browser as a self-hosted agentic IDE, with chat, a file editor, a terminal and git in one tab.
