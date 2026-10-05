@@ -140,7 +140,7 @@ The terminal is [web-terminal-engine](https://github.com/cplieger/web-terminal-e
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the conventions and how to run the checks locally.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
