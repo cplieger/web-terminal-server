@@ -20,11 +20,10 @@ The built-in login suits a simple setup. A reverse proxy that knows your users i
 
 ## Behind a reverse proxy
 
+[Running an app behind a reverse proxy](https://github.com/cplieger/docs/blob/main/docs/reverse-proxy.md) sets web-terminal-server up behind Caddy, nginx, Traefik or Nginx Proxy Manager, with the WebSocket, `ALLOWED_HOSTS` and `TRUSTED_PROXIES` settings it needs.
+
 - Point the proxy at `http://127.0.0.1:7681` when it runs on the Docker host. When it runs in a container on the same Docker network, remove the `ports:` lines and point it at `http://web-terminal-server:7681`.
 - Serve the page over HTTPS. Basic auth sends the password with every request.
-- The proxy must pass WebSocket upgrades on `/ws`, where every terminal connects.
-- Pass the original `Host` header through, and add the name you browse to in `ALLOWED_HOSTS`.
-- Set `TRUSTED_PROXIES` to the proxy's address, so the access log records the real client instead of the proxy.
 - Drop or redact the query string of `/ws` in the proxy's own access log, as the next section explains.
 
 ## Terminal ids
