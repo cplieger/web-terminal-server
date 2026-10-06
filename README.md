@@ -70,7 +70,7 @@ services:
 
 Run `docker logs web-terminal-server`. You should see `web-terminal-server listening`. If the container stops with `web-terminal-server exited with error`, the `error` field of that line names the setting to fix.
 
-The example port answers on the Docker host only. To use the terminal from a phone or another computer, put a reverse proxy with a login in front of it, as [Security](docs/hardening.md) describes. On a private network you can instead change the port line to `"7681:7681"` and keep the password.
+The example port answers on the Docker host only. To use the terminal from a phone or another computer, put a [reverse proxy](https://github.com/cplieger/docs/blob/main/docs/reverse-proxy.md) with a login in front of it, as [Security](docs/hardening.md) describes. On a private network you can instead change the port line to `"7681:7681"` and keep the password.
 
 ## Naming and arranging terminals
 
