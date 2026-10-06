@@ -28,13 +28,13 @@ The built-in login suits a simple setup. A reverse proxy that knows your users i
 
 ## Terminal ids
 
-A terminal connects at `/ws?session=<id>`, and holding that id is enough to join that terminal. The server keeps the id out of its own logs. The access log records the route pattern for terminal paths, and the attach record shortens the id. A reverse proxy logs full request addresses by default and would record the id in the clear, so drop or redact it there.
+A terminal connects at `/ws?session=<id>`. With `AUTH_PASSWORD` set, anyone who has logged in and holds that id can join that terminal. Without `AUTH_PASSWORD`, the id alone is enough. The server keeps the id out of its own logs. The access log records the route pattern for terminal paths, and the attach record shortens the id. If your reverse proxy logs query strings, drop or redact the `session` value of `/ws` there.
 
 ## DNS rebinding
 
 DNS rebinding reaches even a terminal bound to loopback, through your own browser. A malicious page makes its own host name resolve to this server, and the browser's same-origin checks then pass because the page's origin and the `Host` header agree.
 
-Either of two settings stops it. `ALLOWED_HOSTS` set to the exact names you browse to makes the server refuse every other `Host`. `AUTH_PASSWORD` works too, because the attacker's page cannot present your credentials. The server warns at startup when neither is set.
+Either of two settings stops it. `ALLOWED_HOSTS` set to the exact names you browse to makes the server refuse every other `Host`. The one exception is a request from inside the container that also names a loopback host, such as the image's health check. `AUTH_PASSWORD` works too, because the attacker's page cannot present your credentials. The server warns at startup when neither is set.
 
 ## Lines stored in the browser
 
@@ -42,14 +42,31 @@ With `PERSIST_SCROLLBACK` on, its default, the browser keeps up to 200 lines of 
 
 Most ways to read that storage also hand over a live shell, so it is rarely the weakest point. The exception is a time when the stored lines are readable and the shell is not, such as a laptop off the VPN, a stopped container or an expired login. Set `PERSIST_SCROLLBACK=false` on a shared or borrowed device, or where storing command output on disk is not acceptable.
 
-Nothing is sent anywhere. The server neither reads nor receives these lines, and it does not know whether a browser kept them. `localStorage` needs no permission prompt. A browser that blocks site data, or a private window, restores nothing and loads the history from the server as before.
+The stored text never leaves the browser. When it reconnects, the browser tells the server only the number of the last line it kept, and the server sends the lines after it. `localStorage` needs no permission prompt. A browser that blocks site data restores nothing and loads the history from the server as before.
 
 ## Limiting what a terminal can do
 
 The terminals run as the container user, which is root by default. Restrict them as your threat model requires:
 
-- Point `SESSION_CMD` at a command that switches to a user other than root.
+- Point `SESSION_CMD` at a command that switches to a user other than root. That switch needs the `SETUID` and `SETGID` capabilities, so it does not work with the hardened settings below, which keep no capability.
 - Mount only the folders the terminals need, and point `WORK_DIR` at them.
+
+## Hardened compose settings
+
+web-terminal-server runs with `read_only`, `cap_drop: [ALL]` and `no-new-privileges` from [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md), and needs no capability added back. The terminals still run as root, the image's own user, but with no capabilities. Under `read_only` it needs two `tmpfs` folders, `/tmp` and `/root`, the shell's home. If one of them is missing, the server still starts and opens terminals. A write from a terminal to that folder then fails with `Read-only file system`. Add these lines to the service in `compose.yaml`:
+
+```yaml
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+      - /root:rw,nosuid,nodev,size=64m,mode=0700  # the shell's home
+    cap_drop: [ALL]
+    security_opt:
+      - "no-new-privileges:true"
+    user: "0:0"  # root, the user the image already runs as
+```
+
+The `/root` folder hides the image's `.bashrc` and `.profile`, so the shell starts without them. Keep your work in a mounted folder such as `/work`.
 
 ## What the image contains
 
@@ -68,4 +85,4 @@ The base image is pinned by digest, and every archive downloaded at build time i
 
 The runtime image adds bash, curl and CA certificates to Debian, so the terminals start with those tools and whatever you mount.
 
-The image also carries the license text of every bundled component under `/usr/share/licenses/`.
+The image carries the license text of web-terminal-server and of every Go module built into it under `/usr/share/licenses/`. Each font's license file is served beside the font, under `/vendor/fonts/`.
