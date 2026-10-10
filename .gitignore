@@ -9,7 +9,7 @@ build/
 node_modules/
 
 # Generated browser assets (the dev-build script / Dockerfile produce these;
-# only static/index.html is committed so go:embed has content).
+# the page, its boot module, the manifest and the icons are committed).
 static/vendor/
 static/style.css
 # scripts/css-bundle.sh assembles into a mktemp sibling and renames only on

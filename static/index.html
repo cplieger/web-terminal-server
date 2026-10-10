@@ -35,7 +35,8 @@
 <div id="loading" class="wt-loading" role="status" aria-label="Loading">
   <div class="wt-loading-bar" aria-hidden="true"></div>
 </div>
-<!-- The engine specifier is resolved transitively from the UI package's emitted imports. -->
+<!-- The engine specifier is resolved transitively from the UI package's emitted imports.
+     This stays inline and the page's only inline script: main.go cspTemplate owns why. -->
 <script type="importmap">
 {
   "imports": {
@@ -45,26 +46,6 @@
   }
 }
 </script>
-<script type="module">
-  import { createTerminal, localScrollbackStorage } from "@cplieger/web-terminal-ui";
-  import { presetTabbed } from "@cplieger/web-terminal-ui/presets";
-  // The root goes in as a SELECTOR and the preset as an ARROW so both resolve
-  // inside createTerminal's failure boundary: a missing #terminal or a throwing
-  // preset renders the library's "Terminal failed to start" panel instead of a
-  // spinner that never stops.
-  const persist =
-    document.querySelector('meta[name="wt-persist-scrollback"]')?.getAttribute("content") === "on";
-  // persistScrollback is OMITTED rather than passed as undefined when off,
-  // because the option's presence is what enables the feature.
-  //
-  // attentionIcons promises that static/ serves favicon-{input,done,alert} in all
-  // three icon formats (main_test.go asserts it against the embedded tree).
-  createTerminal("#terminal", {
-    features: () => presetTabbed({ attentionIcons: true }),
-    split: true,
-    loading: document.getElementById("loading"),
-    ...(persist ? { persistScrollback: localScrollbackStorage() } : {}),
-  });
-</script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>
