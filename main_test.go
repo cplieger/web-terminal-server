@@ -502,20 +502,10 @@ func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
 	}
 }
 
-// The inline-script scanner's own unit and format tests (TestInlineScriptHashes,
-// TestCSPHashTokenFormat) moved to webhttp with the scanner (csp_test.go there,
-// plus a fuzz target). What stays here is this app's contract: the CSP it
-// SERVES matches the inline scripts it EMBEDS (the anti-drift oracle below) and
-// buildCSPPolicy's fail-loud arms.
-
-// TestCSPScriptHashesMatchEmbeddedInlineScripts is the anti-drift guard for the
-// script-src hardening. It independently re-extracts every inline <script> in
-// the embedded index.html with a regexp (a different implementation from the
-// production byte scanner, so agreement is a genuine cross-check) and asserts
-// the sha256 hash of each appears in the CSP the server actually sends. The
-// header can therefore never silently stop matching the scripts the page runs.
-// Hashes are computed from the embed, never hardcoded, so the test tracks
-// index.html automatically.
+// TestCSPScriptHashesMatchEmbeddedInlineScripts is the anti-drift guard for
+// script-src: a regexp oracle (independent of the production byte scanner)
+// re-extracts every inline <script> in the embedded index.html, asserts the one
+// it finds is the importmap, and asserts script-src pins exactly its hash.
 func TestCSPScriptHashesMatchEmbeddedInlineScripts(t *testing.T) {
 	indexHTML, err := staticFS.ReadFile("static/index.html")
 	if err != nil {
@@ -539,6 +529,7 @@ func TestCSPScriptHashesMatchEmbeddedInlineScripts(t *testing.T) {
 	// case-insensitive; `.*?` stops at the first closing tag.
 	scriptRE := regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script\s*>`)
 	srcRE := regexp.MustCompile(`(?i)(^|[\s/])src\s*=`)
+	importmapRE := regexp.MustCompile(`(?i)(^|\s)type\s*=\s*"importmap"`)
 
 	found := 0
 	for _, m := range scriptRE.FindAllSubmatch(indexHTML, -1) {
@@ -546,14 +537,72 @@ func TestCSPScriptHashesMatchEmbeddedInlineScripts(t *testing.T) {
 			continue // external script, allowed by 'self'
 		}
 		found++
+		if !importmapRE.Match(m[1]) {
+			t.Errorf("inline <script%s> is not the importmap; the page's boot code belongs in an external module", m[1])
+		}
 		token := hashToken(string(m[2]))
-		if !strings.Contains(csp, token) {
-			t.Errorf("CSP is missing the hash for an inline script.\ncontent=%q\nwant token %s\nCSP: %s",
-				m[2], token, csp)
+		// Exact, so a stale or extra hash admitting a removed script fails too.
+		if want, got := "script-src 'self' "+token, cspDirective(t, csp, "script-src"); got != want {
+			t.Errorf("script-src = %q, want %q\ncontent=%q", got, want, m[2])
 		}
 	}
-	if found < 2 {
-		t.Fatalf("oracle found %d inline scripts in index.html, want >= 2 (importmap + module bootstrap); the regexp or the file changed", found)
+	if found != 1 {
+		t.Fatalf("oracle found %d inline scripts in index.html, want exactly 1 (the importmap); the regexp or the file changed", found)
+	}
+}
+
+// TestPageScriptsAreEmbedded pins that every external script index.html loads
+// ships in the embedded tree, or the page boots to a 404 behind the loading
+// overlay.
+func TestPageScriptsAreEmbedded(t *testing.T) {
+	t.Parallel()
+	indexHTML, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read embedded static/index.html: %v", err)
+	}
+	srcs := regexp.MustCompile(`(?i)<script\b[^>]*\ssrc="/([^"]+)"`).FindAllSubmatch(indexHTML, -1)
+	if len(srcs) == 0 {
+		t.Fatal("index.html loads no external script; the boot module is missing")
+	}
+	for _, m := range srcs {
+		if body, err := staticFS.ReadFile("static/" + string(m[1])); err != nil || len(body) == 0 {
+			t.Errorf("index.html loads /%s, which is not embedded (err=%v)", m[1], err)
+		}
+	}
+}
+
+// TestBootModuleImportsAreMapped pins that every bare specifier static/app.js
+// imports has a key in the page's importmap: the browser resolves bare
+// specifiers only through that map, so an unmapped one aborts module loading
+// and leaves the loading overlay spinning.
+func TestBootModuleImportsAreMapped(t *testing.T) {
+	t.Parallel()
+	indexHTML, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read embedded static/index.html: %v", err)
+	}
+	appJS, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded static/app.js: %v", err)
+	}
+	m := regexp.MustCompile(`(?s)<script type="importmap">(.*?)</script>`).FindSubmatch(indexHTML)
+	if m == nil {
+		t.Fatal("index.html has no importmap")
+	}
+	var importmap struct {
+		Imports map[string]string `json:"imports"`
+	}
+	if err := json.Unmarshal(m[1], &importmap); err != nil {
+		t.Fatalf("importmap is not valid JSON: %v", err)
+	}
+	specs := regexp.MustCompile(`\bfrom\s+"([^"./][^"]*)"`).FindAllSubmatch(appJS, -1)
+	if len(specs) == 0 {
+		t.Fatal("found no bare import in app.js; the extraction is broken")
+	}
+	for _, s := range specs {
+		if _, ok := importmap.Imports[string(s[1])]; !ok {
+			t.Errorf("app.js imports %q, which the importmap does not map", s[1])
+		}
 	}
 }
 
@@ -591,13 +640,9 @@ func TestFallbackCSPPolicy(t *testing.T) {
 	}
 }
 
-// TestBuildCSPPolicyFailsLoud pins the fail-loud contract: buildCSPPolicy
-// returns an error (never a silent 'unsafe-inline' degrade) when the static FS
-// is nil, index.html is missing, index.html holds no inline <script>, or it does
-// not hold exactly one inline <style>. A production build always embeds
-// index.html with its two inline scripts and its one loading-overlay style, so
-// any of these means a malformed build that must abort startup, not serve a
-// policy that drops the script-src or style-src hardening.
+// TestBuildCSPPolicyFailsLoud pins that a malformed build aborts startup: an
+// error, never a degraded policy, when index.html is missing or does not hold
+// exactly one inline <script> (the importmap) and exactly one inline <style>.
 func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 	cases := []struct {
 		name string
@@ -605,11 +650,13 @@ func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 	}{
 		{"missing index.html", fstest.MapFS{}},
 		{"only external scripts", fstest.MapFS{
-			"index.html": &fstest.MapFile{Data: []byte(`<html><body><script src="/vendor/x.js"></script></body></html>`)},
+			"index.html": &fstest.MapFile{Data: []byte(`<html><style>a{}</style><body><script src="/vendor/x.js"></script></body></html>`)},
 		}},
-		// The style half, mirroring web-terminal-kiro's cases: style-src is
-		// hash-pinned now, so anything other than exactly one inline block is a
-		// malformed build and must abort rather than degrade to 'unsafe-inline'.
+		{"two inline scripts", fstest.MapFS{
+			"index.html": &fstest.MapFile{Data: []byte(`<html><style>a{}</style><script type="importmap">{}</script><script type="module">boot()</script></html>`)},
+		}},
+		// The style half, mirroring web-terminal-kiro's cases: anything other
+		// than exactly one inline block must abort rather than degrade.
 		{"no style block", fstest.MapFS{
 			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script></html>`)},
 		}},
@@ -1859,7 +1906,7 @@ func TestCanonicalPathGuard(t *testing.T) {
 	})
 }
 
-// TestAttentionIconVariantsAreServed pins the promise index.html makes by
+// TestAttentionIconVariantsAreServed pins the promise static/app.js makes by
 // passing attentionIcons: true to the UI preset: the library swaps every
 // link[rel=icon] to a status variant while a background session wants the
 // user, deriving those URLs from a NAMING CONVENTION (inserting -input,
@@ -1873,11 +1920,15 @@ func TestAttentionIconVariantsAreServed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read embedded index.html: %v", err)
 	}
+	appJS, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
 
 	// The app has to be ASKING for the variants, or the rest of this test would
 	// pass just as well on a page that never swaps an icon.
-	if !bytes.Contains(indexHTML, []byte("attentionIcons: true")) {
-		t.Fatal("index.html no longer opts into attentionIcons; delete this test or restore the option")
+	if !bytes.Contains(appJS, []byte("attentionIcons: true")) {
+		t.Fatal("app.js no longer opts into attentionIcons; delete this test or restore the option")
 	}
 
 	iconHref := regexp.MustCompile(`<link\s+rel="icon"[^>]*href="([^"]+)"`)

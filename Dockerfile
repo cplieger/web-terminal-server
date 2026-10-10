@@ -103,8 +103,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # tsc is a compiler, not a bundler: it preserves the UI's bare
 # `@cplieger/web-terminal-engine` import and its relative `./*.js` imports, which the
 # served importmap and vendored dirs resolve at runtime. The committed static/index.html
-# supplies the scaffold + importmap + the inline mount() call, so no app entry needs
-# compiling.
+# and static/app.js supply the scaffold, the importmap and the createTerminal call, so no
+# app entry needs compiling.
 #
 # All three steps live in scripts/ so this build and scripts/dev-build.sh cannot drift,
 # and so each refuses the failure a shell one-liner swallowed: an empty source list that

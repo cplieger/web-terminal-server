@@ -13,9 +13,9 @@ import (
 
 // PERSIST_SCROLLBACK reaches the page by a startup byte swap rather than a
 // template. The tests below hold that the swap is invisible downstream: the
-// CSP hash, ETag and gzip body are all derived from the SERVED bytes, and a
-// build that lost the marker fails at startup rather than on the first boot
-// an operator enables the flag.
+// ETag and gzip body are derived from the SERVED bytes, the CSP still admits
+// the served page, and a build that lost the marker fails at startup rather
+// than on the first boot an operator enables the flag.
 
 func TestApplyPersistFlagLeavesTheTreeAloneOnTheDefault(t *testing.T) {
 	sub, err := fs.Sub(staticFS, "static")
@@ -215,14 +215,10 @@ func TestPersistFlagReachesTheServedPage(t *testing.T) {
 	}
 }
 
-// TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent covers what the
-// ordering is actually load-bearing for. Flipping the marker cannot change
-// any inline script's bytes (it is a <meta> element), so it cannot change a
-// script-src hash; what the ordering DOES buy is that the static handler
-// hashes and gzips the bytes it serves. This drives the overlay direction
-// (the opt-out), asserts the CSP still admits the served page's scripts,
-// and asserts the ETag differs between the two variants — the property a
-// browser depends on and a shared cache would break.
+// TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent drives the overlay
+// direction (the opt-out) and asserts the CSP still admits the served page's
+// importmap and the ETag differs between the two variants, which a browser
+// depends on and a shared cache would break.
 func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -244,13 +240,11 @@ func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 		t.Fatalf("read overlaid %s: %v", indexName, err)
 	}
 	hashes := webhttp.InlineScriptHashes(html)
-	if len(hashes) < 2 {
-		t.Fatalf("found %d inline scripts, want >= 2 (importmap + module bootstrap)", len(hashes))
+	if len(hashes) != 1 {
+		t.Fatalf("found %d inline scripts, want exactly 1 (the importmap)", len(hashes))
 	}
-	for _, token := range hashes {
-		if !strings.Contains(csp, token) {
-			t.Errorf("CSP built from the overlaid page is missing %s\nCSP: %s", token, csp)
-		}
+	if want, got := "script-src 'self' "+hashes[0], cspDirective(t, csp, "script-src"); got != want {
+		t.Errorf("CSP built from the overlaid page has %q, want %q", got, want)
 	}
 
 	// The ETag depends on the handler seeing the served bytes: two different

@@ -66,6 +66,32 @@ wait_for() { # url label
   return 1
 }
 
+# Chromium refuses to run as root without --no-sandbox (crbug.com/638180). Puppeteer
+# calls Docker's 64 MB /dev/shm too small, advising 1 GB or --disable-dev-shm-usage:
+# https://github.com/puppeteer/puppeteer/blob/v19.0.0/docs/troubleshooting.md#tips
+SHM_MIN_KB=$((1024 * 1024))
+HOST_FLAGS=()
+host_flags() {
+  local -a why=()
+  local shm_kb
+  HOST_FLAGS=()
+  if [ "$EUID" -eq 0 ]; then
+    HOST_FLAGS+=(--no-sandbox)
+    why+=("--no-sandbox: running as root")
+  fi
+  shm_kb="$(df -Pk /dev/shm 2>/dev/null | awk 'NR == 2 { print $2 }')"
+  if [ -z "$shm_kb" ]; then
+    HOST_FLAGS+=(--disable-dev-shm-usage)
+    why+=("--disable-dev-shm-usage: no /dev/shm")
+  elif [ "$shm_kb" -lt "$SHM_MIN_KB" ]; then
+    HOST_FLAGS+=(--disable-dev-shm-usage)
+    why+=("--disable-dev-shm-usage: /dev/shm is $((shm_kb / 1024)) MiB, under $((SHM_MIN_KB / 1024)) MiB")
+  fi
+  if [ "${#why[@]}" -gt 0 ]; then
+    printf 'adding Chromium flags: %s\n' "$(printf '%s; ' "${why[@]}" | sed 's/; $//')"
+  fi
+}
+
 start_chromium() {
   local bin base
   local -a flag=()
@@ -80,8 +106,9 @@ start_chromium() {
     *) flag=(--headless=new) ;;
   esac
   CHROME_PROFILE="$(mktemp -d)"
+  host_flags
   echo "launching $bin on :$CDP_PORT"
-  "$bin" "${flag[@]}" --disable-gpu --no-first-run --no-default-browser-check \
+  "$bin" "${flag[@]}" "${HOST_FLAGS[@]}" --disable-gpu --no-first-run --no-default-browser-check \
     --remote-debugging-port="$CDP_PORT" --remote-allow-origins='*' \
     --user-data-dir="$CHROME_PROFILE" about:blank >/dev/null 2>&1 &
   CHROME_PID=$!

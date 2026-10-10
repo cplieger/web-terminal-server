@@ -1,13 +1,9 @@
 package main
 
-// The one server fact this app's client needs at boot. No templating: the CSP
-// pins a sha256 of the inline module script and the static handler
-// precomputes an ETag and gzip body per file, so a per-request rewrite would
-// fight all three. The flag is applied ONCE at startup over the embedded
-// tree, before either reader sees it, and the resolved value is ALWAYS
-// stamped in either direction — index.html's committed value documents the
-// default rather than deciding anything. Persistence is ON; the env var is
-// the opt-OUT.
+// The one server fact the client needs at boot, read by static/app.js. The
+// static handler precomputes each file's ETag and gzip body, so instead of a
+// template the flag is stamped ONCE at startup, in either direction; index.html's
+// committed value only documents the default. The env var is the opt-OUT.
 
 import (
 	"bytes"
@@ -27,9 +23,9 @@ const (
 // indexName is the file the flag lives in, relative to the static sub-FS.
 const indexName = "index.html"
 
-// applyPersistFlag returns the static FS the handler and the CSP builder
-// should both read: the embedded tree with index.html's marker stamped to the
-// resolved value, or the tree unchanged when it already says that.
+// applyPersistFlag returns the static FS the handler should read: the
+// embedded tree with index.html's marker stamped to the resolved value, or
+// the tree unchanged when it already says that.
 //
 // The marker is verified on every boot, in both spellings — a build that lost
 // it fails startup rather than surprising an operator later.

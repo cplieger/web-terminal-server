@@ -9,6 +9,8 @@ const SHOT_PATH = process.env.SHOT_PATH || "";
 const WIDTH = 1000;
 const HEIGHT = 700;
 const MIN_PANE_PX = 360;
+// Pointer travel past the minimum that holds the pane at it before a release closes it.
+const CLOSE_HOLD_PX = 120;
 const RESIZE_INTERVAL_MS = 100;
 const DRAG_MS = 400;
 const DRAG_STEPS = 20;
@@ -172,6 +174,17 @@ let targetId = null;
   const VK = { Tab: 9, Enter: 13, Escape: 27, F10: 121, End: 35, Home: 36, ArrowLeft: 37, ArrowRight: 39 };
   const sessionSockets = () => [...sockets.values()].filter((s) => s.url.includes("session="));
   const layout = () => ev(`fetch('/api/sessions/layout').then(r => r.json())`, true);
+  // A layout change made while a PUT is in flight is sent only after that PUT's
+  // response, so under load it can land after a count baseline is read. Every
+  // baseline waits until no PUT has been sent for a full second.
+  const quietPuts = async () => {
+    for (let i = 0; i < 20; i++) {
+      const n = puts;
+      await sleep(1000);
+      if (puts === n) return n;
+    }
+    throw new Error("the page kept writing the layout record");
+  };
   const tabTo = async (predicate, max = 12) => {
     for (let i = 0; i < max; i++) {
       await key("Tab", { vk: VK.Tab });
@@ -212,47 +225,50 @@ let targetId = null;
   console.log(JSON.stringify({ tabPresses: fromStart, active: s.active }));
   check("Tab from the page start reaches the split button (chip, +, split)", fromStart === 3 && s.btnFocused);
   await key("Enter", { vk: VK.Enter });
-  await sleep(STEP_MS);
+  // With one tab the button creates the second one, so the split waits on a POST.
+  await sleep(SETTLE_MS / 2);
   s = await shell();
   let left = await pane("left");
   let right = await pane("right");
-  console.log(JSON.stringify({ open: s.open, panes: s.panes, btnExpanded: s.btnExpanded, btnFocused: s.btnFocused, ratio: s.ratio, handleDisplay: s.handleDisplay, rightInert: right?.inert, rightRows: right?.rows }));
+  const openedLayout = await layout();
+  console.log(JSON.stringify({ open: s.open, panes: s.panes, btnExpanded: s.btnExpanded, ratio: s.ratio, handleDisplay: s.handleDisplay, chips: s.chips.length, rightRows: right?.rows, rightSelected: right?.selected, rightInputFocused: right?.inputFocused, layout: openedLayout }));
   check("Enter opens the split: two panes, handle shown, aria-expanded=true", s.open && s.panes === 2 && s.handleDisplay === "block" && s.btnExpanded === "true");
-  check("focus stays on the button after a keyboard toggle", s.btnFocused);
-  check("the new right pane is empty and inert, the left selected", right !== null && right.inert && right.rows === 0 && left.selected);
-  check("still one session socket while the right pane is empty", sessionSockets().filter((x) => x.open).length === 1);
+  check("with one tab, the button creates a second tab in the right pane and selects it", s.chips.length === 2 && right.rows > 0 && right.selected && !left.selected && s.handleFaces === "right");
+  check("the left pane keeps the first tab and the record names both", openedLayout.open === true && openedLayout.left === firstLayout.left && typeof openedLayout.right === "string" && openedLayout.right !== firstLayout.left && openedLayout.selected === "right");
+  check("the keyboard follows the new tab into the right pane's input", right.inputFocused);
+  check("two session sockets, one per shown pane", sessionSockets().filter((x) => x.open).length === 2);
+  const shownChips = (x) => x.chips.filter((c) => c.active);
+  check("both shown chips render active with aria-expanded=true, row multiselectable", shownChips(s).length === 2 && shownChips(s).every((c) => c.expanded === "true") && s.multiselectable === "true");
   await click(".wt-tab-new");
   await sleep(SETTLE_MS / 2);
   s = await shell();
   left = await pane("left");
   right = await pane("right");
-  console.log(JSON.stringify({ chips: s.chips, multiselectable: s.multiselectable, leftRows: left.rows, rightRows: right.rows, rightSelected: right.selected, faces: s.handleFaces, sockets: sessionSockets().filter((x) => x.open).map((x) => x.url.replace(/^.*session=/, "session=")) }));
-  check("+ lands the new tab in the empty right pane and selects it", right.rows > 0 && right.selected && !left.selected && s.handleFaces === "right");
-  check("two session sockets, one per shown pane", sessionSockets().filter((x) => x.open).length === 2);
-  const shownChips = (x) => x.chips.filter((c) => c.active);
-  check("both shown chips render active with aria-expanded=true, the rest false, row multiselectable", shownChips(s).length === 2 && shownChips(s).every((c) => c.expanded === "true") && s.chips.filter((c) => !c.active).every((c) => c.expanded === "false") && s.multiselectable === "true");
+  const plusLayout = await layout();
+  console.log(JSON.stringify({ chips: s.chips, multiselectable: s.multiselectable, leftRows: left.rows, rightRows: right.rows, leftSelected: left.selected, faces: s.handleFaces, layout: plusLayout, sockets: sessionSockets().filter((x) => x.open).map((x) => x.url.replace(/^.*session=/, "session=")) }));
+  check("+ with both panes shown replaces the unselected left pane's tab and selects it", s.chips.length === 3 && left.rows > 0 && left.selected && !right.selected && s.handleFaces === "left" && plusLayout.left !== openedLayout.left && plusLayout.right === openedLayout.right);
+  check("still two session sockets, one per shown pane", sessionSockets().filter((x) => x.open).length === 2);
+  check("the replaced tab stays in the row as an ordinary chip with aria-expanded=false", shownChips(s).length === 2 && s.chips.filter((c) => !c.active).length === 1 && s.chips.filter((c) => !c.active).every((c) => c.expanded === "false"));
   check("both panes receive the emitter's output", left.maxAbs > 0 && right.maxAbs > 0);
 
   console.log("=== 3. typing echoes in its own pane only ===");
-  await click(".wt-split-pane.wt-side-left .term");
-  await sleep(200);
-  // The tabs feature moves focus after a keyboard snap only once a hardware key
-  // was seen in a terminal; headless Chromium reports no pointer, so nothing else would.
-  await key("ArrowRight", { vk: VK.ArrowRight });
-  await rpc(ws, ++id, "Input.insertText", { text: "qzx-left-7" });
-  await sleep(STEP_MS);
-  left = await pane("left");
-  right = await pane("right");
-  check("a click in the left pane selects it (class, handle edge)", left.selected && !right.selected && (await shell()).handleFaces === "left");
-  check("text typed into the left pane echoes in the left output only", left.text.includes("qzx-left-7") && !right.text.includes("qzx-left-7"));
-  await click(".wt-split-pane.wt-side-right .term");
-  await sleep(200);
-  await rpc(ws, ++id, "Input.insertText", { text: "qzx-right-3" });
-  await sleep(STEP_MS);
-  left = await pane("left");
-  right = await pane("right");
-  check("a click in the right pane selects it back", right.selected && !left.selected);
-  check("text typed into the right pane echoes in the right output only", right.text.includes("qzx-right-3") && !left.text.includes("qzx-right-3"));
+  // Headless Chromium reports no fine pointer, so once a hardware key was seen a
+  // click releases focus to the body and the next key takes it back into the
+  // selected pane's input. That key also arms the focus move after a keyboard snap.
+  const typeInto = async (side, text) => {
+    await click(`.wt-split-pane.wt-side-${side} .term`);
+    await sleep(200);
+    await key("ArrowRight", { vk: VK.ArrowRight });
+    await rpc(ws, ++id, "Input.insertText", { text });
+    await sleep(STEP_MS);
+    return { left: await pane("left"), right: await pane("right"), faces: (await shell()).handleFaces };
+  };
+  let typed = await typeInto("right", "qzx-right-3");
+  check("a click in the right pane selects it (class, handle edge)", typed.right.selected && !typed.left.selected && typed.faces === "right");
+  check("text typed into the right pane echoes in the right output only", typed.right.text.includes("qzx-right-3") && !typed.left.text.includes("qzx-right-3"));
+  typed = await typeInto("left", "qzx-left-7");
+  check("a click in the left pane selects it back", typed.left.selected && !typed.right.selected && typed.faces === "left");
+  check("text typed into the left pane echoes in the left output only", typed.left.text.includes("qzx-left-7") && !typed.right.text.includes("qzx-left-7"));
 
   console.log("=== 4. the cursor follows the selection class, not only focus ===");
   // The blink phase flips every 530ms, so the filled state is sampled over a cycle.
@@ -261,10 +277,10 @@ let targetId = null;
     for (let i = 0; i < 8; i++) { samples.push(await pane(side)); await sleep(150); }
     return samples;
   };
-  let unsel = await sampleCursor("left");
+  let unsel = await sampleCursor("right");
   console.log("unselected cursor:", JSON.stringify(unsel.map((p) => [p.cursorBg, p.cursorShadow, p.cursorAnimation])[0]));
   check("unselected pane's cursor is hollow: transparent, inset shadow, no blink", unsel.every((p) => p.cursorBg === "rgba(0, 0, 0, 0)" && p.cursorShadow !== "none" && p.cursorAnimation === "none"));
-  let sel = await sampleCursor("right");
+  let sel = await sampleCursor("left");
   const filled = (p) => p.cursorBg !== "rgba(0, 0, 0, 0)";
   console.log("selected cursor (focused):", JSON.stringify(sel.map((p) => p.cursorBg)));
   check("selected pane's cursor fills with the text colour while focused", sel.some(filled) && sel.every((p) => p.cursorShadow === "none"));
@@ -272,16 +288,17 @@ let targetId = null;
   await ev(`document.querySelector('.wt-split-pane.wt-pane-selected .term-input').blur(); document.querySelectorAll('.wt-tab.wt-tab-active')[1].focus(); 'ok'`);
   const toSplitButton = await tabTo(`document.activeElement === document.querySelector('.wt-tab-split')`, 4);
   s = await shell();
-  right = await pane("right");
-  console.log(JSON.stringify({ tabPresses: toSplitButton, active: s.active, rightTermFocus: right.termFocus, rightSelected: right.selected }));
+  left = await pane("left");
+  console.log(JSON.stringify({ tabPresses: toSplitButton, active: s.active, leftTermFocus: left.termFocus, leftSelected: left.selected }));
   check("Tab from a chip reaches the split button", toSplitButton > 0 && s.btnFocused);
-  check("moving focus to the tab row leaves the selection where it was", right.selected && right.termFocus === false);
-  sel = await sampleCursor("right");
+  check("moving focus to the tab row leaves the selection where it was", left.selected && left.termFocus === false);
+  sel = await sampleCursor("left");
   console.log("selected cursor (unfocused):", JSON.stringify(sel.map((p) => p.cursorBg)));
   check("selected pane's cursor stays filled with focus on the tab row (class-driven rule)", sel.some(filled) && sel.every((p) => p.cursorShadow === "none"));
 
   console.log("=== 5. the keyboard path: Enter on the button toggles ===");
   const chipCount = s.chips.length;
+  const recBeforeToggle = await layout();
   await key("Enter", { vk: VK.Enter });
   await sleep(STEP_MS);
   s = await shell();
@@ -294,10 +311,9 @@ let targetId = null;
   s = await shell();
   right = await pane("right");
   left = await pane("left");
-  console.log(JSON.stringify({ open: s.open, btnExpanded: s.btnExpanded, btnFocused: s.btnFocused, leftRows: left.rows, rightRows: right.rows }));
-  check("Space reopens it with the survivor shown on the left and the right pane empty", s.open && s.btnExpanded === "true" && s.btnFocused && left.rows > 0 && right.rows === 0);
-  const survivorSide = left.rows > 0 ? "left" : "right";
-  const emptySide = survivorSide === "left" ? "right" : "left";
+  const recReopened = await layout();
+  console.log(JSON.stringify({ open: s.open, btnExpanded: s.btnExpanded, btnFocused: s.btnFocused, leftRows: left.rows, rightRows: right.rows, before: recBeforeToggle, after: recReopened }));
+  check("Space reopens it with the selected tab on the left and the tab used before it on the right, neither pane empty", s.open && s.btnExpanded === "true" && s.btnFocused && left.rows > 0 && right.rows > 0 && recReopened.left === recBeforeToggle.left && recReopened.right === recBeforeToggle.right && recReopened.selected === "left");
 
   console.log("=== 6. snap items from a right-click and from the keyboard ===");
   await click(".wt-tab:not(.wt-tab-active)", "right");
@@ -309,7 +325,10 @@ let targetId = null;
   await click(".wt-split-pane.wt-pane-selected .term");
   await sleep(200);
   check("a click away dismisses the tab menu", (await ev(MENU)) === null);
-  await ev(`document.querySelector('.wt-tab.wt-tab-active').focus(); 'ok'`);
+  const recBeforeSnap = await layout();
+  const fromSide = recBeforeSnap.selected;
+  const toSide = fromSide === "left" ? "right" : "left";
+  await ev(`document.querySelector('.wt-tab.wt-tab-selected').focus(); 'ok'`);
   // Shift+F10 as a raw key down is what Chromium turns into the keyboard-raised
   // contextmenu event (button -1); a keyDown with text does not.
   await rpc(ws, ++id, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "F10", code: "F10", windowsVirtualKeyCode: VK.F10, modifiers: 8 });
@@ -318,26 +337,28 @@ let targetId = null;
   menu = await ev(MENU);
   console.log("Shift+F10 menu:", JSON.stringify(menu));
   const shownChipSnaps = snapItems(menu);
-  check("Shift+F10 on the focused shown chip opens the menu with the other side's snap item enabled", shownChipSnaps.length === 2 && shownChipSnaps.find((i) => i.label === `Snap to ${emptySide}`)?.disabled === false && shownChipSnaps.find((i) => i.label === `Snap to ${survivorSide}`)?.disabled === true);
-  const putsBeforeSnap = puts;
-  await ev(`Array.from(document.querySelectorAll('.wt-tab-menu [role="menuitem"]')).find(b => b.textContent === 'Snap to ${emptySide}').focus(); 'ok'`);
+  check("Shift+F10 on the selected pane's focused chip opens the menu with only the other side's snap item enabled", shownChipSnaps.length === 2 && shownChipSnaps.find((i) => i.label === `Snap to ${toSide}`)?.disabled === false && shownChipSnaps.find((i) => i.label === `Snap to ${fromSide}`)?.disabled === true);
+  const putsBeforeSnap = await quietPuts();
+  await ev(`Array.from(document.querySelectorAll('.wt-tab-menu [role="menuitem"]')).find(b => b.textContent === 'Snap to ${toSide}').focus(); 'ok'`);
   await key("Enter", { vk: VK.Enter });
   await sleep(STEP_MS);
   s = await shell();
   left = await pane("left");
   right = await pane("right");
-  const snapped = emptySide === "left" ? left : right;
-  const vacated = emptySide === "left" ? right : left;
+  const snapped = toSide === "left" ? left : right;
+  const traded = toSide === "left" ? right : left;
   const rec = await layout();
-  console.log(JSON.stringify({ snappedRows: snapped.rows, snappedSelected: snapped.selected, snappedInputFocused: snapped.inputFocused, vacatedRows: vacated.rows, vacatedInert: vacated.inert, active: s.active, layout: rec, puts: puts - putsBeforeSnap }));
-  check("Enter on Snap moves the shown tab to the other side and empties the old one", snapped.rows > 0 && snapped.selected && vacated.rows === 0 && vacated.inert);
+  console.log(JSON.stringify({ snappedRows: snapped.rows, snappedSelected: snapped.selected, snappedInputFocused: snapped.inputFocused, tradedRows: traded.rows, active: s.active, before: recBeforeSnap, after: rec, puts: puts - putsBeforeSnap }));
+  check("Enter on Snap trades places: the moved tab shows on the other side, selected, the displaced one on its old side", snapped.rows > 0 && snapped.selected && traded.rows > 0 && !traded.selected && rec[toSide] === recBeforeSnap[fromSide] && rec[fromSide] === recBeforeSnap[toSide]);
   check("after a keyboard snap the moved pane's textarea has focus", snapped.inputFocused && s.active === "TEXTAREA.term-input");
-  check("the snap wrote the record once with the tab on the new side", puts - putsBeforeSnap === 1 && rec.open === true && rec[emptySide] !== null && rec[survivorSide] === null && rec.selected === emptySide);
+  check("the snap wrote the record once with the swap and the selection on the new side", puts - putsBeforeSnap === 1 && rec.open === true && rec.selected === toSide);
   await click(`.wt-tab:not(.wt-tab-active)`);
   await sleep(SETTLE_MS / 2);
   left = await pane("left");
   right = await pane("right");
-  check("clicking an ordinary chip fills the empty pane", left.rows > 0 && right.rows > 0);
+  const recAfterChip = await layout();
+  console.log(JSON.stringify({ before: rec, after: recAfterChip }));
+  check("clicking an ordinary chip replaces the selected pane's tab and leaves the other pane alone", left.rows > 0 && right.rows > 0 && recAfterChip.selected === toSide && recAfterChip[fromSide] === rec[fromSide] && recAfterChip[toSide] !== rec[toSide] && recAfterChip[toSide] !== rec[fromSide]);
 
   console.log("=== 7. the divider: its Tab neighbours, arrow keys, Home and End ===");
   await ev(`document.querySelector('.wt-split-handle').focus(); 'ok'`);
@@ -351,7 +372,7 @@ let targetId = null;
   console.log(JSON.stringify({ tabLandsOnRightInput: afterTab.inputFocused, shiftTabLandsOnLeftInput: afterShiftTab.inputFocused }));
   check("Tab from the divider lands on the right pane's input, Shift+Tab on the left's", afterTab.inputFocused && afterShiftTab.inputFocused);
   await ev(`document.querySelector('.wt-split-handle').focus(); 'ok'`);
-  const putsBeforeKeys = puts;
+  const putsBeforeKeys = await quietPuts();
   const leftWidth = async () => (await pane("left")).width;
   const widths = [];
   for (let i = 0; i < 5; i++) await key("ArrowLeft", { vk: VK.ArrowLeft, holdDown: true, repeat: i > 0 });
@@ -412,46 +433,56 @@ let targetId = null;
   check("at most one more resize frame per socket on release", sentAfterRelease.every((n, i) => n - sentBeforeRelease[i] <= 1));
   check("the released ratio is committed (left grew by ~200px)", near(endWidth, startLeft + 200) || Math.abs(endWidth - (startLeft + 200)) <= 8);
 
-  console.log("=== 9. the divider: squeezing a pane under 360px closes it on release ===");
+  console.log("=== 9. the divider: squeezing a pane holds it at 360px, then closes it on release ===");
   const chipsBefore = (await shell()).chips.length;
   const recBeforeSqueeze = await layout();
-  h = await ev(rectOf(".wt-split-handle"));
-  await mouse("mousePressed", h.x, h.y);
-  const targetX = 300;
-  for (let i = 1; i <= 10; i++) {
-    await mouse("mouseMoved", h.x + ((targetX - h.x) * i) / 10, h.y);
-    await sleep(30);
-  }
-  const closingClass = await ev(`document.querySelector('.wt-split-pane.wt-side-left').classList.contains('wt-pane-closing')`);
-  await mouse("mouseReleased", targetX, h.y);
-  await sleep(STEP_MS);
+  // Drags the handle to x in 10 moves and reports whether the left pane dimmed.
+  const dragHandleTo = async (x) => {
+    const at = await ev(rectOf(".wt-split-handle"));
+    await mouse("mousePressed", at.x, at.y);
+    for (let i = 1; i <= 10; i++) {
+      await mouse("mouseMoved", at.x + ((x - at.x) * i) / 10, at.y);
+      await sleep(30);
+    }
+    const dimmed = await ev(`document.querySelector('.wt-split-pane.wt-side-left').classList.contains('wt-pane-closing')`);
+    await mouse("mouseReleased", x, at.y);
+    await sleep(STEP_MS);
+    return dimmed;
+  };
+  const holdX = MIN_PANE_PX - CLOSE_HOLD_PX / 2;
+  const heldDimmed = await dragHandleTo(holdX);
+  s = await shell();
+  const heldWidth = await leftWidth();
+  const recAfterHold = await layout();
+  console.log(JSON.stringify({ holdX, heldDimmed, open: s.open, heldWidth, after: recAfterHold }));
+  check("a release inside the hold past the minimum leaves the left pane at 360px, undimmed, nothing closed", !heldDimmed && s.open && near(heldWidth, MIN_PANE_PX) && recAfterHold.open === true && recAfterHold.left === recBeforeSqueeze.left && recAfterHold.right === recBeforeSqueeze.right);
+  const closeX = MIN_PANE_PX - CLOSE_HOLD_PX - 40;
+  const closingClass = await dragHandleTo(closeX);
   s = await shell();
   // A close re-sides the survivor to the left, so the pane that was on the right
   // is now the left one and the squeezed pane sits hidden on the right.
   left = await pane("left");
   right = await pane("right");
   const recAfterSqueeze = await layout();
-  console.log(JSON.stringify({ closingClass, open: s.open, chips: s.chips.length, survivorRows: left.rows, survivorWidth: left.width, survivorSelected: left.selected, squeezedRows: right.rows, squeezedHidden: right.hidden, before: recBeforeSqueeze, after: recAfterSqueeze }));
-  check("dragging the left pane under 360px dims it (wt-pane-closing)", closingClass === true);
+  console.log(JSON.stringify({ closeX, closingClass, open: s.open, chips: s.chips.length, survivorRows: left.rows, survivorWidth: left.width, survivorSelected: left.selected, squeezedRows: right.rows, squeezedHidden: right.hidden, before: recBeforeSqueeze, after: recAfterSqueeze }));
+  check("dragging past the hold dims the left pane (wt-pane-closing)", closingClass === true);
   check("releasing there closes the squeezed pane; the other tab survives and fills the view", !s.open && recAfterSqueeze.open === false && recAfterSqueeze.left === recBeforeSqueeze.right && left.rows > 0 && left.selected && left.width === WIDTH && right.rows === 0 && right.hidden);
   check("the closed pane's tab stays open in the row", s.chips.length === chipsBefore);
 
   console.log("=== 10. the minimum across a resize: 800px clamps without a write, 730px meets at 0.5, 720px collapses ===");
   await click(".wt-tab-split");
-  await sleep(STEP_MS);
-  await click(".wt-tab:not(.wt-tab-active)");
   await sleep(SETTLE_MS / 2);
   left = await pane("left");
   right = await pane("right");
-  check("both panes shown again before the resizes", left.rows > 0 && right.rows > 0);
+  check("the split button reopens both panes before the resizes", left.rows > 0 && right.rows > 0);
   await ev(`document.querySelector('.wt-split-handle').focus(); 'ok'`);
   for (let i = 0; i < 5; i++) await key("ArrowLeft", { vk: VK.ArrowLeft, holdDown: true, repeat: i > 0 });
   await keyUp("ArrowLeft", { vk: VK.ArrowLeft });
   await sleep(400);
   await ev(`document.querySelector('.wt-split-pane.wt-pane-selected .term-input').focus(); 'ok'`);
+  const putsBeforeResize = await quietPuts();
   const committed = await layout();
   const committedLeft = await leftWidth();
-  const putsBeforeResize = puts;
   const ratioOf = (x) => Number(x.ratio);
   await setSize(800, HEIGHT);
   await sleep(STEP_MS);
@@ -516,17 +547,34 @@ let targetId = null;
   check("both panes are still shown after the collapse", (await pane("left")).rows > 0 && (await pane("right")).rows > 0);
 
   console.log("=== 11. the record survives a reload ===");
+  // A background tab's title waits for the UI's status sweep, so the row is read
+  // only once two reads a second apart agree.
+  const settledLabels = async () => {
+    let last = JSON.stringify((await shell()).chips.map((c) => c.label));
+    for (let i = 0; i < 20; i++) {
+      await sleep(1000);
+      const now = JSON.stringify((await shell()).chips.map((c) => c.label));
+      if (now === last) return JSON.parse(now);
+      last = now;
+    }
+    throw new Error("the tab labels never settled");
+  };
+  const sessionCount = async () => (await ev(`fetch('/api/sessions').then(r => r.json())`, true)).length;
   const before = await layout();
-  const beforeChips = (await shell()).chips.map((c) => c.label);
+  const beforeLabels = await settledLabels();
+  const beforeShown = (await shell()).chips.map((c) => c.active);
   await rpc(ws, ++id, "Page.reload", {});
   await sleep(SETTLE_MS);
   const after = await layout();
+  const afterLabels = await settledLabels();
+  const sessions = await sessionCount();
   s = await shell();
   left = await pane("left");
   right = await pane("right");
-  console.log(JSON.stringify({ before, after, ratio: s.ratio, chips: s.chips.map((c) => c.label), leftRows: left.rows, rightRows: right.rows }));
+  console.log(JSON.stringify({ before, after, ratio: s.ratio, beforeLabels, afterLabels, beforeShown, afterShown: s.chips.map((c) => c.active), sessions, leftRows: left.rows, rightRows: right.rows }));
   check("after a reload the same sessions sit in the same panes with the same handle", s.open && after.left === before.left && after.right === before.right && after.handle === before.handle && after.selected === before.selected && left.rows > 0 && right.rows > 0);
-  check("the tab row lists the same tabs after the reload", JSON.stringify(s.chips.map((c) => c.label)) === JSON.stringify(beforeChips));
+  check("the tab labels are distinct, so the row order is observable", new Set(beforeLabels).size === beforeLabels.length && beforeLabels.length === sessions);
+  check("the tab row lists the same tabs in the same order after the reload, the same chips shown", JSON.stringify(afterLabels) === JSON.stringify(beforeLabels) && s.chips.length === sessions && JSON.stringify(s.chips.map((c) => c.active)) === JSON.stringify(beforeShown));
   check("the handle position is restored into the ratio variable", Math.abs(Number(s.ratio) - before.handle) < 0.001);
 
   console.log("=== 12. closing the split releases exactly one socket, cleanly ===");
