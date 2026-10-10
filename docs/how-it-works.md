@@ -8,6 +8,8 @@ The server starts one command per tab in a real pseudo-terminal, the same kind a
 
 Tabs live on the server. Closing the page does not stop what runs in them, and reopening it attaches to the same terminals from any device. Tab names and the split-view layout are stored on the server with the tabs, so a reload or another device shows the same arrangement. The terminals are processes inside the container, so stopping or restarting the container ends them.
 
+Each tab has its own page address: the server gives every terminal a random 8-character name, and the page puts the shown tab's name after a `#`. Bookmark it, paste it into another browser tab, or use the back and forward buttons to return to tabs you looked at. With the split view open, the address holds both tabs separated by a comma, and editing it shows any two open tabs side by side without reloading. The names are not passwords and give no access by themselves. A restart gives every new terminal a new name, so an address saved before it no longer matches a tab. Opening one shows the current tab with the notice "That tab is no longer open". The browser tab's title starts with the title of the tab you are looking at, followed by the app's name: `bash · Web Terminal`.
+
 ## Why the container needs an init
 
 Whatever `SESSION_CMD` runs can start a child process that outlives its own parent, and the kernel then hands that orphan to PID 1. This server waits only for the processes it started itself. Without an init it is PID 1, and every orphan stays behind as a zombie process for the life of the container. Docker's `--init`, or `init: true` in compose, puts a small init at PID 1 that collects them. The server logs a warning at startup when it finds itself running as PID 1, and keeps serving.
@@ -54,7 +56,7 @@ The image's `HEALTHCHECK` calls `/healthz` on `127.0.0.1` every 30 seconds, afte
 
 ## Routes
 
-- `/` serves the web page.
+- `/` serves the web page. A tab's own address only adds a `#` fragment, which the browser never sends, so it needs no route of its own and passes the same login.
 - `/ws?session=<id>` is the terminal connection, one WebSocket per terminal.
 - `/api/sessions` creates, lists and closes terminals. Creating one is rate-limited.
 - `/api/sessions/{id}/pinned-title` names a terminal. `PUT` sets the name and `DELETE` returns to the automatic one.

@@ -166,14 +166,16 @@ for f in "$ENGINE_DIR/web/package.json" "$UI_DIR/package.json" "$UI_DIR/css/MANI
   }
 done
 
+# The published packages exclude tests, vitest setup files and test helpers by
+# these name classes; a source tree carries all three.
 mapfile -t engine_sources < <(find "$ENGINE_DIR/web/src" -maxdepth 1 -type f -name '*.ts' \
-  ! -name '*.test.ts' ! -name 'fc-strict-setup.ts')
+  ! -name '*.test.ts' ! -name '*-setup.ts')
 [ "${#engine_sources[@]}" -gt 0 ] || {
   echo "error: engine-src-empty: no .ts files under $ENGINE_DIR/web/src" >&2
   exit 1
 }
 mapfile -t ui_sources < <(cd "$UI_DIR/src" && find . -type f -name '*.ts' \
-  ! -name '*.test.ts' ! -name 'fc-strict-setup.ts')
+  ! -name '*.test.ts' ! -name '*-setup.ts' ! -path '*/test-helpers/*')
 [ "${#ui_sources[@]}" -gt 0 ] || {
   echo "error: ui-src-empty: no .ts files under $UI_DIR/src" >&2
   exit 1
