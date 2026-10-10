@@ -69,9 +69,9 @@ COPY . ./
 # downloaded to a file (a pipe cannot be hashed before it is consumed) and
 # digest-verified before extraction.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.2.0-dev.5
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.2.0
 # repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=88c3d70764767eb81e3ee3ae7b7ee017b04916c1c6da562a63095ab647b49b4f
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=18d0ca02fc219a8dca3385d4cccb1b303dbdd2c93b9ea0479de61073e73088b1
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
 ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.4.0-dev.3
 # repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
