@@ -69,13 +69,13 @@ COPY . ./
 # downloaded to a file (a pipe cannot be hashed before it is consumed) and
 # digest-verified before extraction.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.1.0
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.2.0
 # repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=346c8255833bb6b02a96538d508ba342dfb1c7f55671c1f634bb238dcf291925
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=18d0ca02fc219a8dca3385d4cccb1b303dbdd2c93b9ea0479de61073e73088b1
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
-ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.3.4
+ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.5.0
 # repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=2660baa114f7a3c052c146608941f3d448e968803522451fdfb6cf8858d8db09
+ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=f0f3d588f1eb73406b0413d1a8f3f83728021665e25a00fe318209b5845f6ebb
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
       -o /tmp/engine.tgz "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" && \
@@ -103,8 +103,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # tsc is a compiler, not a bundler: it preserves the UI's bare
 # `@cplieger/web-terminal-engine` import and its relative `./*.js` imports, which the
 # served importmap and vendored dirs resolve at runtime. The committed static/index.html
-# supplies the scaffold + importmap + the inline mount() call, so no app entry needs
-# compiling.
+# and static/app.js supply the scaffold, the importmap and the createTerminal call, so no
+# app entry needs compiling.
 #
 # All three steps live in scripts/ so this build and scripts/dev-build.sh cannot drift,
 # and so each refuses the failure a shell one-liner swallowed: an empty source list that

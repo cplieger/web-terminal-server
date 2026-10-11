@@ -32,9 +32,8 @@ import (
 	"github.com/cplieger/webhttp/v3"
 )
 
-// staticFS holds the bundled front end. A fresh checkout commits only
-// static/index.html; the dev-build script and the Dockerfile generate the
-// compiled assets before `go build`.
+// staticFS holds the bundled front end; the dev-build script and the Dockerfile
+// generate its compiled assets before `go build`.
 //
 //go:embed static
 var staticFS embed.FS
@@ -354,7 +353,7 @@ func run() error {
 		// The remedy rides inside the error since main renders exactly one
 		// line. This stage is a BUILD defect, not a runtime setting.
 		return atStage(stageStatic, fmt.Errorf("static assets unavailable: %w"+
-			" (a build defect, not a setting: the embedded static/index.html must carry at least one inline <script>,"+
+			" (a build defect, not a setting: the embedded static/index.html must carry exactly one inline <script> (the importmap),"+
 			" exactly one inline <style>, and exactly one wt-persist-scrollback meta marker."+
 			" Rebuild the image, or run scripts/dev-build.sh for a local tree."+
 			" The container will crash-loop under its restart policy until it is rebuilt)", err))
@@ -441,9 +440,8 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 	if err != nil {
 		return nil, err
 	}
-	// Apply PERSIST_SCROLLBACK before either consumer below sees the tree,
-	// so the static handler's ETag/gzip and the CSP's script hash are
-	// computed over the bytes the browser receives.
+	// Apply PERSIST_SCROLLBACK before the static handler sees the tree, so its
+	// ETag and gzip body are computed over the bytes the browser receives.
 	sub, err = applyPersistFlag(sub, cfg.persistScrollback)
 	if err != nil {
 		return nil, fmt.Errorf("apply PERSIST_SCROLLBACK: %w", err)
@@ -454,8 +452,8 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 	}
 	mux.Handle("/", staticSrv)
 
-	// Built once from the embedded index.html so script-src's sha256 tokens
-	// always match. Fails loud rather than silently dropping the hardening.
+	// Built once from the served index.html so the importmap and style hash
+	// tokens always match. Fails loud rather than silently dropping the hardening.
 	cspPolicy, err := buildCSPPolicy(sub)
 	if err != nil {
 		return nil, fmt.Errorf("build CSP: %w", err)
@@ -765,11 +763,11 @@ func pathUnderAny(clean string, prefixes []string) bool {
 	return false
 }
 
-// cspTemplate is the Content-Security-Policy applied to every response, with
-// two %s placeholders for the script-src and style-src hash tokens, computed
-// once from the embedded index.html. style-src is hash-pinned rather than
-// 'unsafe-inline' since the renderer styles via CSSOM property setters,
-// which style-src doesn't govern.
+// cspTemplate is the Content-Security-Policy for every response; its two %s
+// take the script-src and style-src hash tokens of the served index.html.
+// script-src pins the importmap, which cannot be external (HTML "prepare the
+// script element", WICG/import-maps#235). style-src needs no 'unsafe-inline':
+// the renderer styles through CSSOM setters, which style-src does not govern.
 const cspTemplate = "default-src 'self'; " +
 	"script-src 'self' %s; " +
 	"style-src 'self' %s; " +
@@ -777,19 +775,20 @@ const cspTemplate = "default-src 'self'; " +
 	"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; " +
 	"form-action 'none'"
 
-// buildCSPPolicy reads index.html from sub, hashes every inline <script> and
-// its single inline <style> block, and assembles the CSP string. Called once
-// at construction; fails loud rather than degrading to 'unsafe-inline' when
-// index.html is missing a script or carries other than exactly one style
-// block — a valid build embeds two scripts and one style.
+// buildCSPPolicy assembles the CSP from index.html's one inline <script> (the
+// importmap) and one inline <style>. It fails loud, rather than degrading to
+// 'unsafe-inline' or admitting a second inline script, when either count is not one.
 func buildCSPPolicy(sub fs.FS) (string, error) {
 	html, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
 		return "", fmt.Errorf("buildCSPPolicy: read index.html: %w", err)
 	}
-	hashes := webhttp.InlineScriptHashes(html)
-	if len(hashes) == 0 {
-		return "", errors.New("buildCSPPolicy: no inline <script> blocks in index.html")
+	scriptHashes := webhttp.InlineScriptHashes(html)
+	if len(scriptHashes) != 1 {
+		return "", fmt.Errorf(
+			"buildCSPPolicy: want exactly one inline <script> block (the importmap) in index.html, found %d",
+			len(scriptHashes),
+		)
 	}
 	styleHashes := webhttp.InlineStyleHashes(html)
 	if len(styleHashes) != 1 {
@@ -798,5 +797,5 @@ func buildCSPPolicy(sub fs.FS) (string, error) {
 			len(styleHashes),
 		)
 	}
-	return fmt.Sprintf(cspTemplate, strings.Join(hashes, " "), styleHashes[0]), nil
+	return fmt.Sprintf(cspTemplate, scriptHashes[0], styleHashes[0]), nil
 }

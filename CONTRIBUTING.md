@@ -8,7 +8,7 @@ Changes to how the terminal draws, takes input or keeps scrollback belong in [we
 
 ## Checks
 
-`bash scripts/run-cdp.sh` checks the page in a headless Chromium against a real terminal, which the Go tests cannot reach. CI does not run it. Run it after a change to `static/index.html`, the security headers, or the engine or UI version.
+`bash scripts/run-cdp.sh` checks the page in a headless Chromium against a real terminal, which the Go tests cannot reach. CI does not run it. Run it after a change to `static/index.html`, `static/app.js`, the security headers, or the engine or UI version.
 
 The suite needs Node 22 or later and a Chromium on `PATH` or in the Playwright cache. It reuses an existing `./web-terminal-server-bin`, so run `bash scripts/dev-build.sh` again after each change.
 
