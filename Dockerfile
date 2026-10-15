@@ -73,9 +73,9 @@ ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.4.0-dev.3
 # repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
 ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=20e10a7a1f5de5d2b3ae917a540585d1661613cf8e9d08c2023d16567ab6c019
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
-ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.6.0-dev.4
+ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.6.0-dev.5
 # repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=04d6fb560d5d7bc24d796321f9948943b12f3aad04a760ebebd59ed500c96147
+ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=ba931043cf3703aab2d39492d4318024ba0b020b63c5a75df2de6db073e83cd2
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
       -o /tmp/engine.tgz "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" && \
