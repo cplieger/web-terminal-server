@@ -60,6 +60,7 @@ The image's `HEALTHCHECK` calls `/healthz` on `127.0.0.1` every 30 seconds, afte
 - `/ws?session=<id>` is the terminal connection, one WebSocket per terminal.
 - `/api/sessions` creates, lists and closes terminals. Creating one is rate-limited.
 - `/api/sessions/{id}/pinned-title` names a terminal. `PUT` sets the name and `DELETE` returns to the automatic one.
+- `/api/sessions/{id}/seen` marks a terminal's status as read for every open page.
 - `/api/sessions/events` streams terminal status to the page.
 - `/healthz` reports readiness.
 
