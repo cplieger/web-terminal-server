@@ -1243,6 +1243,16 @@ func TestCreateRateLimit(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/sessions", nil))
 		return rec.Code
 	}
+	// Seen acks from every open page draw no create token: more of them than the
+	// burst all reach the REST handler, and the whole create burst is still left.
+	for i := range sessionCreateBurst + 1 {
+		restHit.Store(false)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/sessions/x/seen", strings.NewReader(`{"seq":1}`)))
+		if rec.Code == http.StatusTooManyRequests || !restHit.Load() {
+			t.Fatalf("seen ack %d = %d (reached REST: %v), want it passed to the REST handler", i+1, rec.Code, restHit.Load())
+		}
+	}
 	// The preset burst of creates is allowed; the next is throttled 429.
 	allowed := 0
 	for range sessionCreateBurst {
@@ -1262,6 +1272,44 @@ func TestCreateRateLimit(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions", nil))
 	if !restHit.Load() {
 		t.Error("GET /api/sessions was blocked by the create rate limiter")
+	}
+}
+
+// TestSessionSeenRoute pins that the engine's seen route is reachable through
+// the app's own chain, so a read on one device clears the unread dot on others.
+func TestSessionSeenRoute(t *testing.T) {
+	factory := func(terminal.SessionID) *terminal.Handler {
+		return terminal.NewHandler([]string{"/bin/cat"}, terminal.WithLogger(nil))
+	}
+	mgr := terminal.NewSessionManager(factory, terminal.WithManagerLogger(nil))
+	t.Cleanup(func() { shutdownManager(t, mgr) })
+	id, err := mgr.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var ready webhttp.Ready
+	ready.Set(true)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: mgr.RESTHandler(), Events: stubHandler{}}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		id   string
+		body string
+		want int
+	}{
+		{"a live session", string(id), `{"seq":0}`, http.StatusNoContent},
+		{"an unknown session", "deadbeef", `{"seq":0}`, http.StatusNotFound},
+		{"a body without seq", string(id), `{}`, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/sessions/"+tc.id+"/seen", strings.NewReader(tc.body)))
+			if rec.Code != tc.want {
+				t.Errorf("PUT seen %s = %d, want %d; body %q", tc.body, rec.Code, tc.want, rec.Body.String())
+			}
+		})
 	}
 }
 
