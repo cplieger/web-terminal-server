@@ -12,7 +12,7 @@ require (
 require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/cplieger/pathinside/v2 v2.0.3 // indirect
-	github.com/cplieger/runesafe/v3 v3.0.0 // indirect
+	github.com/cplieger/runesafe/v3 v3.1.0-dev.1 // indirect
 	github.com/creack/pty v1.1.24 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )
