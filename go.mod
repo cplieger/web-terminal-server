@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/cplieger/envx/v2 v2.0.7
 	github.com/cplieger/slogx v1.7.0
-	github.com/cplieger/web-terminal-engine/v6 v6.4.0-dev.7
+	github.com/cplieger/web-terminal-engine/v6 v6.4.0-dev.8
 	github.com/cplieger/webhttp/v3 v3.0.2
 )
 
