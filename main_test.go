@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,53 +27,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/cplieger/slogx/capture"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
 	"github.com/cplieger/webhttp/v3"
 )
-
-// saveLogGlobals captures the three globals slog.SetDefault mutates and restores
-// them when the test ends; call it before the swap.
-//
-// SetDefault also aims the log package at the installed handler and skips that
-// redirect for slog's own default handler, so reinstalling the previous logger
-// cannot undo it; slog's default handler emits through log.Output, so a dead log
-// writer silences the package. slog restores first because a non-default previous
-// handler re-runs the redirect.
-func saveLogGlobals(t *testing.T) {
-	t.Helper()
-	prevLogger, prevWriter, prevFlags := slog.Default(), log.Writer(), log.Flags()
-	t.Cleanup(func() {
-		slog.SetDefault(prevLogger)
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-	})
-}
-
-// TestSaveLogGlobalsRestoresTheLogPackageToo red-checks the two restores saveLogGlobals owns
-// beyond slog's own; drop either and this test fails.
-func TestSaveLogGlobalsRestoresTheLogPackageToo(t *testing.T) {
-	prevWriter, prevFlags := log.Writer(), log.Flags()
-	t.Cleanup(func() {
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-	})
-	// Neither the process default nor what SetDefault installs (a slog
-	// handlerWriter and 0), so neither assertion can pass by coincidence.
-	log.SetOutput(io.Discard)
-	log.SetFlags(log.Lshortfile)
-
-	t.Run("swap", func(t *testing.T) {
-		saveLogGlobals(t)
-		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	})
-
-	if got := log.Writer(); got != io.Discard {
-		t.Errorf("log.Writer() = %T, want the writer set before the swap: slog.SetDefault aimed log at its own handler and restoring slog alone leaves it there", got)
-	}
-	if got := log.Flags(); got != log.Lshortfile {
-		t.Errorf("log.Flags() = %d, want %d: slog.SetDefault zeroes them and restoring slog alone leaves them at zero", got, log.Lshortfile)
-	}
-}
 
 // shutdownManager tears the manager down at the end of a test and fails it
 // when the teardown does not finish. It builds its own context rather than
@@ -336,8 +292,7 @@ func TestWarnIfExposed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			saveLogGlobals(t)
-			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 			warnIfExposed(tc.addr, tc.pass)
 
@@ -874,8 +829,7 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 
 	t.Run("malformed entries are warned and skipped, valid subset kept", func(t *testing.T) {
 		var buf bytes.Buffer
-		saveLogGlobals(t)
-		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 		setServerEnv(t, map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, not-an-ip, 999.999.999.999"})
 		cfg, err := loadConfig()
@@ -964,8 +918,7 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 
 	t.Run("malformed entries are warned and dropped, valid subset kept", func(t *testing.T) {
 		var buf bytes.Buffer
-		saveLogGlobals(t)
-		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 		setServerEnv(t, map[string]string{"ALLOWED_HOSTS": "http://term.example.com, localhost"})
 		cfg, err := loadConfig()
@@ -988,8 +941,7 @@ func TestLoadConfigAllowedHosts(t *testing.T) {
 
 	t.Run("all-invalid list fails closed (active empty, deny-all warned)", func(t *testing.T) {
 		var buf bytes.Buffer
-		saveLogGlobals(t)
-		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 		setServerEnv(t, map[string]string{"ALLOWED_HOSTS": ":7681"})
 		cfg, err := loadConfig()
@@ -1508,8 +1460,7 @@ func TestStaticHandlerGzipNegotiation(t *testing.T) {
 // from the route table the mux actually matched.
 func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	var buf bytes.Buffer
-	saveLogGlobals(t)
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, nil)))
 
 	var ready webhttp.Ready
 	ready.Set(true)
@@ -1586,8 +1537,7 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 // default logger.
 func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 	var buf bytes.Buffer
-	saveLogGlobals(t)
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, nil)))
 
 	var ready webhttp.Ready // zero value: not ready -> /healthz answers 503
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{}, Events: stubHandler{}}, &ready)
@@ -1618,8 +1568,7 @@ func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 // second, which is the regression this pins.
 func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
 	var buf bytes.Buffer
-	saveLogGlobals(t)
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, nil)))
 
 	// serveWS drives GET /ws through the real chain with a stub that answers
 	// status, and returns whatever the access logger emitted.
@@ -1657,8 +1606,7 @@ func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
 // manager through it. Serial: swaps the process-global default logger.
 func TestSessionLoggerTruncatesSessionID(t *testing.T) {
 	var buf bytes.Buffer
-	saveLogGlobals(t)
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, nil)))
 
 	scrollbackLines := 100
 	cfg := config{command: []string{"/bin/cat"}, scrollback: &scrollbackLines}
@@ -2086,9 +2034,9 @@ func TestStageValuesAreStable(t *testing.T) {
 // without binding a port or breaking the embedded static tree.
 //
 // Not parallel: t.Setenv forbids it, and run installs the process-global slog
-// handler, which is restored below so the rest of the package keeps its own.
+// handler, which the swap restores so the rest of the package keeps its own.
 func TestRunReturnsAnAttributedConfigFailureInsteadOfExiting(t *testing.T) {
-	saveLogGlobals(t)
+	capture.SwapDefault(t, slog.Default())
 
 	file := filepath.Join(t.TempDir(), "notadir")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
@@ -2274,8 +2222,7 @@ func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
-			saveLogGlobals(t)
-			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 			var reached atomic.Bool
 			mw := wsAttachLog(nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -2312,8 +2259,7 @@ func TestWSAttachLogRecordsEveryUpgradeAttempt(t *testing.T) {
 // process-global slog handler.
 func TestWSAttachLogIsWiredIntoTheChain(t *testing.T) {
 	var buf bytes.Buffer
-	saveLogGlobals(t)
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	var ready webhttp.Ready
 	ready.Set(true)
@@ -2482,7 +2428,7 @@ func TestSetupLoggingInstallsTheLevelAndWarnsByNameOnly(t *testing.T) {
 		"ordinary garbage": {value: "verbose", wantLevel: slog.LevelInfo, wantWarn: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			saveLogGlobals(t)
+			capture.SwapDefault(t, slog.Default())
 			t.Setenv("LOG_LEVEL", tc.value)
 
 			// setupLogging installs its own handler over slogx, so capture by swapping the
@@ -2699,8 +2645,7 @@ func TestWarnIfPID1StaysSilentUnderAnInit(t *testing.T) {
 		t.Skip("the test binary IS pid 1 here, so the silent case is unreachable")
 	}
 	var buf bytes.Buffer
-	saveLogGlobals(t)
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	warnIfPID1()
 
