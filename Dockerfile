@@ -1,7 +1,7 @@
 # check=error=true
 
 # --- Builder: Go server + browser bundle (engine + UI compiled with tsc) ---
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS builder
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV GOTOOLCHAIN=auto
@@ -15,11 +15,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # The digests come from go.dev's own release index, so Renovate's custom datasources
 # rewrite the version and both shas as one group.
 # renovate: datasource=golang-version depName=golang
-ARG GO_VERSION=1.27.2
+ARG GO_VERSION=1.27.3
 # renovate: datasource=custom.golang-amd64 depName=golang-amd64
-ARG GO_SHA256_AMD64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5  # go1.27.2
+ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  # go1.27.3
 # renovate: datasource=custom.golang-arm64 depName=golang-arm64
-ARG GO_SHA256_ARM64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8  # go1.27.2
+ARG GO_SHA256_ARM64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49  # go1.27.3
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
       amd64) GO_SHA256="$GO_SHA256_AMD64" ;; \
@@ -301,7 +301,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
     sh scripts/collect-licenses.sh --name web-terminal-server .
 
 # --- Runtime: minimal Debian with a shell for the default SESSION_CMD ---
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
