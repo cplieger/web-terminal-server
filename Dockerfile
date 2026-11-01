@@ -69,13 +69,13 @@ COPY . ./
 # downloaded to a file (a pipe cannot be hashed before it is consumed) and
 # digest-verified before extraction.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.2.0
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.4.0
 # repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=18d0ca02fc219a8dca3385d4cccb1b303dbdd2c93b9ea0479de61073e73088b1
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=549ef58cd29acfe05cc1c4aad6b16436ed75719fc217039ae4db4a10d457fe28
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
-ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.5.0
+ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.6.0
 # repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=f0f3d588f1eb73406b0413d1a8f3f83728021665e25a00fe318209b5845f6ebb
+ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=dcc4eebe1ad1edf08d0473f9fcd40b537221a687fcf4b90562241317c0d282a2
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
       -o /tmp/engine.tgz "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" && \
