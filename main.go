@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path"
@@ -29,7 +30,7 @@ import (
 	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/slogx"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
-	"github.com/cplieger/webhttp/v3"
+	"github.com/cplieger/webhttp/v4"
 )
 
 // staticFS holds the bundled front end; the dev-build script and the Dockerfile
@@ -107,12 +108,12 @@ func applyBoolEnv(key envx.Key, dst *bool) error {
 // Lenient: a malformed entry is skipped rather than disabling proxy
 // awareness entirely. Never fails open — unset yields nil, so ClientIP
 // ignores X-Forwarded-For and logs the unspoofable socket peer.
-func parseTrustedProxies(key string) []*net.IPNet {
+func parseTrustedProxies(key string) []netip.Prefix {
 	v := os.Getenv(key)
 	if v == "" {
 		return nil
 	}
-	nets, invalid := webhttp.ParseCIDRs(strings.Split(v, ","))
+	prefixes, invalid := webhttp.ParseCIDRs(strings.Split(v, ","))
 	if len(invalid) > 0 {
 		// Count-only: a compose interpolation mistake could put a credential
 		// on this variable, so the rejected entries never reach the log.
@@ -120,7 +121,7 @@ func parseTrustedProxies(key string) []*net.IPNet {
 			"invalid_count", len(invalid),
 			"hint", "each entry must be a CIDR (e.g. 10.0.0.0/8) or a bare IP (e.g. 192.168.1.5)")
 	}
-	return nets
+	return prefixes
 }
 
 // parseAllowedHosts reads the comma-separated ALLOWED_HOSTS list into a
@@ -160,7 +161,7 @@ type config struct {
 	username       string
 	password       string
 	command        []string
-	trustedProxies []*net.IPNet
+	trustedProxies []netip.Prefix
 	idleReaper     time.Duration
 	// persistScrollback lets the browser keep recent scrollback in
 	// localStorage so a reloaded/discarded tab resumes with a delta. ON by
@@ -489,6 +490,10 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 			webhttp.WithSkipUpgrades(true),
 		),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
+		// The default JSON-only type list keeps the SSE stream (text/event-stream)
+		// unbuffered and identity; a /ws 101 is never a compression candidate and
+		// its hijack passes through; StaticHandler's assets arrive already gzipped.
+		webhttp.Gzip(),
 		// Outside the host gate so a rejected Host still leaves a record; see
 		// wsAttachLog.
 		wsAttachLog(cfg.trustedProxies),
@@ -571,7 +576,7 @@ const wsAttachMsg = "terminal attach attempt"
 // so without this, presenting the session capability token leaves no record
 // at all (CWE-778). Logged at request start so a rejected Host or an
 // unknown-session close is recorded too.
-func wsAttachLog(trustedProxies []*net.IPNet) webhttp.Middleware {
+func wsAttachLog(trustedProxies []netip.Prefix) webhttp.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == terminal.WSPath && isWebSocketUpgrade(r) {
