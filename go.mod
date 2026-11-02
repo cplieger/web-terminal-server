@@ -6,7 +6,7 @@ require (
 	github.com/cplieger/envx/v2 v2.1.0
 	github.com/cplieger/slogx v1.8.0
 	github.com/cplieger/web-terminal-engine/v6 v6.4.0
-	github.com/cplieger/webhttp/v4 v4.0.0
+	github.com/cplieger/webhttp/v4 v4.1.0
 )
 
 require (
