@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,7 +30,7 @@ import (
 
 	"github.com/cplieger/slogx/capture"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
-	"github.com/cplieger/webhttp/v3"
+	"github.com/cplieger/webhttp/v4"
 )
 
 // shutdownManager tears the manager down at the end of a test and fails it
@@ -649,8 +650,8 @@ func (f *fakeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 // TestWebSocketHijackReachesThroughChain drives GET /ws through the fully
-// assembled newHandler middleware chain (webhttp.Logging -> Recoverer ->
-// SecurityHeaders -> CrossOriginProtection -> mux) with an underlying
+// assembled newHandler middleware chain (webhttp.Logging -> Recoverer -> Gzip ->
+// ... -> mux) with an underlying
 // ResponseWriter that implements http.Hijacker, and asserts the hijack is
 // actually reached via http.ResponseController. webhttp.Logging wraps the writer
 // in a StatusRecorder, so this pins that the recorder stays transparent to the
@@ -669,7 +670,9 @@ func TestWebSocketHijackReachesThroughChain(t *testing.T) {
 	}
 
 	fh := &fakeHijacker{ResponseWriter: httptest.NewRecorder()}
-	h.ServeHTTP(fh, httptest.NewRequest(http.MethodGet, "/ws", nil))
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	h.ServeHTTP(fh, req)
 
 	if !reached {
 		t.Fatal("handler never ran")
@@ -760,11 +763,11 @@ func TestLoadConfigIdleReaper(t *testing.T) {
 	})
 }
 
-// trustedContains reports whether ip is inside any of the parsed trusted nets.
-func trustedContains(nets []*net.IPNet, ip string) bool {
-	parsed := net.ParseIP(ip)
-	for _, n := range nets {
-		if n.Contains(parsed) {
+// trustedContains reports whether ip is inside any of the parsed trusted prefixes.
+func trustedContains(prefixes []netip.Prefix, ip string) bool {
+	parsed := netip.MustParseAddr(ip)
+	for _, p := range prefixes {
+		if p.Contains(parsed) {
 			return true
 		}
 	}
@@ -775,8 +778,8 @@ func trustedContains(nets []*net.IPNet, ip string) bool {
 // webhttp.ParseCIDRs helper and its threading onto cfg.trustedProxies (consumed
 // by webhttp.WithClientIP in newHandler). Three contracts: unset yields nil (so
 // ClientIP ignores X-Forwarded-For and logs the spoof-proof socket peer), a
-// valid CIDR + bare-IP mix is parsed into containment-correct nets, and a
-// malformed entry is warned (named) and skipped while the valid subset is kept —
+// valid CIDR + bare-IP mix is parsed into containment-correct prefixes, and a
+// malformed entry is warned (by count only) and skipped while the valid subset is kept —
 // startup is never aborted. These cases mutate the process-global default logger
 // and env, so they run serially (no t.Parallel).
 func TestLoadConfigTrustedProxies(t *testing.T) {
@@ -811,7 +814,7 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 		if len(cfg.trustedProxies) != 3 {
 			t.Fatalf("trustedProxies len = %d, want 3 (%v)", len(cfg.trustedProxies), cfg.trustedProxies)
 		}
-		// The CIDR contains its range; the bare IP became a single-host net.
+		// The CIDR contains its range; the bare IP became a single-host prefix.
 		for _, c := range []struct {
 			ip   string
 			want bool
@@ -841,7 +844,7 @@ func TestLoadConfigTrustedProxies(t *testing.T) {
 			t.Fatalf("trustedProxies len = %d, want 1 (only the valid CIDR kept)", len(cfg.trustedProxies))
 		}
 		if !trustedContains(cfg.trustedProxies, "10.1.2.3") {
-			t.Error("kept net does not contain 10.1.2.3; want the 10.0.0.0/8 entry retained")
+			t.Error("kept prefix does not contain 10.1.2.3; want the 10.0.0.0/8 entry retained")
 		}
 		// A Warn line reporting the malformed COUNT was emitted, and it carries none of
 		// the rejected entries: a mis-expanded variable could put a credential in one, so
@@ -1106,6 +1109,73 @@ func TestRouteSessionsReachesREST(t *testing.T) {
 	}
 }
 
+// TestSessionJSONIsGzipped pins the compression layer of newHandler: a session
+// JSON body past the 1 KiB threshold is gzipped for a client offering gzip
+// (RFC 9110 section 8.4.1.3) and sent as identity to one that does not, both
+// with Vary: Accept-Encoding (section 12.5.5) so a cache keeps them apart.
+func TestSessionJSONIsGzipped(t *testing.T) {
+	type listing struct {
+		Titles []string `json:"titles"`
+	}
+	payload := listing{Titles: strings.Fields(strings.Repeat("session-title ", 200))}
+	want, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if len(want) < 1024 {
+		t.Fatalf("fixture body is %d bytes, want at least 1024 to cross the gzip threshold", len(want))
+	}
+	rest := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		webhttp.WriteJSON(w, payload)
+	})
+	var ready webhttp.Ready
+	ready.Set(true)
+	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: rest, Events: stubHandler{}}, &ready)
+	if err != nil {
+		t.Fatalf("newHandler() error: %v", err)
+	}
+
+	t.Run("gzip-offering client gets a gzip body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions", http.NoBody)
+		req.Header.Set("Accept-Encoding", "gzip")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if ce := rec.Header().Get("Content-Encoding"); ce != "gzip" {
+			t.Fatalf("Content-Encoding = %q, want gzip for a %d-byte JSON body", ce, len(want))
+		}
+		if v := rec.Header().Get("Vary"); !strings.Contains(v, "Accept-Encoding") {
+			t.Errorf("Vary = %q, want it to name Accept-Encoding", v)
+		}
+		zr, err := gzip.NewReader(rec.Body)
+		if err != nil {
+			t.Fatalf("gzip.NewReader: %v", err)
+		}
+		got, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("read gzip body: %v", err)
+		}
+		if strings.TrimSpace(string(got)) != string(want) {
+			t.Errorf("decompressed body = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("client without Accept-Encoding gets identity", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions", http.NoBody))
+
+		if ce := rec.Header().Get("Content-Encoding"); ce != "" {
+			t.Errorf("Content-Encoding = %q, want none for a client that offers no coding", ce)
+		}
+		if v := rec.Header().Get("Vary"); !strings.Contains(v, "Accept-Encoding") {
+			t.Errorf("Vary = %q, want it to name Accept-Encoding on the identity response too", v)
+		}
+		if got := strings.TrimSpace(rec.Body.String()); got != string(want) {
+			t.Errorf("body = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestRouteEventsReachesSSE(t *testing.T) {
 	var ready webhttp.Ready
 	var wsHit, restHit, eventsHit atomic.Bool
@@ -1128,11 +1198,12 @@ func TestRouteEventsReachesSSE(t *testing.T) {
 
 // TestEventsRouteStreamsThroughMiddleware is the server-side regression guard
 // for the SSE status stream. It drives the REAL engine EventsHandler through the
-// full newHandler middleware chain (webhttp.Logging -> Recoverer -> security
-// headers -> cross-origin -> mux) over a real socket, and asserts the stream
-// opens and flushes an event. webhttp.Logging wraps the ResponseWriter in a
-// StatusRecorder (the /api/sessions/events path is not skipped), so this pins
-// that the SSE stream still flushes through the logging wrapper.
+// full newHandler middleware chain (webhttp.Logging -> Recoverer -> Gzip ->
+// ... -> mux) over a real socket, and asserts the
+// stream opens and flushes an event. webhttp.Logging wraps the ResponseWriter in
+// a StatusRecorder (the /api/sessions/events path is not skipped), and the
+// client offers gzip, so this pins that the SSE stream still flushes, as
+// identity, through both wrappers.
 func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	factory := func(terminal.SessionID) *terminal.Handler {
 		return terminal.NewHandler([]string{"/bin/cat"}, terminal.WithLogger(nil))
@@ -1156,6 +1227,8 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/sessions/events", nil)
+	// Set explicitly so the transport neither decompresses nor strips Content-Encoding.
+	req.Header.Set("Accept-Encoding", "gzip")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /api/sessions/events: %v", err)
@@ -1166,6 +1239,9 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+		t.Fatalf("Content-Encoding = %q, want none: a compressed event stream is buffered", ce)
 	}
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
