@@ -64,7 +64,7 @@ const INSTRUMENT = `(() => {
   function Wrapped(url, protocols) {
     const s = protocols === undefined ? new Real(url) : new Real(url, protocols);
     ctl.socks.push(s);
-    if (ctl.block) { try { s.close(); } catch (e) {} }
+    if (ctl.block) { try { s.close(); } catch {} }
     return s;
   }
   Wrapped.prototype = Real.prototype;

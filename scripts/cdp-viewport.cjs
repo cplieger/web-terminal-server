@@ -54,7 +54,7 @@ const INSTRUMENT = `(() => {
         else if (ArrayBuffer.isView(data)) b = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
         if (b && b.length > 1 && b[0] === 0x00) window.__ctl.push({ t: Date.now(), s: dec.decode(b.subarray(1)) });
       }
-    } catch (e) {}
+    } catch {}
     return RealSend.apply(this, arguments);
   };
 })()`;
@@ -131,7 +131,7 @@ const DUMP_CTL = `(() => JSON.stringify({ t0: window.__t0 || 0, ctl: window.__ct
     try {
       const j = JSON.parse(f.s);
       if (j.type === "resize") resizes.push({ t: f.t, rows: j.rows, cols: j.cols });
-    } catch (e) {}
+    } catch {}
   }
   const beforeResize = [...resizes].reverse().find((r) => r.t < dump.t0);
   const afterResizes = resizes.filter((r) => r.t >= dump.t0);
