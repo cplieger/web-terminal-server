@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/cplieger/webhttp/v4"
+	"github.com/cplieger/go/httpserver"
 )
 
 // PERSIST_SCROLLBACK reaches the page by a startup byte swap rather than a
@@ -186,7 +186,7 @@ func TestPersistFlagReachesTheServedPage(t *testing.T) {
 		{name: "on", enabled: true, want: persistFlagOn, reject: persistFlagOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var ready webhttp.Ready
+			var ready httpserver.Ready
 			ready.Set(true)
 			h := newTestHandler(t, config{persistScrollback: tc.enabled}, &ready, nil)
 
@@ -239,7 +239,7 @@ func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read overlaid %s: %v", indexName, err)
 	}
-	hashes := webhttp.InlineScriptHashes(html)
+	hashes := httpserver.InlineScriptHashes(html)
 	if len(hashes) != 1 {
 		t.Fatalf("found %d inline scripts, want exactly 1 (the importmap)", len(hashes))
 	}
@@ -251,7 +251,7 @@ func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 	// pages must not share a validator.
 	etag := func(enabled bool) string {
 		t.Helper()
-		var ready webhttp.Ready
+		var ready httpserver.Ready
 		ready.Set(true)
 		h := newTestHandler(t, config{persistScrollback: enabled}, &ready, nil)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
