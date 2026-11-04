@@ -75,8 +75,8 @@ The `/root` folder hides the image's `.bashrc` and `.profile`, so the shell star
 | Debian, slim variant | The base image, pinned by digest. `apt-get upgrade` runs at build time, so each release ships the current Debian security updates. |
 | [web-terminal-engine](https://github.com/cplieger/web-terminal-engine) | The Go engine that runs each terminal, and its TypeScript browser renderer. |
 | [web-terminal-ui](https://github.com/cplieger/web-terminal-ui) | The touch-first browser interface. |
-| [webhttp](https://github.com/cplieger/webhttp) | The HTTP plumbing: access logging, middleware, security headers, static files and rate limiting. |
-| [envx](https://github.com/cplieger/envx), [slogx](https://github.com/cplieger/slogx) | Typed environment parsing and the structured-logging setup. |
+| [httpserver](https://github.com/cplieger/go/tree/main/httpserver) | The HTTP plumbing: access logging, middleware, security headers, static files and rate limiting. |
+| [envx](https://github.com/cplieger/go/tree/main/envx), [slogx](https://github.com/cplieger/go/tree/main/slogx) | Typed environment parsing and the structured-logging setup. |
 | Monaspace Neon NF | The terminal's text font, fetched at build time and checked against a recorded digest per face. |
 | [Web Terminal Glyphs](https://github.com/cplieger/web-terminal-glyphs) | The overlay font for box drawing, blocks, shades, braille and mosaics, digest-checked. The build fails if its cell size differs from the served CSS. |
 | Go toolchain, TypeScript compiler | Used at build time only, both checked against a recorded digest per architecture. |
