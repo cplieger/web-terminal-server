@@ -6,8 +6,8 @@ github.com/cplieger/go/httpserver v1.0.0-dev.5 h1:D/U/s6iU5/xKZt5Wk3K2VtmWuCvE9r
 github.com/cplieger/go/httpserver v1.0.0-dev.5/go.mod h1:JEmYTXf41gzCh9IsslcEaAX8WMcHJBuqEiLEJCvoPUo=
 github.com/cplieger/go/pathinside v1.0.0-dev.1 h1:iVkDRXYDDAgaTBm02ekQ+VH7KhXZTIpdpx8O9pGprY8=
 github.com/cplieger/go/pathinside v1.0.0-dev.1/go.mod h1:+Fj6L8z2GUfDFi/uvAzoxF1iIADDf83g4fMbrvelDUY=
-github.com/cplieger/go/slogx v1.0.0-dev.1 h1:oYkkLGxYkUHebk+OtaWVzD9NwPqTmq13HztG6NaArn4=
-github.com/cplieger/go/slogx v1.0.0-dev.1/go.mod h1:4v0aqEGWQ4ubxjIiddoMocANHMKB6SdYTgOWYaIUX6A=
+github.com/cplieger/go/slogx v1.0.0-dev.2 h1:hQqOH9v0i3l8NPBvSN8rts9LA+JXKINCyhW72Z+11X8=
+github.com/cplieger/go/slogx v1.0.0-dev.2/go.mod h1:4v0aqEGWQ4ubxjIiddoMocANHMKB6SdYTgOWYaIUX6A=
 github.com/cplieger/go/textsafe v1.0.0-dev.1 h1:NqiLs9uk4eOoXXkTQo0O8lMtYddo3XZuCuyx/ruB66w=
 github.com/cplieger/go/textsafe v1.0.0-dev.1/go.mod h1:5IH0ZWTC+U864nzWGtcwGkp+PtA5hrlcfY2zLY/TexM=
 github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.5 h1:U0oRMDxO9tdX8U1frN7UBj50Ejz5kAuCG502boDteu0=
