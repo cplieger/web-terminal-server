@@ -1,6 +1,6 @@
 # How web-terminal-server works
 
-This page covers how terminals run and reconnect, what happens at startup, what the logs record and what the healthcheck checks. It is for readers who operate the server or want to know what happens underneath.
+This page covers how terminals run and reconnect, what happens at startup and what the logs record. It is for readers who operate the server or want to know what happens underneath.
 
 ## Terminals and tabs
 
@@ -48,11 +48,7 @@ A refused handshake keeps its request line with its real status. Examples are a 
 
 ## Healthcheck
 
-The image's `HEALTHCHECK` calls `/healthz` on `127.0.0.1` every 30 seconds, after a 15-second start period. `/healthz` answers `200 {"status":"ok"}` once the listener is bound. It answers `503` during startup and while a shutdown drains connections, so a load balancer stops sending traffic first.
-
-- The probe reads its port from `LISTEN_ADDR`, so moving the listener keeps it working.
-- When `AUTH_PASSWORD` is set, the probe logs in with `AUTH_USERNAME` and `AUTH_PASSWORD` through a curl config file on standard input rather than a command-line flag. The password therefore never appears in the container's process list.
-- It reports readiness, not liveness. Nothing restarts the container when it is unhealthy, so a problem shows as `unhealthy` in `docker ps` without a restart loop.
+The image checks `/healthz` on `127.0.0.1` every 30 seconds, and the port follows `LISTEN_ADDR`, so moving the listener keeps the check working. The server counts itself ready once its listener is bound, and not ready from the moment a shutdown begins. `/healthz` needs no login, so the check sends none. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) gives the answers and who is told.
 
 ## Routes
 
@@ -62,7 +58,7 @@ The image's `HEALTHCHECK` calls `/healthz` on `127.0.0.1` every 30 seconds, afte
 - `/api/sessions/{id}/pinned-title` names a terminal. `PUT` sets the name and `DELETE` returns to the automatic one.
 - `/api/sessions/{id}/seen` marks a terminal's status as read for every open page.
 - `/api/sessions/events` streams terminal status to the page.
-- `/healthz` reports readiness.
+- `/healthz` reports readiness, answers `GET` and `HEAD` only, and needs no login.
 
 ## What this repository holds
 

@@ -12,7 +12,7 @@ Anyone who can reach the server and pass its login gets an interactive process r
 
 Before you open it beyond a trusted host, do at least one of these:
 
-- Set `AUTH_PASSWORD`. Every route then asks for HTTP Basic auth, the terminal connection included. Failed logins are rate-limited.
+- Set `AUTH_PASSWORD`. Every route but `/healthz` then asks for HTTP Basic auth, the terminal connection included. Failed logins are rate-limited.
 - Put a reverse proxy with its own login in front, such as Caddy with forward auth, oauth2-proxy or Authentik.
 - Keep the published port on loopback or a private network.
 

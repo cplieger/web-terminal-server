@@ -10,7 +10,7 @@ Where the image and a binary built from source differ, this page says so. The im
 
 ## Login
 
-- `AUTH_PASSWORD` turns on HTTP Basic auth. Every route then asks for it, the terminal connection at `/ws` included. Unset, there is no login.
+- `AUTH_PASSWORD` turns on HTTP Basic auth. Every route but `/healthz` then asks for it, the terminal connection at `/ws` included. Unset, there is no login.
 - `AUTH_USERNAME` is the user name for that login. It defaults to `admin` and is used only when `AUTH_PASSWORD` is set.
 
 A password made only of spaces gives almost no protection, and the server warns about it when it listens beyond loopback. Failed logins are rate-limited, and a request with the right password is never slowed.
@@ -20,7 +20,7 @@ A password made only of spaces gives almost no protection, and the server warns 
 `ALLOWED_HOSTS` is a comma-separated list of exact host names and IPs this server answers for. A request with any other `Host` header is refused with `host not allowed`. This is what stops DNS rebinding, explained in [Security](hardening.md#dns-rebinding).
 
 - Write bare names or IPs, such as `localhost,192.0.2.10,term.example.com`. A scheme, a path, a CIDR or a port does not belong here.
-- A request from a loopback client to a loopback host name is always accepted. That keeps the healthcheck and a `curl` on the same host working, while a remote client sending a loopback `Host` is still refused.
+- A request from a loopback client to a loopback host name is always accepted. That keeps the healthcheck and a `curl` on the same host working, while a remote client sending a loopback `Host` is still refused. An uptime prober from outside must use a name in the list.
 - A malformed entry is dropped with a warning that gives only the count. If every entry is malformed, the server refuses every request except from loopback.
 - Unset, the server accepts any host name. Without `AUTH_PASSWORD` it then warns at startup that DNS rebinding is open.
 
@@ -55,4 +55,4 @@ Nothing is required. Mount whatever the terminals should reach, and point `WORK_
 
 ## Ports
 
-Port `7681` serves the web page, the terminal API and the terminal connections. Change it with `LISTEN_ADDR`, and the healthcheck follows.
+Port `7681` serves the web page, the terminal API, the terminal connections and `GET /healthz`. Change it with `LISTEN_ADDR`, and the healthcheck follows.
