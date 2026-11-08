@@ -48,18 +48,25 @@ const (
 )
 
 // healthzPath is the readiness route: the image's baked HEALTHCHECK target,
-// the path WithProbeLogLevel quiets, and one of the two prefixes the
-// canonical-path guard covers.
+// the path ProbeLogLevel quiets, the one path the login exempts, and one of
+// the two prefixes the canonical-path guard covers.
 const healthzPath = "/healthz"
 
-// readiness is the serving-state flag /healthz reports; its zero value is
-// not ready.
-type readiness struct{ flag atomic.Bool }
+// reasonNotServing is the /healthz reason while the listener is not serving:
+// before startup completes and from the start of a drain.
+const reasonNotServing = "starting up or shutting down"
 
-func (r *readiness) set(ready bool) { r.flag.Store(ready) }
+// readiness is the serving-state flag /healthz reports. Its zero value is not
+// serving; run sets it once the listener is bound and clears it when a drain starts.
+type readiness struct{ serving atomic.Bool }
 
-// Healthy satisfies health.Signal.
-func (r *readiness) Healthy() bool { return r.flag.Load() }
+var _ health.Signal = (*readiness)(nil)
+
+// set records whether the server is serving.
+func (r *readiness) set(serving bool) { r.serving.Store(serving) }
+
+// Healthy reports whether the server is serving.
+func (r *readiness) Healthy() bool { return r.serving.Load() }
 
 // applyIntEnv parses an integer env var into *dst, leaving it unchanged when
 // unset/empty, and rejects a non-integer or a value below min.
@@ -353,7 +360,6 @@ func run() error {
 		}
 	}
 
-	// run owns the readiness flag's lifecycle.
 	var ready readiness
 
 	handler, err := newHandler(&cfg, terminal.SessionHandlers{
@@ -458,9 +464,12 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *readiness) (http
 	// unannounced. The create gate bounds unbounded PTY forking.
 	terminal.MountSessionRoutes(mux, h,
 		terminal.WithCreateGate(sessionCreateGate()))
-	// 200 when ready, 503 during startup/shutdown; the Docker HEALTHCHECK
-	// target.
-	mux.Handle(healthzPath, health.CheckHandler(health.Check{Signal: ready, Reason: "starting up or shutting down"}))
+	mux.Handle("GET "+healthzPath, health.CheckHandler(health.Check{Signal: ready, Reason: reasonNotServing}))
+	// ServeMux answers 405 itself only when no pattern matches, and the "/"
+	// static mount matches every method.
+	mux.HandleFunc(healthzPath, func(w http.ResponseWriter, r *http.Request) {
+		httpserver.MethodNotAllowed(w, r, http.MethodGet, http.MethodHead)
+	})
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -492,12 +501,12 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *readiness) (http
 		gate := newBasicAuthGate(cfg.username, cfg.password)
 		// Bounds the guessing RATE against the single static AUTH_PASSWORD:
 		// only a request about to be REFUSED draws a token, so a valid
-		// credential (including the baked healthcheck) is never throttled.
-		authThrottleMW = httpserver.FailedAuthRateLimit(
+		// credential is never throttled.
+		authThrottleMW = exceptHealthz(httpserver.FailedAuthRateLimit(
 			func(r *http.Request) bool { return !gate.presentsValidCredentials(r) },
 			"too many failed authentication attempts. Check the credentials in AUTH_USERNAME/AUTH_PASSWORD",
-		)
-		authMW = gate.middleware
+		))
+		authMW = exceptHealthz(gate.middleware)
 	}
 
 	// Outermost first, nil entries skipped. Recoverer sits inside Logging so
@@ -703,6 +712,22 @@ func warnIfExposed(addr, password string) {
 			"addr", addr,
 			"risk", "a blank/whitespace password provides negligible protection for a remote shell",
 			"fix", "set a strong AUTH_PASSWORD or front with an authenticating reverse proxy")
+	}
+}
+
+// exceptHealthz lets a request for exactly healthzPath bypass mw, so an uptime
+// prober needs no login and never draws from the failed-login bucket. Another
+// spelling of the path still meets mw, and canonicalPathGuard refuses it after.
+func exceptHealthz(mw httpserver.Middleware) httpserver.Middleware {
+	return func(next http.Handler) http.Handler {
+		guarded := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == healthzPath {
+				next.ServeHTTP(w, r)
+				return
+			}
+			guarded.ServeHTTP(w, r)
+		})
 	}
 }
 
