@@ -1714,7 +1714,7 @@ const failedAuthBurst = 10
 // authThrottleHandler builds the real stack with Basic auth configured, plus a
 // requester that drives one GET /healthz through it either with the correct
 // credentials or with a wrong password.
-func authThrottleHandler(t *testing.T) (http.Handler, func(validCreds bool) *httptest.ResponseRecorder) {
+func authThrottleHandler(t *testing.T) func(validCreds bool) *httptest.ResponseRecorder {
 	t.Helper()
 	var ready httpserver.Ready
 	ready.Set(true)
@@ -1730,7 +1730,7 @@ func authThrottleHandler(t *testing.T) (http.Handler, func(validCreds bool) *htt
 		h.ServeHTTP(rec, req)
 		return rec
 	}
-	return h, do
+	return do
 }
 
 // TestFailedAuthThrottle pins the failed-auth throttle
@@ -1742,7 +1742,7 @@ func authThrottleHandler(t *testing.T) (http.Handler, func(validCreds bool) *htt
 // envelope.
 func TestFailedAuthThrottle(t *testing.T) {
 	t.Run("failed attempts draw tokens and are 429 past the burst", func(t *testing.T) {
-		_, do := authThrottleHandler(t)
+		do := authThrottleHandler(t)
 		for i := range failedAuthBurst {
 			if code := do(false).Code; code != http.StatusUnauthorized {
 				t.Fatalf("failed attempt %d = %d, want 401 (the burst must still reach the gate)", i+1, code)
@@ -1754,7 +1754,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 	})
 
 	t.Run("valid credentials never draw a token", func(t *testing.T) {
-		_, do := authThrottleHandler(t)
+		do := authThrottleHandler(t)
 		// Three times the burst in valid requests. If any of them consumed a
 		// token, the single failed attempt afterwards would be 429 instead of
 		// reaching the gate — which is the whole reason the predicate asks
@@ -1771,7 +1771,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 	})
 
 	t.Run("valid credentials still pass with the bucket empty", func(t *testing.T) {
-		_, do := authThrottleHandler(t)
+		do := authThrottleHandler(t)
 		for range failedAuthBurst + 1 {
 			do(false)
 		}
@@ -1787,7 +1787,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 	})
 
 	t.Run("429 carries the app envelope and a Retry-After hint", func(t *testing.T) {
-		_, do := authThrottleHandler(t)
+		do := authThrottleHandler(t)
 		for range failedAuthBurst {
 			do(false)
 		}

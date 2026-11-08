@@ -40,7 +40,7 @@ Either of two settings stops it. `ALLOWED_HOSTS` set to the exact names you brow
 
 With `PERSIST_SCROLLBACK` on, its default, the browser keeps up to 200 lines of each terminal's output in this site's `localStorage`, and about 1 MB in total across all terminals. That storage is readable from that browser without reaching the server and without the password, and it outlives the tab. An entry is deleted when you close its terminal, and otherwise after seven days. What ends up there depends on what `SESSION_CMD` prints.
 
-Most ways to read that storage also hand over a live shell, so it is rarely the weakest point. The exception is a time when the stored lines are readable and the shell is not, such as a laptop off the VPN, a stopped container or an expired login. Set `PERSIST_SCROLLBACK=false` on a shared or borrowed device, or where storing command output on disk is not acceptable.
+Most ways to read that storage also hand over a live shell, so it is rarely the weakest point. The exception is a time when the stored lines are readable and the shell is not, such as a laptop off the VPN, a stopped container or an expired login. Set `PERSIST_SCROLLBACK=false` on a shared or borrowed device, or where storing command output on disk is not acceptable. With it off, the page also deletes the lines a browser stored while it was on, the next time that browser loads the page.
 
 The stored text never leaves the browser. When it reconnects, the browser tells the server only the number of the last line it kept, and the server sends the lines after it. `localStorage` needs no permission prompt. A browser that blocks site data restores nothing and loads the history from the server as before.
 

@@ -115,7 +115,7 @@ start_chromium() {
   wait_for "http://$WT_HOST:$CDP_PORT/json/version" "Chromium DevTools"
 }
 
-start_server() { # wt_cmd
+start_server() { # wt_cmd [persist_scrollback]
   local bin="${WT_BIN:-$REPO/web-terminal-server-bin}"
   if [ ! -x "$bin" ]; then
     echo "server binary $bin not found; building with dev-build.sh" >&2
@@ -124,7 +124,8 @@ start_server() { # wt_cmd
       exit 4
     }
   fi
-  LISTEN_ADDR="$WT_HOST:$WT_PORT" SESSION_CMD="$1" SCROLLBACK=5000 "$bin" >/dev/null 2>&1 &
+  LISTEN_ADDR="$WT_HOST:$WT_PORT" SESSION_CMD="$1" SCROLLBACK=5000 \
+    PERSIST_SCROLLBACK="${2:-true}" "$bin" >/dev/null 2>&1 &
   SERVER_PID=$!
   wait_for "http://$WT_HOST:$WT_PORT/healthz" "web-terminal-server"
 }
@@ -169,6 +170,8 @@ if [ -n "${CDP_URL:-}" ]; then
   run_group1
   echo "NOTE: skipping the scrollback test (needs the server on emit-ed3.sh; start it and" >&2
   echo "      run: WT_URL=... node scripts/cdp-scrollback.cjs)" >&2
+  echo "NOTE: skipping the persist-off test (needs PERSIST_SCROLLBACK=false; start it and" >&2
+  echo "      run: WT_URL=... node scripts/cdp-persist-off.cjs)" >&2
 else
   command -v curl >/dev/null 2>&1 || {
     echo "curl is required" >&2
@@ -186,6 +189,11 @@ else
   # Group 2: the ED3 fixture.
   start_server "sh $DIR/emit-ed3.sh"
   run "scrollback" cdp-scrollback.cjs
+  stop_server
+
+  # Group 3: persistence off.
+  start_server "sh $DIR/emit-fixture.sh" false
+  run "persist-off" cdp-persist-off.cjs
   stop_server
 fi
 
