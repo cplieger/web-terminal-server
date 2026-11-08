@@ -87,7 +87,8 @@ let targetId = null;
     process.exit(ok ? 0 : 1);
   })
   .catch(async (e) => {
-    console.error("VERIFY ERROR:", e.message);
+    const message = String(e?.message ?? e).replace(/\n|\r/g, "");
+    console.error(`VERIFY ERROR: ${message}`);
     if (targetId !== null) {
       await fetch(`${CDP}/json/close/${targetId}`).catch(() => {});
     }
