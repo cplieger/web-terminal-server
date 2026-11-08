@@ -1,9 +1,17 @@
-import { createTerminal, localScrollbackStorage } from "@cplieger/web-terminal-ui";
+import {
+  clearLocalScrollback,
+  createTerminal,
+  localScrollbackStorage,
+} from "@cplieger/web-terminal-ui";
 import { presetTabbed } from "@cplieger/web-terminal-ui/presets";
 
 // static_persist.go stamps this marker from PERSIST_SCROLLBACK at startup.
 const persist =
   document.querySelector('meta[name="wt-persist-scrollback"]')?.getAttribute("content") === "on";
+// Lines a browser kept while persistence was on must not outlive the switch.
+if (!persist) {
+  clearLocalScrollback();
+}
 
 // The root goes in as a SELECTOR and the preset as an ARROW so both resolve
 // inside createTerminal's failure boundary: a missing #terminal or a throwing
