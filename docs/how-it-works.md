@@ -32,7 +32,7 @@ A startup failure produces exactly one `ERROR` line, `web-terminal-server exited
 | `serve` | The HTTP server stopped with an error while running. |
 | `unknown` | A failure no step claimed. |
 
-Key log queries and alert rules on `stage` rather than on the message text. The values are a stable contract with a test behind them, and the wording is not.
+Key log searches on `stage` rather than on the message text. The values are a stable contract with a test behind them, and the wording is not.
 
 A rejected environment value never appears in that line. Only the variable's name and the accepted shape do, because a compose mistake is what puts a password on the wrong variable.
 
