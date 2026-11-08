@@ -56,16 +56,13 @@ const healthzPath = "/healthz"
 // before startup completes and from the start of a drain.
 const reasonNotServing = "starting up or shutting down"
 
-// readiness is the serving-state flag /healthz reports. Its zero value is not
-// serving; run sets it once the listener is bound and clears it when a drain starts.
+// readiness is the serving-state flag /healthz reports; its zero value is not serving.
 type readiness struct{ serving atomic.Bool }
 
 var _ health.Signal = (*readiness)(nil)
 
-// set records whether the server is serving.
 func (r *readiness) set(serving bool) { r.serving.Store(serving) }
 
-// Healthy reports whether the server is serving.
 func (r *readiness) Healthy() bool { return r.serving.Load() }
 
 // applyIntEnv parses an integer env var into *dst, leaving it unchanged when
