@@ -48,7 +48,7 @@ const (
 )
 
 // healthzPath is the readiness route: the image's baked HEALTHCHECK target,
-// the path ProbeLogLevel quiets, the one path the login exempts, and one of
+// the path WithProbeLogLevel quiets, the one path the login exempts, and one of
 // the two prefixes the canonical-path guard covers.
 const healthzPath = "/healthz"
 
