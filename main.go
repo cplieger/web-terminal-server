@@ -24,10 +24,12 @@ import (
 	"os/signal"
 	"path"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/health"
 	"github.com/cplieger/go/httpserver"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
@@ -46,9 +48,18 @@ const (
 )
 
 // healthzPath is the readiness route: the image's baked HEALTHCHECK target,
-// the path ProbeLogLevel quiets, and one of the two prefixes the
+// the path WithProbeLogLevel quiets, and one of the two prefixes the
 // canonical-path guard covers.
 const healthzPath = "/healthz"
+
+// readiness is the serving-state flag /healthz reports; its zero value is
+// not ready.
+type readiness struct{ flag atomic.Bool }
+
+func (r *readiness) set(ready bool) { r.flag.Store(ready) }
+
+// Healthy satisfies health.Signal.
+func (r *readiness) Healthy() bool { return r.flag.Load() }
 
 // applyIntEnv parses an integer env var into *dst, leaving it unchanged when
 // unset/empty, and rejects a non-integer or a value below min.
@@ -342,8 +353,8 @@ func run() error {
 		}
 	}
 
-	// httpserver.Ready is the shared serving-state flag. run owns its lifecycle.
-	var ready httpserver.Ready
+	// run owns the readiness flag's lifecycle.
+	var ready readiness
 
 	handler, err := newHandler(&cfg, terminal.SessionHandlers{
 		WS:     mgr.WebSocketHandler(),
@@ -395,17 +406,18 @@ func run() error {
 		"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 		"work_dir", cfg.workDir, "scrollback", scrollbackLines,
 		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
-	ready.Set(true)
+	ready.set(true)
 
 	// httpserver.Run serves on the pre-bound listener and, on ctx cancellation,
 	// runs the pre-drain hook, drains within the grace window, then runs
 	// teardown. The pre-drain hook flips readiness false and cancels
 	// in-flight contexts before the drain starts, so /healthz reports 503
 	// during the window and open SSE streams unblock (see BaseContext above).
-	if err := httpserver.Run(ctx, srv, ln, shutdownSessions,
+	if err := httpserver.Run(ctx, srv, ln,
+		httpserver.WithTeardown(shutdownSessions),
 		httpserver.WithShutdownGrace(shutdownGrace),
 		httpserver.WithPreDrain(func(context.Context) {
-			ready.Set(false)
+			ready.set(false)
 			cancelBase()
 			slog.Info("shutting down", "cause", context.Cause(ctx))
 		})); err != nil {
@@ -439,7 +451,7 @@ func sessionCreateGate() httpserver.Middleware {
 	)
 }
 
-func newHandler(cfg *config, h terminal.SessionHandlers, ready *httpserver.Ready) (http.Handler, error) {
+func newHandler(cfg *config, h terminal.SessionHandlers, ready *readiness) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// The engine owns its route topology (MountSessionRoutes wires exactly
 	// its documented set), so no engine-internal route reaches this surface
@@ -448,7 +460,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *httpserver.Ready
 		terminal.WithCreateGate(sessionCreateGate()))
 	// 200 when ready, 503 during startup/shutdown; the Docker HEALTHCHECK
 	// target.
-	mux.Handle(healthzPath, httpserver.ReadinessHandler(ready))
+	mux.Handle(healthzPath, health.CheckHandler(health.Check{Signal: ready, Reason: "starting up or shutting down"}))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -491,7 +503,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *httpserver.Ready
 	// Outermost first, nil entries skipped. Recoverer sits inside Logging so
 	// a recovered request logs its 500 rather than the default 200.
 	handler := httpserver.Chain(mux,
-		httpserver.Logging(httpserver.WithLogger(slog.Default()), httpserver.ProbeLogLevel(healthzPath), httpserver.WithClientIP(cfg.trustedProxies...),
+		httpserver.Logging(httpserver.WithLogger(slog.Default()), httpserver.WithProbeLogLevel(healthzPath), httpserver.WithClientIP(cfg.trustedProxies...),
 			// Session-id path segments are the /ws attach capability token;
 			// rewriting the logged path to the matched route template keeps
 			// a live token out of the access log.

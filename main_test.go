@@ -409,8 +409,8 @@ func hashToken(content string) string {
 // asserts a response carries nosniff and the hash-pinned CSP — i.e. that
 // httpserver.SecurityHeaders is wired into the Chain with the app's WithCSP policy.
 func TestSecurityHeadersSetsCSPAndNosniff(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	rec := httptest.NewRecorder()
@@ -657,8 +657,8 @@ func (f *fakeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // in a StatusRecorder, so this pins that the recorder stays transparent to the
 // hijack the /ws WebSocket upgrade needs, through the real production chain.
 func TestWebSocketHijackReachesThroughChain(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	var reached bool
 	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
@@ -698,7 +698,7 @@ func (s stubHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 // the test if the embedded static assets can't be opened. Only the WS hit flag
 // is wired here (the routes most tests care about); the session-route tests
 // below call newHandler directly with their own hit-tracking stubs.
-func newTestHandler(t *testing.T, cfg config, ready *httpserver.Ready, wsHit *atomic.Bool) http.Handler {
+func newTestHandler(t *testing.T, cfg config, ready *readiness, wsHit *atomic.Bool) http.Handler {
 	t.Helper()
 	h, err := newHandler(&cfg, terminal.SessionHandlers{WS: stubHandler{hit: wsHit}, REST: stubHandler{}, Events: stubHandler{}}, ready)
 	if err != nil {
@@ -708,7 +708,7 @@ func newTestHandler(t *testing.T, cfg config, ready *httpserver.Ready, wsHit *at
 }
 
 func TestHealthzReadinessGate(t *testing.T) {
-	var ready httpserver.Ready
+	var ready readiness
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -719,7 +719,7 @@ func TestHealthzReadinessGate(t *testing.T) {
 		t.Errorf("not-ready /healthz = %d, want 503", rec.Code)
 	}
 
-	ready.Set(true)
+	ready.set(true)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -731,9 +731,9 @@ func TestHealthzReadinessGate(t *testing.T) {
 }
 
 func TestRouteWSReachesTerminal(t *testing.T) {
-	var ready httpserver.Ready
+	var ready readiness
 	var wsHit atomic.Bool
-	ready.Set(true)
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, &wsHit)
 
 	rec := httptest.NewRecorder()
@@ -990,8 +990,8 @@ func hostPolicyFor(t *testing.T, entries ...string) *httpserver.HostPolicy {
 // an allowed name, the loopback peer+Host carve-out, and that a zero-value
 // config stays permissive.
 func TestHostAllowlistGatesRoutes(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	cfg := config{hostPolicy: hostPolicyFor(t, "term.example.com")}
 	h := newTestHandler(t, cfg, &ready, nil)
 
@@ -1051,8 +1051,8 @@ func TestHostAllowlistGatesRoutes(t *testing.T) {
 // evaluation (valid credentials do not rescue a disallowed Host), while an
 // allowed Host still hits basic auth (401 without credentials, 200 with).
 func TestHostAllowlistRunsBeforeBasicAuth(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	cfg := config{
 		username:   "admin",
 		password:   "pw",
@@ -1083,9 +1083,9 @@ func TestHostAllowlistRunsBeforeBasicAuth(t *testing.T) {
 }
 
 func TestRouteSessionsReachesREST(t *testing.T) {
-	var ready httpserver.Ready
+	var ready readiness
 	var wsHit, restHit, eventsHit atomic.Bool
-	ready.Set(true)
+	ready.set(true)
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{hit: &wsHit}, REST: stubHandler{hit: &restHit}, Events: stubHandler{hit: &eventsHit}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1128,8 +1128,8 @@ func TestSessionJSONIsGzipped(t *testing.T) {
 	rest := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		httpserver.WriteJSON(w, payload)
 	})
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: rest, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1177,9 +1177,9 @@ func TestSessionJSONIsGzipped(t *testing.T) {
 }
 
 func TestRouteEventsReachesSSE(t *testing.T) {
-	var ready httpserver.Ready
+	var ready readiness
 	var wsHit, restHit, eventsHit atomic.Bool
-	ready.Set(true)
+	ready.set(true)
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{hit: &wsHit}, REST: stubHandler{hit: &restHit}, Events: stubHandler{hit: &eventsHit}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1215,8 +1215,8 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{}, Events: mgr.EventsHandler()}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1257,9 +1257,9 @@ func TestEventsRouteStreamsThroughMiddleware(t *testing.T) {
 const sessionCreateBurst = 6
 
 func TestCreateRateLimit(t *testing.T) {
-	var ready httpserver.Ready
+	var ready readiness
 	var restHit atomic.Bool
-	ready.Set(true)
+	ready.set(true)
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{hit: &restHit}, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1313,8 +1313,8 @@ func TestSessionSeenRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: mgr.RESTHandler(), Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1343,8 +1343,8 @@ func TestSessionSeenRoute(t *testing.T) {
 // exhausted, idle time refills tokens so creation is permitted again.
 func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var ready httpserver.Ready
-		ready.Set(true)
+		var ready readiness
+		ready.set(true)
 		h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{}, Events: stubHandler{}}, &ready)
 		if err != nil {
 			t.Fatalf("newHandler() error: %v", err)
@@ -1372,8 +1372,8 @@ func TestCreateRateLimitRefillsOverTime(t *testing.T) {
 }
 
 func TestRouteStaticServesIndex(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	rec := httptest.NewRecorder()
@@ -1384,8 +1384,8 @@ func TestRouteStaticServesIndex(t *testing.T) {
 }
 
 func TestStaticHandlerETagAndRevalidation(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	rec := httptest.NewRecorder()
@@ -1417,8 +1417,8 @@ func TestStaticHandlerETagAndRevalidation(t *testing.T) {
 }
 
 func TestHandlerAuthGatesAllRoutes(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	cfg := config{username: "admin", password: "pw"}
 	h := newTestHandler(t, cfg, &ready, nil)
 
@@ -1448,8 +1448,8 @@ func TestHandlerAuthGatesAllRoutes(t *testing.T) {
 // the assembled handler still negotiates gzip and revalidates via ETags.
 
 func TestStaticHandlerGzipNegotiation(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	t.Run("offering gzip yields a compressed body that decodes to the identity bytes", func(t *testing.T) {
@@ -1536,8 +1536,8 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	var buf bytes.Buffer
 	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, nil)))
 
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	// The engine's own REST route table. The factory is never invoked (nothing
 	// here creates a session), so no PTY is spawned.
 	mgr := terminal.NewSessionManager(
@@ -1604,7 +1604,7 @@ func TestAccessLogRedactsSessionTokenPaths(t *testing.T) {
 	}
 }
 
-// TestFailingProbeSurfacesInAccessLog pins the ProbeLogLevel contract on
+// TestFailingProbeSurfacesInAccessLog pins the WithProbeLogLevel contract on
 // /healthz: a healthy probe logs at Debug (dropped at the default level), a
 // failing probe (the drain-window 503) surfaces at Error — the silent-skip
 // idiom this replaced hid that signal. Serial: swaps the process-global
@@ -1613,7 +1613,7 @@ func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 	var buf bytes.Buffer
 	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, nil)))
 
-	var ready httpserver.Ready // zero value: not ready -> /healthz answers 503
+	var ready readiness // zero value: not ready -> /healthz answers 503
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{}, Events: stubHandler{}}, &ready)
 	if err != nil {
 		t.Fatalf("newHandler() error: %v", err)
@@ -1625,10 +1625,10 @@ func TestFailingProbeSurfacesInAccessLog(t *testing.T) {
 	}
 
 	buf.Reset()
-	ready.Set(true)
+	ready.set(true)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody))
 	if log := buf.String(); strings.Contains(log, "path=/healthz") {
-		t.Errorf("access log = %q, want no healthy-probe line at the default level (ProbeLogLevel maps 2xx to Debug)", log)
+		t.Errorf("access log = %q, want no healthy-probe line at the default level (WithProbeLogLevel maps 2xx to Debug)", log)
 	}
 }
 
@@ -1649,8 +1649,8 @@ func TestWebSocketUpgradeSkippedButRefusalLogged(t *testing.T) {
 	serveWS := func(t *testing.T, status int) string {
 		t.Helper()
 		buf.Reset()
-		var ready httpserver.Ready
-		ready.Set(true)
+		var ready readiness
+		ready.set(true)
 		ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
 		h, err := newHandler(&config{}, terminal.SessionHandlers{WS: ws, REST: stubHandler{}, Events: stubHandler{}}, &ready)
 		if err != nil {
@@ -1716,8 +1716,8 @@ const failedAuthBurst = 10
 // credentials or with a wrong password.
 func authThrottleHandler(t *testing.T) func(validCreds bool) *httptest.ResponseRecorder {
 	t.Helper()
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{username: "admin", password: "pw"}, &ready, nil)
 	do := func(validCreds bool) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, healthzPath, nil)
@@ -1807,8 +1807,8 @@ func TestFailedAuthThrottle(t *testing.T) {
 	})
 
 	t.Run("a disallowed Host is 403 and spends no token", func(t *testing.T) {
-		var ready httpserver.Ready
-		ready.Set(true)
+		var ready readiness
+		ready.set(true)
 		cfg := config{username: "admin", password: "pw", hostPolicy: hostPolicyFor(t, "term.example.com")}
 		h := newTestHandler(t, cfg, &ready, nil)
 		get := func(host, pass string) int {
@@ -1840,8 +1840,8 @@ func TestFailedAuthThrottle(t *testing.T) {
 // token bucket, and Chain skips the nil entry. Any 429 here would be a
 // regression that throttled the documented no-auth posture.
 func TestFailedAuthThrottleInertWithoutPassword(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 	for i := range failedAuthBurst * 3 {
 		rec := httptest.NewRecorder()
@@ -1873,8 +1873,8 @@ func TestFailedAuthThrottleInertWithoutPassword(t *testing.T) {
 // the probe and session-API surfaces; the static mount keeps its
 // redirects.
 func TestCanonicalPathGuard(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -1965,8 +1965,8 @@ func TestCanonicalPathGuard(t *testing.T) {
 	t.Run("auth answers before the guard does", func(t *testing.T) {
 		// The guard is innermost, so an unauthenticated caller learns nothing
 		// about route spelling.
-		var authReady httpserver.Ready
-		authReady.Set(true)
+		var authReady readiness
+		authReady.set(true)
 		ah := newTestHandler(t, config{username: "admin", password: "pw"}, &authReady, nil)
 		rec := httptest.NewRecorder()
 		ah.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "//healthz", nil))
@@ -2238,8 +2238,8 @@ func TestStaticCacheControl(t *testing.T) {
 // Dropping any one option leaves the response header-free or on httpserver's
 // looser default, and no other test here would notice.
 func TestSecurityHeadersCarryTheHardenedSet(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	rec := httptest.NewRecorder()
@@ -2335,8 +2335,8 @@ func TestWSAttachLogIsWiredIntoTheChain(t *testing.T) {
 	var buf bytes.Buffer
 	capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	cfg := config{hostPolicy: hostPolicyFor(t, "term.example.com")}
 	h := newTestHandler(t, cfg, &ready, nil)
 
@@ -2411,8 +2411,8 @@ func TestPathUnderAnyMatchesWholeSegments(t *testing.T) {
 // request line, so reflecting the path would turn a one-line refusal into a
 // caller-sized response body, and the sender already has the value.
 func TestCanonicalPathGuardRefusalEnvelope(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	// A distinctive, long, obviously-attacker-chosen segment: if any part of the request
@@ -2450,8 +2450,8 @@ func TestCanonicalPathGuardRefusalEnvelope(t *testing.T) {
 // The zero-hit assertion means "refused" only because the canonical spelling is asserted
 // to reach the stub in the same test; otherwise it would also pass on an unreachable route.
 func TestCanonicalPathGuardRefusesTheSideEffect(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	var restHit atomic.Bool
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{hit: &restHit}, Events: stubHandler{}}, &ready)
 	if err != nil {
@@ -2602,8 +2602,8 @@ func TestIsWebSocketUpgradeRequiresBothListTokens(t *testing.T) {
 // asserted alongside the cross-origin one, since a handler that refused
 // everything would satisfy the negative test alone.
 func TestCrossOriginProtectionGatesUnsafeMethods(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	var restHit atomic.Bool
 	h, err := newHandler(&config{}, terminal.SessionHandlers{WS: stubHandler{}, REST: stubHandler{hit: &restHit}, Events: stubHandler{}}, &ready)
 	if err != nil {
@@ -2654,8 +2654,8 @@ func TestCrossOriginProtectionGatesUnsafeMethods(t *testing.T) {
 // because ServeMux reports a SUBTREE registration by its own pattern: a handler registered
 // at "/debug/" answers /debug/pprof while a pattern comparison still reads as a miss.
 func TestNoDiagnosticRoutesOnThisSurface(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h := newTestHandler(t, config{}, &ready, nil)
 
 	for _, path := range []string{
@@ -2676,13 +2676,13 @@ func TestNoDiagnosticRoutesOnThisSurface(t *testing.T) {
 // session surface refuses storage: the id in a session URL is the /ws
 // attach capability, so a cached response — or a cached 404 whose KEY
 // carries the id — leaves it readable from a shared cache after the
-// session is gone. The header comes from the libraries (httpserver.
-// ReadinessHandler, the engine's own no-store wrapper), so this is a
+// session is gone. The header comes from the libraries (health.
+// CheckHandler, the engine's own no-store wrapper), so this is a
 // synchronizing check against them: a library regression or a consumer
 // override fails here on the bump PR.
 func TestSessionSurfaceIsNeverCacheable(t *testing.T) {
-	var ready httpserver.Ready
-	ready.Set(true)
+	var ready readiness
+	ready.set(true)
 	h, err := newHandler(&config{}, terminal.SessionHandlers{
 		WS: stubHandler{},
 		REST: terminal.NewSessionManager(
