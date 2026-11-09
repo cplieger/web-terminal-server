@@ -186,8 +186,8 @@ func TestPersistFlagReachesTheServedPage(t *testing.T) {
 		{name: "on", enabled: true, want: persistFlagOn, reject: persistFlagOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var ready httpserver.Ready
-			ready.Set(true)
+			var ready readiness
+			ready.set(true)
 			h := newTestHandler(t, config{persistScrollback: tc.enabled}, &ready, nil)
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -251,8 +251,8 @@ func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 	// pages must not share a validator.
 	etag := func(enabled bool) string {
 		t.Helper()
-		var ready httpserver.Ready
-		ready.Set(true)
+		var ready readiness
+		ready.set(true)
 		h := newTestHandler(t, config{persistScrollback: enabled}, &ready, nil)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Host = "localhost"
