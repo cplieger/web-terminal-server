@@ -7,7 +7,7 @@ require (
 	github.com/cplieger/go/health v1.0.0
 	github.com/cplieger/go/httpserver v1.0.0
 	github.com/cplieger/go/slogx v1.0.0
-	github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.6
+	github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.10
 )
 
 require (
@@ -15,5 +15,5 @@ require (
 	github.com/cplieger/go/pathinside v1.0.0 // indirect
 	github.com/cplieger/go/textsafe v1.0.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 )
