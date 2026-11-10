@@ -707,27 +707,191 @@ func newTestHandler(t *testing.T, cfg config, ready *readiness, wsHit *atomic.Bo
 	return h
 }
 
-func TestHealthzReadinessGate(t *testing.T) {
-	var ready readiness
-	h := newTestHandler(t, config{}, &ready, nil)
+// TestHealthzBody pins the health body every cplieger app answers with: the
+// verdict is the code, the body names each standing fault, and no cache may keep it.
+func TestHealthzBody(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		serving bool
+		code    int
+		body    string
+	}{
+		{name: "serving", serving: true, code: http.StatusOK, body: `{"status":"ok"}` + "\n"},
+		{
+			name: "starting or draining", serving: false, code: http.StatusServiceUnavailable,
+			body: `{"status":"unhealthy","reasons":["starting up or shutting down"]}` + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ready readiness
+			ready.set(tc.serving)
+			h := newTestHandler(t, config{}, &ready, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, healthzPath, nil))
+			if rec.Code != tc.code {
+				t.Errorf("GET /healthz = %d, want %d", rec.Code, tc.code)
+			}
+			if got := rec.Body.String(); got != tc.body {
+				t.Errorf("GET /healthz body = %q, want %q", got, tc.body)
+			}
+			for header, want := range map[string]string{
+				"Content-Type":           "application/json",
+				"Cache-Control":          "no-store",
+				"X-Content-Type-Options": "nosniff",
+			} {
+				if got := rec.Header().Get(header); got != want {
+					t.Errorf("GET /healthz %s = %q, want %q", header, got, want)
+				}
+			}
+		})
+	}
+}
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+// TestHealthzMethods pins GET and HEAD as the only methods /healthz answers. The
+// static mount at "/" matches every method, so without its own 405 a POST would
+// reach the file server instead.
+func TestHealthzMethods(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		serving bool
+		head    int
+	}{
+		{name: "serving", serving: true, head: http.StatusOK},
+		{name: "starting or draining", serving: false, head: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ready readiness
+			ready.set(tc.serving)
+			h := newTestHandler(t, config{}, &ready, nil)
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("not-ready /healthz = %d, want 503", rec.Code)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, healthzPath, nil))
+			if rec.Code != tc.head {
+				t.Errorf("HEAD /healthz = %d, want %d", rec.Code, tc.head)
+			}
+
+			for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(method, healthzPath, nil))
+				if rec.Code != http.StatusMethodNotAllowed {
+					t.Errorf("%s /healthz = %d, want 405", method, rec.Code)
+				}
+				if allow := rec.Header().Get("Allow"); allow != "GET, HEAD" {
+					t.Errorf("%s /healthz Allow = %q, want %q", method, allow, "GET, HEAD")
+				}
+				if body := rec.Body.String(); strings.Contains(body, `"status"`) {
+					t.Errorf("%s /healthz body = %q, want no health verdict", method, body)
+				}
+			}
+		})
+	}
+}
+
+// TestHealthzNeedsNoLogin pins /healthz as the one route AUTH_PASSWORD leaves open,
+// so an uptime prober needs no credential, and a prober that still sends one keeps
+// working. Every other route, and every other spelling of this one, still asks.
+func TestHealthzNeedsNoLogin(t *testing.T) {
+	cfg := config{username: "admin", password: "pw"}
+	get := func(h http.Handler, method, path string, creds *[2]string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		if creds != nil {
+			req.SetBasicAuth(creds[0], creds[1])
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
 	}
 
-	ready.set(true)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Errorf("ready /healthz = %d, want 200", rec.Code)
-	}
-	if got := rec.Body.String(); !strings.Contains(got, `"status":"ok"`) {
-		t.Errorf("ready /healthz body = %q, want it to contain %q", got, `"status":"ok"`)
-	}
+	t.Run("answers with and without credentials", func(t *testing.T) {
+		var ready readiness
+		ready.set(true)
+		h := newTestHandler(t, cfg, &ready, nil)
+		for name, creds := range map[string]*[2]string{
+			"none":  nil,
+			"valid": {"admin", "pw"},
+			"wrong": {"admin", "wrong"},
+		} {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				if code := get(h, method, healthzPath, creds).Code; code != http.StatusOK {
+					t.Errorf("%s /healthz with %s credentials = %d, want 200", method, name, code)
+				}
+			}
+		}
+	})
+
+	t.Run("reports a drain without credentials", func(t *testing.T) {
+		var ready readiness
+		h := newTestHandler(t, cfg, &ready, nil)
+		if code := get(h, http.MethodGet, healthzPath, nil).Code; code != http.StatusServiceUnavailable {
+			t.Errorf("GET /healthz while not serving = %d, want 503", code)
+		}
+	})
+
+	t.Run("other methods are 405 without credentials", func(t *testing.T) {
+		var ready readiness
+		ready.set(true)
+		h := newTestHandler(t, cfg, &ready, nil)
+		if code := get(h, http.MethodPost, healthzPath, nil).Code; code != http.StatusMethodNotAllowed {
+			t.Errorf("POST /healthz = %d, want 405", code)
+		}
+	})
+
+	t.Run("every other route still asks", func(t *testing.T) {
+		var ready readiness
+		ready.set(true)
+		// A fresh handler per request: each refusal draws a failed-login token, and
+		// the list is longer than the burst.
+		fresh := func() http.Handler { return newTestHandler(t, cfg, &ready, nil) }
+		for _, path := range []string{
+			"/", "/index.html", "/style.css", "/ws", "/ws?session=abc",
+			terminal.SessionsPath, terminal.SessionsPath + "/events", terminal.SessionsPath + "/abc",
+			"/healthz/", "//healthz", "/healthz/x",
+		} {
+			rec := get(fresh(), http.MethodGet, path, nil)
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("unauthenticated GET %s = %d, want 401", path, rec.Code)
+			}
+			if rec.Header().Get("WWW-Authenticate") == "" {
+				t.Errorf("unauthenticated GET %s carries no Basic challenge", path)
+			}
+		}
+		if code := get(fresh(), http.MethodPost, terminal.SessionsPath, nil).Code; code != http.StatusUnauthorized {
+			t.Errorf("unauthenticated POST %s = %d, want 401", terminal.SessionsPath, code)
+		}
+		if code := get(fresh(), http.MethodGet, "/", &[2]string{"admin", "pw"}).Code; code != http.StatusOK {
+			t.Errorf("authenticated GET / = %d, want 200", code)
+		}
+	})
+
+	t.Run("probes spend no failed-login token", func(t *testing.T) {
+		var ready readiness
+		ready.set(true)
+		h := newTestHandler(t, cfg, &ready, nil)
+		for i := range failedAuthBurst * 3 {
+			if code := get(h, http.MethodGet, healthzPath, &[2]string{"admin", "wrong"}).Code; code != http.StatusOK {
+				t.Fatalf("probe %d = %d, want 200", i+1, code)
+			}
+		}
+		if code := get(h, http.MethodGet, "/", &[2]string{"admin", "wrong"}).Code; code != http.StatusUnauthorized {
+			t.Errorf("first failed login after %d probes = %d, want 401 (a probe must not drain the operator's bucket)",
+				failedAuthBurst*3, code)
+		}
+	})
+
+	t.Run("the host allowlist still applies", func(t *testing.T) {
+		var ready readiness
+		ready.set(true)
+		h := newTestHandler(t, config{username: "admin", password: "pw", hostPolicy: hostPolicyFor(t, "term.example.com")}, &ready, nil)
+		for host, want := range map[string]int{"attacker.evil:7681": http.StatusForbidden, "term.example.com:7681": http.StatusOK} {
+			req := httptest.NewRequest(http.MethodGet, "http://"+host+healthzPath, nil)
+			req.RemoteAddr = "192.168.1.50:44444"
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != want {
+				t.Errorf("GET /healthz with Host %s = %d, want %d", host, rec.Code, want)
+			}
+		}
+	})
 }
 
 func TestRouteWSReachesTerminal(t *testing.T) {
@@ -1061,7 +1225,7 @@ func TestHostAllowlistRunsBeforeBasicAuth(t *testing.T) {
 	h := newTestHandler(t, cfg, &ready, nil)
 
 	do := func(host string, withCreds bool) int {
-		req := httptest.NewRequest(http.MethodGet, "http://"+host+"/healthz", nil)
+		req := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
 		req.RemoteAddr = "192.168.1.50:44444"
 		if withCreds {
 			req.SetBasicAuth("admin", "pw")
@@ -1416,31 +1580,6 @@ func TestStaticHandlerETagAndRevalidation(t *testing.T) {
 	}
 }
 
-func TestHandlerAuthGatesAllRoutes(t *testing.T) {
-	var ready readiness
-	ready.set(true)
-	cfg := config{username: "admin", password: "pw"}
-	h := newTestHandler(t, cfg, &ready, nil)
-
-	// Even /healthz sits behind auth when a password is configured.
-	for _, path := range []string{"/", "/healthz", "/ws"} {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("unauthenticated %s = %d, want 401", path, rec.Code)
-		}
-	}
-
-	// With credentials, /healthz returns 200.
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	req.SetBasicAuth("admin", "pw")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Errorf("authenticated /healthz = %d, want 200", rec.Code)
-	}
-}
-
 // The gzip negotiation/precompute unit tests (TestAcceptsGzip,
 // TestIfNoneMatchContains, TestGzipAsset, TestGzipAssetContentTypeFallback,
 // TestServeGzip) moved to httpserver with the static-serving mechanism
@@ -1712,7 +1851,7 @@ func TestSessionLoggerTruncatesSessionID(t *testing.T) {
 const failedAuthBurst = 10
 
 // authThrottleHandler builds the real stack with Basic auth configured, plus a
-// requester that drives one GET /healthz through it either with the correct
+// requester that drives one GET / through it either with the correct
 // credentials or with a wrong password.
 func authThrottleHandler(t *testing.T) func(validCreds bool) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1720,7 +1859,7 @@ func authThrottleHandler(t *testing.T) func(validCreds bool) *httptest.ResponseR
 	ready.set(true)
 	h := newTestHandler(t, config{username: "admin", password: "pw"}, &ready, nil)
 	do := func(validCreds bool) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, healthzPath, nil)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		if validCreds {
 			req.SetBasicAuth("admin", "pw")
 		} else {
@@ -1778,9 +1917,8 @@ func TestFailedAuthThrottle(t *testing.T) {
 		if code := do(false).Code; code != http.StatusTooManyRequests {
 			t.Fatalf("bucket is not empty: failed attempt = %d, want 429", code)
 		}
-		// The operator (and the image's baked healthcheck, which sends
-		// AUTH_USERNAME/AUTH_PASSWORD) must keep working while an attacker is being
-		// throttled on the same shared bucket.
+		// The operator must keep working while an attacker is being throttled on
+		// the same shared bucket.
 		if code := do(true).Code; code != http.StatusOK {
 			t.Errorf("valid request mid-flood = %d, want 200 (a correct credential is never throttled)", code)
 		}
@@ -1812,7 +1950,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 		cfg := config{username: "admin", password: "pw", hostPolicy: hostPolicyFor(t, "term.example.com")}
 		h := newTestHandler(t, cfg, &ready, nil)
 		get := func(host, pass string) int {
-			req := httptest.NewRequest(http.MethodGet, "http://"+host+healthzPath, nil)
+			req := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
 			req.RemoteAddr = "192.168.1.50:44444"
 			req.SetBasicAuth("admin", pass)
 			rec := httptest.NewRecorder()
@@ -2676,7 +2814,7 @@ func TestNoDiagnosticRoutesOnThisSurface(t *testing.T) {
 // session surface refuses storage: the id in a session URL is the /ws
 // attach capability, so a cached response — or a cached 404 whose KEY
 // carries the id — leaves it readable from a shared cache after the
-// session is gone. The header comes from the libraries (health.
+// session is gone. The header comes from the libraries (go/health's
 // CheckHandler, the engine's own no-store wrapper), so this is a
 // synchronizing check against them: a library regression or a consumer
 // override fails here on the bump PR.

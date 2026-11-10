@@ -337,27 +337,14 @@ ENV LISTEN_ADDR=:7681
 ENV SESSION_CMD=/bin/bash
 EXPOSE 7681
 
-# Probe /healthz with credentials via curl's stdin config file (-K -) rather
-# than -u, so the password never lands in the container's process args
-# (ps / docker inspect). The sed escapes \ and " so a password containing
-# either can't break out of the config's quoted value or inject another curl
-# directive. Do NOT simplify to -u: that reintroduces both the argv exposure
-# and the injection vector.
-# The port is DERIVED from LISTEN_ADDR rather than hardcoded, so an operator who
-# moves the listener keeps a working probe instead of an image that reports
-# unhealthy while serving. --max-time 4 sits strictly below --timeout=5s, so a
-# slow endpoint is reported by curl's exit code instead of being force-killed
-# mid-report by Docker; -S makes the reason visible in `docker inspect`.
-# DL3025 wants JSON notation, which cannot run this: the probe assembles a curl
-# config file on stdin through two command substitutions and a pipe, precisely so
-# the password never reaches argv. Exec form supports none of that, and adopting
-# it would mean going back to -u and reintroducing the exposure the comment above
-# forbids. This image also ships a shell entrypoint, so the distroless case the
-# rule guards does not arise here.
+# The port is derived from LISTEN_ADDR, so moving the listener keeps the probe
+# working. --max-time 4 sits below --timeout=5s, so curl's exit code reports a
+# slow endpoint before Docker kills the probe; -S puts the reason in
+# `docker inspect`. DL3025's exec form performs no parameter expansion and would
+# probe the literal ${LISTEN_ADDR##*:}; the image ships bash for its terminals,
+# so the distroless case the rule guards does not arise.
 # hadolint ignore=DL3025
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
-    CMD u=$(printf '%s' "${AUTH_USERNAME:-admin}" | sed 's/[\\"]/\\&/g'); \
-        p=$(printf '%s' "${AUTH_PASSWORD:-}" | sed 's/[\\"]/\\&/g'); \
-        printf 'user = "%s:%s"\n' "$u" "$p" | curl -sfS --max-time 4 -K - "http://127.0.0.1:${LISTEN_ADDR##*:}/healthz" || exit 1
+    CMD curl -sfS --max-time 4 "http://127.0.0.1:${LISTEN_ADDR##*:}/healthz"
 
 ENTRYPOINT ["/usr/local/bin/web-terminal-server"]
