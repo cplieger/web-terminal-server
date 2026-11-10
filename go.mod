@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/cplieger/go/envx v1.1.0-dev.2
-	github.com/cplieger/go/health v1.1.0-dev.1
+	github.com/cplieger/go/health v1.1.0-dev.2
 	github.com/cplieger/go/httpserver v1.2.0-dev.1
 	github.com/cplieger/go/slogx v1.1.0-dev.1
 	github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.12
