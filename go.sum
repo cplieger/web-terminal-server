@@ -12,8 +12,8 @@ github.com/cplieger/go/slogx v1.1.0-dev.1 h1:aFt+7Zm9wXQKmVLWcfbvdSN+tBeLLGENpw9
 github.com/cplieger/go/slogx v1.1.0-dev.1/go.mod h1:N88y5LJZ1aVp++cLFqzEV4WsalaX5YKXoRtXT29Ngkw=
 github.com/cplieger/go/textsafe v1.1.0-dev.1 h1:hItEYflWq+6rzBEwsYe0PCJz/VC3K3eUSNjEMJCKLbQ=
 github.com/cplieger/go/textsafe v1.1.0-dev.1/go.mod h1:x29RmZpMO2yjPt1zRbjtcXWVdkekukl+jA5FN1wXUlI=
-github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.11 h1:FEgSFUadmjCH7BR5c+6oyX3bsN3DBeNSUZoD1iMRN/s=
-github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.11/go.mod h1:aMYvlH2Oi2I4lf8FJ7RFXd8McggTBKjEM1XZkkxKBNU=
+github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.12 h1:PaWCBNkGimAseIb+1xtcC6uS5BQUjqKFPM2luLJwc7U=
+github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.12/go.mod h1:mgTrT+/M0KaEBxK/Zj0i/6gsWII4L2cOexiJWSCkTRU=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
 golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=
