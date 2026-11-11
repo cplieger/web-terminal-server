@@ -2,8 +2,8 @@ github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNU
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/cplieger/go/envx v1.1.0-dev.2 h1:EWfw30dhmo9Yc0bON+cMFQLzySq1nHF5OWESf4oeBww=
 github.com/cplieger/go/envx v1.1.0-dev.2/go.mod h1:fcyuRs7z1rAIgNkATKMGUbjmDHqVBtAiVEzmCtlmubM=
-github.com/cplieger/go/health v1.1.0-dev.3 h1:30VPmTlVynL7MuWDaenziyzbgA6gccQ09nOp63tFjRA=
-github.com/cplieger/go/health v1.1.0-dev.3/go.mod h1:7eOprE7L510iSRZBJabPD4V06TftKymjdtLnLTZPTiY=
+github.com/cplieger/go/health/v2 v2.0.0 h1:WHZiSYIyvmaFvkohJopPptEg9oW4QxRSV5HUxaeFUKo=
+github.com/cplieger/go/health/v2 v2.0.0/go.mod h1:Dmp78r+0ZHF2xMfOQqZ7c5pBiZF1el3QhLHA1y9um2A=
 github.com/cplieger/go/httpserver v1.2.0-dev.1 h1:Blo6rOE1kMRSHZ6iPJKm5lFfa/sJy2aVnLJEywCYatI=
 github.com/cplieger/go/httpserver v1.2.0-dev.1/go.mod h1:MuZxKRRjQG6DAJBO88cTGhVdhSCmBu2PMeA/DWRbiTQ=
 github.com/cplieger/go/pathinside v1.1.0-dev.1 h1:ZMryoY2Hxrodm5uOLeKVpaKVO9ADp1RDDX0IWlKS/PY=
