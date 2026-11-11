@@ -15,11 +15,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # The digests come from go.dev's own release index, so Renovate's custom datasources
 # rewrite the version and both shas as one group.
 # renovate: datasource=golang-version depName=golang
-ARG GO_VERSION=1.27.3
+ARG GO_VERSION=1.27.4
 # renovate: datasource=custom.golang-amd64 depName=golang-amd64
-ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  # go1.27.3
+ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840  # go1.27.4
 # renovate: datasource=custom.golang-arm64 depName=golang-arm64
-ARG GO_SHA256_ARM64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49  # go1.27.3
+ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92  # go1.27.4
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
       amd64) GO_SHA256="$GO_SHA256_AMD64" ;; \

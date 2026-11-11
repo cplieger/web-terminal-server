@@ -1,6 +1,6 @@
 module github.com/cplieger/web-terminal-server
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/cplieger/envx/v2 v2.1.0
@@ -14,5 +14,5 @@ require (
 	github.com/cplieger/pathinside/v2 v2.1.0 // indirect
 	github.com/cplieger/runesafe/v3 v3.2.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 )
