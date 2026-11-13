@@ -8,6 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver"
 )
 
@@ -186,8 +187,8 @@ func TestPersistFlagReachesTheServedPage(t *testing.T) {
 		{name: "on", enabled: true, want: persistFlagOn, reject: persistFlagOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var ready readiness
-			ready.set(true)
+			var ready health.Status
+			ready.Set(true)
 			h := newTestHandler(t, config{persistScrollback: tc.enabled}, &ready, nil)
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -251,8 +252,8 @@ func TestPersistFlagOverlayKeepsTheServedBytesSelfConsistent(t *testing.T) {
 	// pages must not share a validator.
 	etag := func(enabled bool) string {
 		t.Helper()
-		var ready readiness
-		ready.set(true)
+		var ready health.Status
+		ready.Set(true)
 		h := newTestHandler(t, config{persistScrollback: enabled}, &ready, nil)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Host = "localhost"
