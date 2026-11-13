@@ -2015,11 +2015,10 @@ func TestFailedAuthThrottleInertWithoutPassword(t *testing.T) {
 // TestCanonicalPathGuard pins the canonical-path guard (httpserver.
 // CanonicalRequestPath). ServeMux cleans the request path before selecting
 // a pattern and answers 307 when it differs, before any handler runs — a
-// SUCCESS status to a client without -L, and this image's baked
-// HEALTHCHECK is `curl -sf` with no -L, so `//healthz` would exit 0 having
-// never invoked the readiness gate. The guard refuses those spellings on
-// the probe and session-API surfaces; the static mount keeps its
-// redirects.
+// SUCCESS status to a client that does not follow redirects, so a probe of
+// `//healthz` would pass having never invoked the readiness gate. The guard
+// refuses those spellings on the probe and session-API surfaces; the static
+// mount keeps its redirects.
 func TestCanonicalPathGuard(t *testing.T) {
 	var ready health.Status
 	ready.Set(true)

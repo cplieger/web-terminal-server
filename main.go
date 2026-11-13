@@ -178,7 +178,7 @@ type config struct {
 // than exiting: run owns every failure path, main owns the single exit.
 func loadConfig() (config, error) {
 	c := config{
-		addr:           cmp.Or(envx.String("LISTEN_ADDR"), defaultAddr),
+		addr:           listenAddr(),
 		command:        strings.Fields(cmp.Or(envx.String("SESSION_CMD"), defaultCmd)),
 		workDir:        os.Getenv("WORK_DIR"),
 		username:       cmp.Or(envx.String("AUTH_USERNAME"), defaultUsername),
@@ -239,6 +239,9 @@ func loadConfig() (config, error) {
 // reports failure by returning an error, so no branch can exit past a pending
 // defer.
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "health" {
+		os.Exit(healthCommand(os.Stderr, listenAddr()))
+	}
 	if err := run(); err != nil {
 		// stage is what a log query keys on: a stable value beats prose,
 		// which any message edit would rewrite.
@@ -426,11 +429,6 @@ func run() error {
 	return nil
 }
 
-// newHandler assembles the HTTP handler: the route mux wrapped in the
-// middleware chain (logging, panic recovery, security headers, host
-// allowlist, auth throttle, basic auth, cross-origin protection,
-// canonical-path guard, routes). Session handlers are passed in so a test can
-// exercise routing with stubs and no real PTY. ready gates /healthz.
 // sessionCreateGate throttles session creation in aggregate, because each
 // admitted POST forks a PTY: a burst of six absorbs a user opening several tabs
 // at once, and one token a second bounds sustained churn. Other methods on the
@@ -444,6 +442,11 @@ func sessionCreateGate() httpserver.Middleware {
 	)
 }
 
+// newHandler assembles the HTTP handler: the route mux wrapped in the
+// middleware chain (logging, panic recovery, security headers, host
+// allowlist, auth throttle, basic auth, cross-origin protection,
+// canonical-path guard, routes). Session handlers are passed in so a test can
+// exercise routing with stubs and no real PTY. ready gates /healthz.
 func newHandler(cfg *config, h terminal.SessionHandlers, ready health.Signal) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// The engine owns its route topology (MountSessionRoutes wires exactly
@@ -770,10 +773,11 @@ const canonicalPathRefusal = "request path is not canonical. Send the route path
 
 // canonicalPathGuard refuses a request whose path is not the spelling
 // http.ServeMux will route, when the cleaned path falls under one of
-// prefixes. ServeMux answers 307 on a cleaned-path mismatch, and to curl
-// without -L a 307 reads as success — this image's HEALTHCHECK would exit 0
-// having never consulted readiness. Out of scope: the static mount (a
-// browser follows the redirect) and /ws (a 3xx handshake already fails).
+// prefixes. ServeMux answers 307 on a cleaned-path mismatch, and to a client
+// that does not follow redirects (curl without -L, an uptime monitor) a 307
+// reads as success, so a probe would pass having never consulted readiness.
+// Out of scope: the static mount (a browser follows the redirect) and /ws (a
+// 3xx handshake already fails).
 func canonicalPathGuard(prefixes ...string) httpserver.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
