@@ -34,7 +34,7 @@ A terminal connects at `/ws?session=<id>`. With `AUTH_PASSWORD` set, anyone who 
 
 DNS rebinding reaches even a terminal bound to loopback, through your own browser. A malicious page makes its own host name resolve to this server, and the browser's same-origin checks then pass because the page's origin and the `Host` header agree.
 
-Either of two settings stops it. `ALLOWED_HOSTS` set to the exact names you browse to makes the server refuse every other `Host`. The one exception is a request from inside the container that also names a loopback host, such as the image's health check. `AUTH_PASSWORD` works too, because the attacker's page cannot present your credentials. The server warns at startup when neither is set.
+Either of two settings stops it. `ALLOWED_HOSTS` set to the exact names you browse to makes the server refuse every other `Host`. The exceptions are requests the container sends to itself: one from loopback that names a loopback host, and one from the address `LISTEN_ADDR` binds that names that address. The image's health check is one of them. `AUTH_PASSWORD` works too, because the attacker's page cannot present your credentials. The server warns at startup when neither is set.
 
 ## Lines stored in the browser
 
@@ -53,18 +53,20 @@ The terminals run as the container user, which is root by default. Restrict them
 
 ## Hardened compose settings
 
-web-terminal-server runs with `read_only`, `cap_drop: [ALL]` and `no-new-privileges` from [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md), and needs no capability added back. The terminals still run as root, the image's own user, but with no capabilities. Under `read_only` it needs two `tmpfs` folders, `/tmp` and `/root`, the shell's home. If one of them is missing, the server still starts and opens terminals. A write from a terminal to that folder then fails with `Read-only file system`. Add these lines to the service in `compose.yaml`:
+web-terminal-server runs with `read_only`, `cap_drop: [ALL]` and `no-new-privileges` from [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md), and needs no capability added back. The terminals still run as root, the image's own user, but with no capabilities. Add these lines to the service in `compose.yaml`:
 
 ```yaml
     read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-      - /root:rw,nosuid,nodev,size=64m,mode=0700  # the shell's home
     cap_drop: [ALL]
     security_opt:
       - "no-new-privileges:true"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+      - /root:rw,nosuid,nodev,size=64m,mode=0700  # the shell's home
     user: "0:0"  # root, the user the image already runs as
 ```
+
+The server keeps no state on disk. The two `tmpfs` folders are for the terminals: `/tmp` for the programs they run, and `/root` as the shell's home. If one of them is missing, the server still starts and opens terminals, and a write from a terminal to that folder fails with `Read-only file system`. Health needs no folder, because the server keeps its verdict in memory and `/healthz` serves it from there.
 
 The `/root` folder hides the image's `.bashrc` and `.profile`, so the shell starts without them. Keep your work in a mounted folder such as `/work`.
 
@@ -76,7 +78,7 @@ The `/root` folder hides the image's `.bashrc` and `.profile`, so the shell star
 | [web-terminal-engine](https://github.com/cplieger/web-terminal-engine) | The Go engine that runs each terminal, and its TypeScript browser renderer. |
 | [web-terminal-ui](https://github.com/cplieger/web-terminal-ui) | The touch-first browser interface. |
 | [httpserver](https://github.com/cplieger/go/tree/main/httpserver) | The HTTP plumbing: access logging, middleware, security headers, static files and rate limiting. |
-| [health](https://github.com/cplieger/go/tree/main/health) | The `/healthz` readiness answer. |
+| [health](https://github.com/cplieger/go/tree/main/health) | The `/healthz` readiness answer and the `health` command the image's healthcheck runs. |
 | [envx](https://github.com/cplieger/go/tree/main/envx), [slogx](https://github.com/cplieger/go/tree/main/slogx) | Typed environment parsing and the structured-logging setup. |
 | Monaspace Neon NF | The terminal's text font, fetched at build time and checked against a recorded digest per face. |
 | [Web Terminal Glyphs](https://github.com/cplieger/web-terminal-glyphs) | The overlay font for box drawing, blocks, shades, braille and mosaics, digest-checked. The build fails if its cell size differs from the served CSS. |

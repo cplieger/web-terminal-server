@@ -24,12 +24,11 @@ import (
 	"os/signal"
 	"path"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/cplieger/go/envx"
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
@@ -55,15 +54,6 @@ const healthzPath = "/healthz"
 // reasonNotServing is the /healthz reason while the listener is not serving:
 // before startup completes and from the start of a drain.
 const reasonNotServing = "starting up or shutting down"
-
-// readiness is the serving-state flag /healthz reports; its zero value is not serving.
-type readiness struct{ serving atomic.Bool }
-
-var _ health.Signal = (*readiness)(nil)
-
-func (r *readiness) set(serving bool) { r.serving.Store(serving) }
-
-func (r *readiness) Healthy() bool { return r.serving.Load() }
 
 // applyIntEnv parses an integer env var into *dst, leaving it unchanged when
 // unset/empty, and rejects a non-integer or a value below min.
@@ -188,7 +178,7 @@ type config struct {
 // than exiting: run owns every failure path, main owns the single exit.
 func loadConfig() (config, error) {
 	c := config{
-		addr:           cmp.Or(envx.String("LISTEN_ADDR"), defaultAddr),
+		addr:           listenAddr(),
 		command:        strings.Fields(cmp.Or(envx.String("SESSION_CMD"), defaultCmd)),
 		workDir:        os.Getenv("WORK_DIR"),
 		username:       cmp.Or(envx.String("AUTH_USERNAME"), defaultUsername),
@@ -249,6 +239,9 @@ func loadConfig() (config, error) {
 // reports failure by returning an error, so no branch can exit past a pending
 // defer.
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "health" {
+		os.Exit(healthCommand(os.Stderr, listenAddr()))
+	}
 	if err := run(); err != nil {
 		// stage is what a log query keys on: a stable value beats prose,
 		// which any message edit would rewrite.
@@ -357,13 +350,13 @@ func run() error {
 		}
 	}
 
-	var ready readiness
+	ready := health.NewStatus()
 
 	handler, err := newHandler(&cfg, terminal.SessionHandlers{
 		WS:     mgr.WebSocketHandler(),
 		REST:   mgr.RESTHandler(),
 		Events: mgr.EventsHandler(),
-	}, &ready)
+	}, ready)
 	if err != nil {
 		// The remedy rides inside the error since main renders exactly one
 		// line. This stage is a BUILD defect, not a runtime setting.
@@ -409,18 +402,18 @@ func run() error {
 		"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 		"work_dir", cfg.workDir, "scrollback", scrollbackLines,
 		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
-	ready.set(true)
+	ready.Set(true)
 
 	// httpserver.Run serves on the pre-bound listener and, on ctx cancellation,
 	// runs the pre-drain hook, drains within the grace window, then runs
-	// teardown. The pre-drain hook flips readiness false and cancels
+	// teardown. The pre-drain hook drains the health verdict and cancels
 	// in-flight contexts before the drain starts, so /healthz reports 503
 	// during the window and open SSE streams unblock (see BaseContext above).
 	if err := httpserver.Run(ctx, srv, ln,
 		httpserver.WithTeardown(shutdownSessions),
 		httpserver.WithShutdownGrace(shutdownGrace),
 		httpserver.WithPreDrain(func(context.Context) {
-			ready.set(false)
+			ready.BeginDrain()
 			cancelBase()
 			slog.Info("shutting down", "cause", context.Cause(ctx))
 		})); err != nil {
@@ -436,11 +429,6 @@ func run() error {
 	return nil
 }
 
-// newHandler assembles the HTTP handler: the route mux wrapped in the
-// middleware chain (logging, panic recovery, security headers, host
-// allowlist, auth throttle, basic auth, cross-origin protection,
-// canonical-path guard, routes). Session handlers are passed in so a test can
-// exercise routing with stubs and no real PTY. ready gates /healthz.
 // sessionCreateGate throttles session creation in aggregate, because each
 // admitted POST forks a PTY: a burst of six absorbs a user opening several tabs
 // at once, and one token a second bounds sustained churn. Other methods on the
@@ -454,7 +442,12 @@ func sessionCreateGate() httpserver.Middleware {
 	)
 }
 
-func newHandler(cfg *config, h terminal.SessionHandlers, ready *readiness) (http.Handler, error) {
+// newHandler assembles the HTTP handler: the route mux wrapped in the
+// middleware chain (logging, panic recovery, security headers, host
+// allowlist, auth throttle, basic auth, cross-origin protection,
+// canonical-path guard, routes). Session handlers are passed in so a test can
+// exercise routing with stubs and no real PTY. ready gates /healthz.
+func newHandler(cfg *config, h terminal.SessionHandlers, ready health.Signal) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// The engine owns its route topology (MountSessionRoutes wires exactly
 	// its documented set), so no engine-internal route reaches this surface
@@ -780,10 +773,11 @@ const canonicalPathRefusal = "request path is not canonical. Send the route path
 
 // canonicalPathGuard refuses a request whose path is not the spelling
 // http.ServeMux will route, when the cleaned path falls under one of
-// prefixes. ServeMux answers 307 on a cleaned-path mismatch, and to curl
-// without -L a 307 reads as success — this image's HEALTHCHECK would exit 0
-// having never consulted readiness. Out of scope: the static mount (a
-// browser follows the redirect) and /ws (a 3xx handshake already fails).
+// prefixes. ServeMux answers 307 on a cleaned-path mismatch, and to a client
+// that does not follow redirects (curl without -L, an uptime monitor) a 307
+// reads as success, so a probe would pass having never consulted readiness.
+// Out of scope: the static mount (a browser follows the redirect) and /ws (a
+// 3xx handshake already fails).
 func canonicalPathGuard(prefixes ...string) httpserver.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

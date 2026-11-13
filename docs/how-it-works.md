@@ -48,7 +48,7 @@ A refused handshake keeps its request line with its real status. Examples are a 
 
 ## Healthcheck
 
-The image checks `/healthz` on `127.0.0.1` every 30 seconds, and the port follows `LISTEN_ADDR`, so moving the listener keeps the check working. The server counts itself ready once its listener is bound, and not ready from the moment a shutdown begins. `/healthz` needs no login, so the check sends none. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) gives the answers and who is told.
+The image runs `web-terminal-server health` every 30 seconds. It asks `/healthz` at the address in `LISTEN_ADDR`, or on `127.0.0.1` when the host part is empty, so moving the listener keeps the check working. The server counts itself ready once its listener is bound, and not ready from the moment a shutdown begins. `/healthz` needs no login, so the check sends none. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) gives the answers and who is told.
 
 ## Routes
 

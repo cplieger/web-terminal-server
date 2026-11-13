@@ -17,17 +17,17 @@ The server writes logfmt lines to standard error, with UTC timestamps. `LOG_LEVE
 
 No alert rule reads the log. Search it by the `stage` key when the server does not start. Its one `ERROR` line, `web-terminal-server exited with error`, carries `stage` and the remedy in `error`. [Startup failures](how-it-works.md#startup-failures) lists the stage values, which stay the same between releases. The `terminal attach attempt` line records each request that presents a terminal id, with a shortened id, the client address and the request id. [Logs](how-it-works.md#logs) describes the request lines.
 
-A healthy probe of `/healthz` logs nothing at `info`. A probe that gets `503` logs one access line at `ERROR`, and one refused with a `4xx` code logs it at `WARN`.
+Every access line for `/healthz` is logged at `debug`, whatever its status, because a prober repeats the same answer every interval. The server logs `health state changed` at `INFO` with `healthy=true` once its listener is bound, and at `WARN` with `healthy=false draining=true` when a shutdown begins. A probe refused for its host name logs a `WARN` line from the host check.
 
 ## Knowing the app is alive
 
 | Route | Method | Port | Login | Answers |
 | --- | --- | --- | --- | --- |
-| `/healthz` | `GET`, `HEAD` | `LISTEN_ADDR`, `7681` in the image | none, even with `AUTH_PASSWORD` set. `ALLOWED_HOSTS` applies, a loopback client asking for a loopback host name always admitted | `200 {"status":"ok"}`, or `503 {"status":"unhealthy","reasons":[...]}` |
+| `/healthz` | `GET`, `HEAD` | `LISTEN_ADDR`, `7681` in the image | none, even with `AUTH_PASSWORD` set. `ALLOWED_HOSTS` applies, except to the image's own `web-terminal-server health` check, unless `LISTEN_ADDR` names a host name other than `localhost` | `200 {"status":"ok"}`, or `503 {"status":"unhealthy","reasons":[...]}` |
 
 **What healthy means.** The server is listening and is not shutting down. When a shutdown begins, `/healthz` answers `503` with the reason `starting up or shutting down` until the listener closes. Any other method answers `405`. The answer carries only that verdict, so it needs no login. A prober that still sends the login keeps working. A program that hangs in one tab affects only that tab, with you in front of it. The server answers for every tab, so it stays healthy.
 
-**Docker health.** The image checks itself every 30 seconds with `curl`, which asks `/healthz` on `127.0.0.1` at the port in `LISTEN_ADDR` and gives up after 4 seconds. Docker marks the container unhealthy after 3 failures, and allows 15 seconds after a start. Docker's health status notifies nobody on its own, and Docker does not restart an unhealthy container.
+**Docker health.** The image checks itself every 30 seconds with `web-terminal-server health`, which asks `/healthz` on the container's loopback, or on the address `LISTEN_ADDR` names, and gives up after 4 seconds. Docker marks the container unhealthy after 3 failures, and allows 15 seconds after a start. Docker's health status notifies nobody on its own, and Docker does not restart an unhealthy container.
 
 **Who is told.**
 

@@ -305,9 +305,9 @@ FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f0
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# bash for the default command; curl for the healthcheck; ca-certificates for
-# TLS from within the shell. Operators who set a different SESSION_CMD layer
-# their own tools on top.
+# bash for the default command; curl and ca-certificates for HTTPS from within
+# the shell. Operators who set a different SESSION_CMD layer their own tools on
+# top.
 # PKG_REFRESH busts the cache for this layer. Without it BuildKit restores the
 # layer verbatim on every rebuild and `apt-get upgrade` never runs again, so the
 # image keeps shipping whatever packages were current when the layer was first
@@ -337,14 +337,7 @@ ENV LISTEN_ADDR=:7681
 ENV SESSION_CMD=/bin/bash
 EXPOSE 7681
 
-# The port is derived from LISTEN_ADDR, so moving the listener keeps the probe
-# working. --max-time 4 sits below --timeout=5s, so curl's exit code reports a
-# slow endpoint before Docker kills the probe; -S puts the reason in
-# `docker inspect`. DL3025's exec form performs no parameter expansion and would
-# probe the literal ${LISTEN_ADDR##*:}; the image ships bash for its terminals,
-# so the distroless case the rule guards does not arise.
-# hadolint ignore=DL3025
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
-    CMD curl -sfS --max-time 4 "http://127.0.0.1:${LISTEN_ADDR##*:}/healthz"
+    CMD ["/usr/local/bin/web-terminal-server", "health"]
 
 ENTRYPOINT ["/usr/local/bin/web-terminal-server"]

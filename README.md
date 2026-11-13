@@ -93,7 +93,7 @@ Each setting is an environment variable in `compose.yaml`. The server reads them
 | `PERSIST_SCROLLBACK` | Keep each tab's newest 200 lines in the browser, so a reloaded page fills in faster. `false` turns it off. | `true` |
 | `SCROLLBACK` | Lines of history kept per terminal on the server. | `100000` |
 | `TRUSTED_PROXIES` | Reverse-proxy CIDRs or IPs whose `X-Forwarded-For` the access log trusts to name the real client. | _(unset)_ |
-| `LISTEN_ADDR` | Listen address as `host:port`. Keep the host part empty so the healthcheck can still reach it. | `:7681` |
+| `LISTEN_ADDR` | Listen address as `host:port`. The healthcheck asks the same address, or `127.0.0.1` when the host part is empty. | `:7681` |
 | `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. An unknown value falls back to `info` with a warning. | `info` |
 
 [Configuration](docs/configuration.md) has the details of each setting.
@@ -119,9 +119,9 @@ Whoever passes the login gets a shell inside the container, as root by default. 
 
 ## Troubleshooting
 
-The healthcheck asks `/healthz` on `127.0.0.1` every 30 seconds whether the server is serving, after a 15-second start period. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
+An unhealthy container means the server is not answering its health check, or a shutdown has begun. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
 
-- `docker ps` shows `unhealthy` while the page works. `LISTEN_ADDR` names one interface. Keep its host part empty, as in `:7681`.
+- `docker ps` shows `unhealthy` while the page works. `LISTEN_ADDR` names a host name other than `localhost` that `ALLOWED_HOSTS` does not list. Add it to `ALLOWED_HOSTS`, or write the address as an IP.
 - The log warns that the server runs as PID 1. Add `init: true` to the service, or `--init` to `docker run`.
 - The browser shows `host not allowed`. Add that host name to `ALLOWED_HOSTS`.
 - The container stops with `web-terminal-server exited with error`. Its `error` field names the problem and its `stage` field names the step that failed.
