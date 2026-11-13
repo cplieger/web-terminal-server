@@ -15,11 +15,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # The digests come from go.dev's own release index, so Renovate's custom datasources
 # rewrite the version and both shas as one group.
 # renovate: datasource=golang-version depName=golang
-ARG GO_VERSION=1.27.3
+ARG GO_VERSION=1.27.4
 # renovate: datasource=custom.golang-amd64 depName=golang-amd64
-ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  # go1.27.3
+ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840  # go1.27.4
 # renovate: datasource=custom.golang-arm64 depName=golang-arm64
-ARG GO_SHA256_ARM64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49  # go1.27.3
+ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92  # go1.27.4
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
       amd64) GO_SHA256="$GO_SHA256_AMD64" ;; \
@@ -69,13 +69,13 @@ COPY . ./
 # downloaded to a file (a pipe cannot be hashed before it is consumed) and
 # digest-verified before extraction.
 # renovate: datasource=npm depName=@cplieger/web-terminal-engine
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.4.0
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_VERSION=6.5.0
 # repin: dep=@cplieger/web-terminal-engine url=https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=549ef58cd29acfe05cc1c4aad6b16436ed75719fc217039ae4db4a10d457fe28
+ARG CPLIEGER_WEB_TERMINAL_ENGINE_SHA256=432d761dbb9ed6d08ced5be926cfc1c4f0936af2b46e6eceef93ed7c92579e1a
 # renovate: datasource=npm depName=@cplieger/web-terminal-ui
-ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=8.6.0
+ARG CPLIEGER_WEB_TERMINAL_UI_VERSION=9.0.0
 # repin: dep=@cplieger/web-terminal-ui url=https://registry.npmjs.org/@cplieger/web-terminal-ui/-/web-terminal-ui-{version}.tgz
-ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=dcc4eebe1ad1edf08d0473f9fcd40b537221a687fcf4b90562241317c0d282a2
+ARG CPLIEGER_WEB_TERMINAL_UI_SHA256=e1733e7e64b49db36674b7a909e1cd5fb32055b2ac3fb5293cd20ee7ce42559a
 RUN mkdir -p node_modules/@cplieger/web-terminal-engine node_modules/@cplieger/web-terminal-ui && \
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 5 \
       -o /tmp/engine.tgz "https://registry.npmjs.org/@cplieger/web-terminal-engine/-/web-terminal-engine-${CPLIEGER_WEB_TERMINAL_ENGINE_VERSION}.tgz" && \
@@ -305,9 +305,9 @@ FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f0
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# bash for the default command; curl for the healthcheck; ca-certificates for
-# TLS from within the shell. Operators who set a different SESSION_CMD layer
-# their own tools on top.
+# bash for the default command; curl and ca-certificates for HTTPS from within
+# the shell. Operators who set a different SESSION_CMD layer their own tools on
+# top.
 # PKG_REFRESH busts the cache for this layer. Without it BuildKit restores the
 # layer verbatim on every rebuild and `apt-get upgrade` never runs again, so the
 # image keeps shipping whatever packages were current when the layer was first
@@ -337,27 +337,7 @@ ENV LISTEN_ADDR=:7681
 ENV SESSION_CMD=/bin/bash
 EXPOSE 7681
 
-# Probe /healthz with credentials via curl's stdin config file (-K -) rather
-# than -u, so the password never lands in the container's process args
-# (ps / docker inspect). The sed escapes \ and " so a password containing
-# either can't break out of the config's quoted value or inject another curl
-# directive. Do NOT simplify to -u: that reintroduces both the argv exposure
-# and the injection vector.
-# The port is DERIVED from LISTEN_ADDR rather than hardcoded, so an operator who
-# moves the listener keeps a working probe instead of an image that reports
-# unhealthy while serving. --max-time 4 sits strictly below --timeout=5s, so a
-# slow endpoint is reported by curl's exit code instead of being force-killed
-# mid-report by Docker; -S makes the reason visible in `docker inspect`.
-# DL3025 wants JSON notation, which cannot run this: the probe assembles a curl
-# config file on stdin through two command substitutions and a pipe, precisely so
-# the password never reaches argv. Exec form supports none of that, and adopting
-# it would mean going back to -u and reintroducing the exposure the comment above
-# forbids. This image also ships a shell entrypoint, so the distroless case the
-# rule guards does not arise here.
-# hadolint ignore=DL3025
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
-    CMD u=$(printf '%s' "${AUTH_USERNAME:-admin}" | sed 's/[\\"]/\\&/g'); \
-        p=$(printf '%s' "${AUTH_PASSWORD:-}" | sed 's/[\\"]/\\&/g'); \
-        printf 'user = "%s:%s"\n' "$u" "$p" | curl -sfS --max-time 4 -K - "http://127.0.0.1:${LISTEN_ADDR##*:}/healthz" || exit 1
+    CMD ["/usr/local/bin/web-terminal-server", "health"]
 
 ENTRYPOINT ["/usr/local/bin/web-terminal-server"]

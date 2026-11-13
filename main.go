@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path"
@@ -26,10 +27,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/envx/v2"
-	"github.com/cplieger/slogx"
+	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
-	"github.com/cplieger/webhttp/v3"
 )
 
 // staticFS holds the bundled front end; the dev-build script and the Dockerfile
@@ -45,9 +47,13 @@ const (
 )
 
 // healthzPath is the readiness route: the image's baked HEALTHCHECK target,
-// the path ProbeLogLevel quiets, and one of the two prefixes the
-// canonical-path guard covers.
+// the path WithProbeLogLevel quiets, the one path the login exempts, and one of
+// the two prefixes the canonical-path guard covers.
 const healthzPath = "/healthz"
+
+// reasonNotServing is the /healthz reason while the listener is not serving:
+// before startup completes and from the start of a drain.
+const reasonNotServing = "starting up or shutting down"
 
 // applyIntEnv parses an integer env var into *dst, leaving it unchanged when
 // unset/empty, and rejects a non-integer or a value below min.
@@ -107,12 +113,12 @@ func applyBoolEnv(key envx.Key, dst *bool) error {
 // Lenient: a malformed entry is skipped rather than disabling proxy
 // awareness entirely. Never fails open — unset yields nil, so ClientIP
 // ignores X-Forwarded-For and logs the unspoofable socket peer.
-func parseTrustedProxies(key string) []*net.IPNet {
+func parseTrustedProxies(key string) []netip.Prefix {
 	v := os.Getenv(key)
 	if v == "" {
 		return nil
 	}
-	nets, invalid := webhttp.ParseCIDRs(strings.Split(v, ","))
+	prefixes, invalid := httpserver.ParseCIDRs(strings.Split(v, ","))
 	if len(invalid) > 0 {
 		// Count-only: a compose interpolation mistake could put a credential
 		// on this variable, so the rejected entries never reach the log.
@@ -120,18 +126,18 @@ func parseTrustedProxies(key string) []*net.IPNet {
 			"invalid_count", len(invalid),
 			"hint", "each entry must be a CIDR (e.g. 10.0.0.0/8) or a bare IP (e.g. 192.168.1.5)")
 	}
-	return nets
+	return prefixes
 }
 
 // parseAllowedHosts reads the comma-separated ALLOWED_HOSTS list into a
-// webhttp.HostPolicy. Closes the DNS-rebinding hole a same-origin check alone
+// httpserver.HostPolicy. Closes the DNS-rebinding hole a same-origin check alone
 // leaves open: rebinding makes Origin and Host agree, so CrossOriginProtection
 // admits it (CWE-346). Unset yields an inactive policy; all-malformed yields
 // an active empty policy (deny-all but loopback).
-func parseAllowedHosts(key string) *webhttp.HostPolicy {
-	policy, invalid := webhttp.ParseHostList(strings.Split(os.Getenv(key), ","),
-		webhttp.WithLoopbackExempt(true),
-		webhttp.WithHostAllowlistError("host_not_allowed",
+func parseAllowedHosts(key string) *httpserver.HostPolicy {
+	policy, invalid := httpserver.ParseHostList(strings.Split(os.Getenv(key), ","),
+		httpserver.WithLoopbackExempt(true),
+		httpserver.WithHostAllowlistError("host_not_allowed",
 			"host not allowed. Add it to ALLOWED_HOSTS to serve this hostname"))
 	if len(invalid) > 0 {
 		// Count-only, like parseTrustedProxies: a mis-expanded variable could
@@ -149,7 +155,7 @@ func parseAllowedHosts(key string) *webhttp.HostPolicy {
 
 // config holds the resolved server settings parsed from the environment.
 type config struct {
-	hostPolicy *webhttp.HostPolicy
+	hostPolicy *httpserver.HostPolicy
 	// scrollback is the operator's depth, or nil when unset — the handler is
 	// then built without WithScrollbackCapacity and inherits the engine's
 	// default (shared across sibling apps). A pointer so "unset" is the zero
@@ -160,7 +166,7 @@ type config struct {
 	username       string
 	password       string
 	command        []string
-	trustedProxies []*net.IPNet
+	trustedProxies []netip.Prefix
 	idleReaper     time.Duration
 	// persistScrollback lets the browser keep recent scrollback in
 	// localStorage so a reloaded/discarded tab resumes with a delta. ON by
@@ -172,7 +178,7 @@ type config struct {
 // than exiting: run owns every failure path, main owns the single exit.
 func loadConfig() (config, error) {
 	c := config{
-		addr:           cmp.Or(envx.String("LISTEN_ADDR"), defaultAddr),
+		addr:           listenAddr(),
 		command:        strings.Fields(cmp.Or(envx.String("SESSION_CMD"), defaultCmd)),
 		workDir:        os.Getenv("WORK_DIR"),
 		username:       cmp.Or(envx.String("AUTH_USERNAME"), defaultUsername),
@@ -233,6 +239,9 @@ func loadConfig() (config, error) {
 // reports failure by returning an error, so no branch can exit past a pending
 // defer.
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "health" {
+		os.Exit(healthCommand(os.Stderr, listenAddr()))
+	}
 	if err := run(); err != nil {
 		// stage is what a log query keys on: a stable value beats prose,
 		// which any message edit would rewrite.
@@ -341,14 +350,13 @@ func run() error {
 		}
 	}
 
-	// webhttp.Ready is the shared serving-state flag. run owns its lifecycle.
-	var ready webhttp.Ready
+	ready := health.NewStatus()
 
 	handler, err := newHandler(&cfg, terminal.SessionHandlers{
 		WS:     mgr.WebSocketHandler(),
 		REST:   mgr.RESTHandler(),
 		Events: mgr.EventsHandler(),
-	}, &ready)
+	}, ready)
 	if err != nil {
 		// The remedy rides inside the error since main renders exactly one
 		// line. This stage is a BUILD defect, not a runtime setting.
@@ -359,13 +367,13 @@ func run() error {
 			" The container will crash-loop under its restart policy until it is rebuilt)", err))
 	}
 
-	// webhttp.NewServer supplies streaming-safe defaults (ReadHeaderTimeout
+	// httpserver.NewServer supplies streaming-safe defaults (ReadHeaderTimeout
 	// 10s, IdleTimeout 120s, no Read/WriteTimeout — either would cap the
 	// hijacked /ws stream's lifetime). WithSlogErrorLog routes net/http's own
 	// connection-level lines into slog at Error, since an accept loop that
 	// can't accept is an outage for a process that exists only to serve this.
-	srv := webhttp.NewServer(handler,
-		webhttp.WithSlogErrorLog(slog.LevelError),
+	srv := httpserver.New(handler,
+		httpserver.WithSlogErrorLog(slog.LevelError),
 	)
 
 	// BaseContext lets run cancel every in-flight request on shutdown: the
@@ -396,19 +404,20 @@ func run() error {
 		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
 	ready.Set(true)
 
-	// webhttp.Run serves on the pre-bound listener and, on ctx cancellation,
+	// httpserver.Run serves on the pre-bound listener and, on ctx cancellation,
 	// runs the pre-drain hook, drains within the grace window, then runs
-	// teardown. The pre-drain hook flips readiness false and cancels
+	// teardown. The pre-drain hook drains the health verdict and cancels
 	// in-flight contexts before the drain starts, so /healthz reports 503
 	// during the window and open SSE streams unblock (see BaseContext above).
-	if err := webhttp.Run(ctx, srv, ln, shutdownSessions,
-		webhttp.WithShutdownGrace(shutdownGrace),
-		webhttp.WithPreDrain(func(context.Context) {
-			ready.Set(false)
+	if err := httpserver.Run(ctx, srv, ln,
+		httpserver.WithTeardown(shutdownSessions),
+		httpserver.WithShutdownGrace(shutdownGrace),
+		httpserver.WithPreDrain(func(context.Context) {
+			ready.BeginDrain()
 			cancelBase()
 			slog.Info("shutting down", "cause", context.Cause(ctx))
 		})); err != nil {
-		// webhttp.Run does not run its teardown on a fatal serve error (it
+		// httpserver.Run does not run its teardown on a fatal serve error (it
 		// returns before the graceful sequence), so this is the only
 		// teardown on this path, with its own budget.
 		tctx, cancelTeardown := context.WithTimeout(context.Background(), shutdownGrace)
@@ -420,21 +429,37 @@ func run() error {
 	return nil
 }
 
+// sessionCreateGate throttles session creation in aggregate, because each
+// admitted POST forks a PTY: a burst of six absorbs a user opening several tabs
+// at once, and one token a second bounds sustained churn. Other methods on the
+// sessions path pass through without spending a token.
+func sessionCreateGate() httpserver.Middleware {
+	return httpserver.RateLimiter(6, time.Second,
+		httpserver.WithRateLimitWhen(func(r *http.Request) bool {
+			return r.Method == http.MethodPost && r.URL.Path == terminal.SessionsPath
+		}),
+		httpserver.WithRateLimitError("rate_limited", "session creation rate exceeded"),
+	)
+}
+
 // newHandler assembles the HTTP handler: the route mux wrapped in the
 // middleware chain (logging, panic recovery, security headers, host
 // allowlist, auth throttle, basic auth, cross-origin protection,
 // canonical-path guard, routes). Session handlers are passed in so a test can
 // exercise routing with stubs and no real PTY. ready gates /healthz.
-func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (http.Handler, error) {
+func newHandler(cfg *config, h terminal.SessionHandlers, ready health.Signal) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// The engine owns its route topology (MountSessionRoutes wires exactly
 	// its documented set), so no engine-internal route reaches this surface
 	// unannounced. The create gate bounds unbounded PTY forking.
 	terminal.MountSessionRoutes(mux, h,
-		terminal.WithCreateGate(webhttp.SessionCreateRateLimit(terminal.SessionsPath)))
-	// 200 when ready, 503 during startup/shutdown; the Docker HEALTHCHECK
-	// target.
-	mux.Handle(healthzPath, webhttp.ReadinessHandler(ready))
+		terminal.WithCreateGate(sessionCreateGate()))
+	mux.Handle("GET "+healthzPath, health.CheckHandler(health.Check{Signal: ready, Reason: reasonNotServing}))
+	// ServeMux answers 405 itself only when no pattern matches, and the "/"
+	// static mount matches every method.
+	mux.HandleFunc(healthzPath, func(w http.ResponseWriter, r *http.Request) {
+		httpserver.MethodNotAllowed(w, r, http.MethodGet, http.MethodHead)
+	})
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -446,7 +471,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 	if err != nil {
 		return nil, fmt.Errorf("apply PERSIST_SCROLLBACK: %w", err)
 	}
-	staticSrv, err := webhttp.StaticHandler(sub, webhttp.WithStaticCacheControl(staticCacheControl))
+	staticSrv, err := httpserver.StaticHandler(sub, httpserver.WithStaticCacheControl(staticCacheControl))
 	if err != nil {
 		return nil, err
 	}
@@ -461,46 +486,50 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready *webhttp.Ready) (
 
 	// Built only when a password is configured; nil skips the Chain entry
 	// rather than a predicate that always returns false.
-	var authMW, authThrottleMW webhttp.Middleware
+	var authMW, authThrottleMW httpserver.Middleware
 	if cfg.password != "" {
 		gate := newBasicAuthGate(cfg.username, cfg.password)
 		// Bounds the guessing RATE against the single static AUTH_PASSWORD:
 		// only a request about to be REFUSED draws a token, so a valid
-		// credential (including the baked healthcheck) is never throttled.
-		authThrottleMW = webhttp.FailedAuthRateLimit(
+		// credential is never throttled.
+		authThrottleMW = exceptHealthz(httpserver.FailedAuthRateLimit(
 			func(r *http.Request) bool { return !gate.presentsValidCredentials(r) },
 			"too many failed authentication attempts. Check the credentials in AUTH_USERNAME/AUTH_PASSWORD",
-		)
-		authMW = gate.middleware
+		))
+		authMW = exceptHealthz(gate.middleware)
 	}
 
 	// Outermost first, nil entries skipped. Recoverer sits inside Logging so
 	// a recovered request logs its 500 rather than the default 200.
-	handler := webhttp.Chain(mux,
-		webhttp.Logging(webhttp.WithLogger(slog.Default()), webhttp.ProbeLogLevel(healthzPath), webhttp.WithClientIP(cfg.trustedProxies...),
+	handler := httpserver.Chain(mux,
+		httpserver.Logging(httpserver.WithLogger(slog.Default()), httpserver.WithProbeLogLevel(healthzPath), httpserver.WithClientIP(cfg.trustedProxies...),
 			// Session-id path segments are the /ws attach capability token;
 			// rewriting the logged path to the matched route template keeps
 			// a live token out of the access log.
-			webhttp.WithTemplatePathsUnder(terminal.SessionsSubtreePath),
+			httpserver.WithTemplatePathsUnder(terminal.SessionsSubtreePath),
 			// A COMPLETED /ws upgrade gets no access line (the handshake
 			// ends the exchange rather than completing it), but every
 			// handshake REFUSAL keeps its record — deliberately not
 			// WithSkipPaths, which would drop those too.
-			webhttp.WithSkipUpgrades(true),
+			httpserver.WithSkipUpgrades(true),
 		),
-		webhttp.Recoverer(webhttp.WithRecoverLogger(slog.Default())),
+		httpserver.Recoverer(httpserver.WithRecoverLogger(slog.Default())),
+		// The default JSON-only type list keeps the SSE stream (text/event-stream)
+		// unbuffered and identity; a /ws 101 is never a compression candidate and
+		// its hijack passes through; StaticHandler's assets arrive already gzipped.
+		httpserver.Gzip(),
 		// Outside the host gate so a rejected Host still leaves a record; see
 		// wsAttachLog.
 		wsAttachLog(cfg.trustedProxies),
-		webhttp.SecurityHeaders(
-			webhttp.WithCSP(cspPolicy),
+		httpserver.SecurityHeaders(
+			httpserver.WithCSP(cspPolicy),
 			// The terminal renders clickable OSC 8 hyperlinks straight out
 			// of untrusted SESSION_CMD output, so a session can be induced
 			// to open an attacker page; COOP severs window.opener
 			// independently of the vendored UI's own rel="noopener".
-			webhttp.WithCOOP("same-origin"),
-			webhttp.WithReferrerPolicy("same-origin"),
-			webhttp.WithPermissionsPolicy("camera=(), microphone=(), geolocation=()"),
+			httpserver.WithCOOP("same-origin"),
+			httpserver.WithReferrerPolicy("same-origin"),
+			httpserver.WithPermissionsPolicy("camera=(), microphone=(), geolocation=()"),
 		),
 		// Precedes basicAuth (a disallowed host never reaches credential
 		// evaluation) and CrossOriginProtection (rebinding makes Origin and
@@ -529,7 +558,7 @@ const (
 )
 
 // staticCacheControl is the per-asset Cache-Control policy for
-// webhttp.StaticHandler. Asset paths arrive normalized, no leading slash.
+// httpserver.StaticHandler. Asset paths arrive normalized, no leading slash.
 //
 // Reading the hash off the NAME rather than trusting the directory is what makes
 // dropping scripts/font-fingerprint.sh degrade to revalidation instead of to a
@@ -571,14 +600,14 @@ const wsAttachMsg = "terminal attach attempt"
 // so without this, presenting the session capability token leaves no record
 // at all (CWE-778). Logged at request start so a rejected Host or an
 // unknown-session close is recorded too.
-func wsAttachLog(trustedProxies []*net.IPNet) webhttp.Middleware {
+func wsAttachLog(trustedProxies []netip.Prefix) httpserver.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == terminal.WSPath && isWebSocketUpgrade(r) {
 				slog.Info(wsAttachMsg,
 					"session", terminal.LogID(terminal.SessionID(r.URL.Query().Get("session"))),
-					"client_ip", webhttp.ClientIP(r, trustedProxies...),
-					"request_id", webhttp.RequestIDFromContext(r.Context()))
+					"client_ip", httpserver.ClientIP(r, trustedProxies...),
+					"request_id", httpserver.RequestIDFromContext(r.Context()))
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -655,11 +684,11 @@ func warnIfPID1() {
 // A portless LISTEN_ADDR is classified as a bare host rather than left
 // unrecognized, so a portless loopback stays silent. Fail-public otherwise.
 func warnIfExposed(addr, password string) {
-	class := webhttp.ClassifyBind(addr)
-	if class == webhttp.BindInvalid {
-		class = webhttp.ClassifyBindHost(addr)
+	class := httpserver.ClassifyBind(addr)
+	if class == httpserver.BindInvalid {
+		class = httpserver.ClassifyBindHost(addr)
 	}
-	if class == webhttp.BindLoopback {
+	if class == httpserver.BindLoopback {
 		return
 	}
 	switch {
@@ -676,12 +705,28 @@ func warnIfExposed(addr, password string) {
 	}
 }
 
+// exceptHealthz lets a request for exactly healthzPath bypass mw, so an uptime
+// prober needs no login and never draws from the failed-login bucket. Another
+// spelling of the path still meets mw, and canonicalPathGuard refuses it after.
+func exceptHealthz(mw httpserver.Middleware) httpserver.Middleware {
+	return func(next http.Handler) http.Handler {
+		guarded := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == healthzPath {
+				next.ServeHTTP(w, r)
+				return
+			}
+			guarded.ServeHTTP(w, r)
+		})
+	}
+}
+
 // basicAuthGate holds the two constant-time verifiers for the configured
 // Basic credential pair. One parse serves both the throttle and the auth
 // check, so they can't drift on how a missing header is read.
 type basicAuthGate struct {
-	verifyUser webhttp.StaticTokenVerifier
-	verifyPass webhttp.StaticTokenVerifier
+	verifyUser httpserver.StaticTokenVerifier
+	verifyPass httpserver.StaticTokenVerifier
 }
 
 // newBasicAuthGate builds the gate, hashing both values once (SHA-256,
@@ -689,8 +734,8 @@ type basicAuthGate struct {
 // sent. An empty configured value fails CLOSED.
 func newBasicAuthGate(username, password string) *basicAuthGate {
 	return &basicAuthGate{
-		verifyUser: webhttp.NewStaticTokenVerifier(username),
-		verifyPass: webhttp.NewStaticTokenVerifier(password),
+		verifyUser: httpserver.NewStaticTokenVerifier(username),
+		verifyPass: httpserver.NewStaticTokenVerifier(password),
 	}
 }
 
@@ -728,20 +773,21 @@ const canonicalPathRefusal = "request path is not canonical. Send the route path
 
 // canonicalPathGuard refuses a request whose path is not the spelling
 // http.ServeMux will route, when the cleaned path falls under one of
-// prefixes. ServeMux answers 307 on a cleaned-path mismatch, and to curl
-// without -L a 307 reads as success — this image's HEALTHCHECK would exit 0
-// having never consulted readiness. Out of scope: the static mount (a
-// browser follows the redirect) and /ws (a 3xx handshake already fails).
-func canonicalPathGuard(prefixes ...string) webhttp.Middleware {
+// prefixes. ServeMux answers 307 on a cleaned-path mismatch, and to a client
+// that does not follow redirects (curl without -L, an uptime monitor) a 307
+// reads as success, so a probe would pass having never consulted readiness.
+// Out of scope: the static mount (a browser follows the redirect) and /ws (a
+// 3xx handshake already fails).
+func canonicalPathGuard(prefixes ...string) httpserver.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// EscapedPath is what ServeMux itself cleans, so this verdict is
 			// exactly "would the mux answer 307 here?" — the decoded
 			// r.URL.Path would also refuse encoded dot segments ServeMux
 			// does not redirect.
-			clean, canonical := webhttp.CanonicalRequestPath(r.URL.EscapedPath())
+			clean, canonical := httpserver.CanonicalRequestPath(r.URL.EscapedPath())
 			if !canonical && pathUnderAny(clean, prefixes) {
-				webhttp.WriteError(w, r, http.StatusBadRequest, "non_canonical_path", canonicalPathRefusal)
+				httpserver.WriteError(w, r, http.StatusBadRequest, "non_canonical_path", canonicalPathRefusal)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -783,14 +829,14 @@ func buildCSPPolicy(sub fs.FS) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("buildCSPPolicy: read index.html: %w", err)
 	}
-	scriptHashes := webhttp.InlineScriptHashes(html)
+	scriptHashes := httpserver.InlineScriptHashes(html)
 	if len(scriptHashes) != 1 {
 		return "", fmt.Errorf(
 			"buildCSPPolicy: want exactly one inline <script> block (the importmap) in index.html, found %d",
 			len(scriptHashes),
 		)
 	}
-	styleHashes := webhttp.InlineStyleHashes(html)
+	styleHashes := httpserver.InlineStyleHashes(html)
 	if len(styleHashes) != 1 {
 		return "", fmt.Errorf(
 			"buildCSPPolicy: want exactly one inline <style> block in index.html, found %d",

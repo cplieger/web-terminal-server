@@ -101,7 +101,7 @@ func (f *memFile) Read(p []byte) (int, error) { return f.r.Read(p) }
 func (f *memFile) Seek(offset int64, whence int) (int64, error) {
 	return f.r.Seek(offset, whence)
 }
-func (f *memFile) Close() error { return nil }
+func (*memFile) Close() error { return nil }
 
 // memInfo is the fs.FileInfo for a memFile. ModTime is the zero time,
 // matching embed.FS: the content-hash ETag is the real validator, and a
@@ -112,9 +112,9 @@ type memInfo struct {
 	size int64
 }
 
-func (i memInfo) Name() string       { return i.name }
-func (i memInfo) Size() int64        { return i.size }
-func (i memInfo) Mode() fs.FileMode  { return 0o444 }
-func (i memInfo) ModTime() time.Time { return time.Time{} }
-func (i memInfo) IsDir() bool        { return false }
-func (i memInfo) Sys() any           { return nil }
+func (i memInfo) Name() string     { return i.name }
+func (i memInfo) Size() int64      { return i.size }
+func (memInfo) Mode() fs.FileMode  { return 0o444 }
+func (memInfo) ModTime() time.Time { return time.Time{} }
+func (memInfo) IsDir() bool        { return false }
+func (memInfo) Sys() any           { return nil }

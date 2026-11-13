@@ -10,7 +10,7 @@ Where the image and a binary built from source differ, this page says so. The im
 
 ## Login
 
-- `AUTH_PASSWORD` turns on HTTP Basic auth. Every route then asks for it, the terminal connection at `/ws` included. Unset, there is no login.
+- `AUTH_PASSWORD` turns on HTTP Basic auth. Every route but `/healthz` then asks for it, the terminal connection at `/ws` included. Unset, there is no login.
 - `AUTH_USERNAME` is the user name for that login. It defaults to `admin` and is used only when `AUTH_PASSWORD` is set.
 
 A password made only of spaces gives almost no protection, and the server warns about it when it listens beyond loopback. Failed logins are rate-limited, and a request with the right password is never slowed.
@@ -20,7 +20,7 @@ A password made only of spaces gives almost no protection, and the server warns 
 `ALLOWED_HOSTS` is a comma-separated list of exact host names and IPs this server answers for. A request with any other `Host` header is refused with `host not allowed`. This is what stops DNS rebinding, explained in [Security](hardening.md#dns-rebinding).
 
 - Write bare names or IPs, such as `localhost,192.0.2.10,term.example.com`. A scheme, a path, a CIDR or a port does not belong here.
-- A request from a loopback client to a loopback host name is always accepted. That keeps the healthcheck and a `curl` on the same host working, while a remote client sending a loopback `Host` is still refused.
+- A request from a loopback client to a loopback host name is always accepted. That keeps the healthcheck and a `curl` on the same host working, while a remote client sending a loopback `Host` is still refused. When `LISTEN_ADDR` names one IP address, a request from that address to that address is accepted too, which is how the healthcheck reaches it. An uptime prober from outside must use a name in the list.
 - A malformed entry is dropped with a warning that gives only the count. If every entry is malformed, the server refuses every request except from loopback.
 - Unset, the server accepts any host name. Without `AUTH_PASSWORD` it then warns at startup that DNS rebinding is open.
 
@@ -39,7 +39,7 @@ A password made only of spaces gives almost no protection, and the server warns 
 
 ## Network and logs
 
-- `LISTEN_ADDR` is the listen address as `host:port`. The image listens on `:7681`, every interface inside the container. A binary built from source defaults to `127.0.0.1:7681`. The healthcheck reads the port from this value and always calls `127.0.0.1`, so changing the port is safe. Naming one interface other than loopback makes the container report `unhealthy` while it serves normally.
+- `LISTEN_ADDR` is the listen address as `host:port`. The image listens on `:7681`, every interface inside the container. A binary built from source defaults to `127.0.0.1:7681`. The healthcheck asks `/healthz` at the host and port this value names, or on `127.0.0.1` when the host part is empty, `0.0.0.0` or `::`, so changing the port or naming one IP address is safe. A host given as a name other than `localhost` must also be in `ALLOWED_HOSTS` when that is set, or the healthcheck is refused and the container reports `unhealthy`.
 - `TRUSTED_PROXIES` is a comma-separated list of reverse-proxy CIDRs or bare IPs, such as `10.0.0.0/8,192.0.2.10`. Only a request from one of them has its `X-Forwarded-For` header read for the access log's `client_ip`. A malformed entry is skipped with a warning. Unset, the log records the direct peer. [How it works](how-it-works.md#logs) has the details.
 - `LOG_LEVEL` is `debug`, `info`, `warn` or `error`, in any case. A level offset such as `warn+1` also works. An unknown value falls back to `info` with a warning. Log timestamps are UTC whatever the container's `TZ`.
 
@@ -55,4 +55,4 @@ Nothing is required. Mount whatever the terminals should reach, and point `WORK_
 
 ## Ports
 
-Port `7681` serves the web page, the terminal API and the terminal connections. Change it with `LISTEN_ADDR`, and the healthcheck follows.
+Port `7681` serves the web page, the terminal API, the terminal connections and `GET /healthz`. Change it with `LISTEN_ADDR`, and the healthcheck follows.

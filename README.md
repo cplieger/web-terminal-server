@@ -84,7 +84,7 @@ Each setting is an environment variable in `compose.yaml`. The server reads them
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `AUTH_PASSWORD` | Password for HTTP Basic auth on every page and terminal connection. Unset means no login. | _(unset)_ |
+| `AUTH_PASSWORD` | Password for HTTP Basic auth on every page and terminal connection. `/healthz` answers without it. Unset means no login. | _(unset)_ |
 | `AUTH_USERNAME` | User name for that login, used only when `AUTH_PASSWORD` is set. | `admin` |
 | `ALLOWED_HOSTS` | Comma-separated host names and IPs you open the terminal at. Any other host name is refused. | _(unset)_ |
 | `WORK_DIR` | The folder each new terminal starts in. It must exist. | _(unset)_ |
@@ -93,7 +93,7 @@ Each setting is an environment variable in `compose.yaml`. The server reads them
 | `PERSIST_SCROLLBACK` | Keep each tab's newest 200 lines in the browser, so a reloaded page fills in faster. `false` turns it off. | `true` |
 | `SCROLLBACK` | Lines of history kept per terminal on the server. | `100000` |
 | `TRUSTED_PROXIES` | Reverse-proxy CIDRs or IPs whose `X-Forwarded-For` the access log trusts to name the real client. | _(unset)_ |
-| `LISTEN_ADDR` | Listen address as `host:port`. Keep the host part empty so the healthcheck can still reach it. | `:7681` |
+| `LISTEN_ADDR` | Listen address as `host:port`. The healthcheck asks the same address, or `127.0.0.1` when the host part is empty. | `:7681` |
 | `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. An unknown value falls back to `info` with a warning. | `info` |
 
 [Configuration](docs/configuration.md) has the details of each setting.
@@ -104,7 +104,7 @@ Each setting is an environment variable in `compose.yaml`. The server reads them
 
 | Port | Description |
 | --- | --- |
-| `7681` | The web page, the terminal API and the terminal connections |
+| `7681` | The web page, the terminal API, the terminal connections and `GET /healthz` for an uptime prober |
 
 ## Security
 
@@ -119,20 +119,25 @@ Whoever passes the login gets a shell inside the container, as root by default. 
 
 ## Troubleshooting
 
-The healthcheck asks `/healthz` on `127.0.0.1` every 30 seconds, after a 15-second start period. It answers `200` once the server listens and `503` while it starts or shuts down. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running.
+An unhealthy container means the server is not answering its health check, or a shutdown has begun. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
 
-- `docker ps` shows `unhealthy` while the page works. `LISTEN_ADDR` names one interface. Keep its host part empty, as in `:7681`.
+- `docker ps` shows `unhealthy` while the page works. `LISTEN_ADDR` names a host name other than `localhost` that `ALLOWED_HOSTS` does not list. Add it to `ALLOWED_HOSTS`, or write the address as an IP.
 - The log warns that the server runs as PID 1. Add `init: true` to the service, or `--init` to `docker run`.
 - The browser shows `host not allowed`. Add that host name to `ALLOWED_HOSTS`.
 - The container stops with `web-terminal-server exited with error`. Its `error` field names the problem and its `stage` field names the step that failed.
 
-[How it works](docs/how-it-works.md) lists every startup stage and what the logs record.
+[How it works](docs/how-it-works.md) lists every startup stage and what the logs record. [Monitoring](docs/monitoring.md) says how to probe the server.
+
+## Monitoring
+
+web-terminal-server serves no metrics and ships no alert rules. The image has a Docker healthcheck, and [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md) explains every setting, the mounts and the ports.
 - [Security](docs/hardening.md) covers the reverse proxy, the lines stored in the browser, hardening and what the image contains.
-- [How it works](docs/how-it-works.md) covers sessions, startup failures, the logs and the healthcheck.
+- [How it works](docs/how-it-works.md) covers sessions, startup failures and the logs.
+- [Monitoring and alerts](docs/monitoring.md) says how to probe the server and who is told when it is down.
 
 ## Credits
 
@@ -146,7 +151,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 This project is built with care and follows security best practices, but it is intended for personal / self-hosted use. No guarantees of fitness for production environments. Use at your own risk.
 
-This project was built with AI-assisted tooling using [Claude](https://claude.com), [GPT](https://openai.com), and [Kiro](https://kiro.dev). The human maintainer defines architecture, supervises implementation, and makes all final decisions.
+This project was built with AI assistance. The human maintainer defines architecture, supervises implementation, and makes all final decisions.
 
 ## License
 
