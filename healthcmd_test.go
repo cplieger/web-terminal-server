@@ -94,10 +94,32 @@ func TestListenAddr_default(t *testing.T) {
 	}
 }
 
-// TestHealthProbe_singleAddressBindAdmitted pins the request the health command
-// sends when LISTEN_ADDR names one non-loopback address: the peer and Host are
-// that address, which ALLOWED_HOSTS does not list, and the probe must still be
-// admitted while another peer naming that Host is not.
+// TestHealthCommand_probesTheNamedAddress serves on 127.0.0.2, which nothing
+// listens on at 127.0.0.1, so a command that ignored the host part of
+// LISTEN_ADDR would fail.
+func TestHealthCommand_probesTheNamedAddress(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("127.0.0.2 is not usable here: %v", err)
+	}
+	var ready health.Status
+	ready.Set(true)
+	srv := httptest.NewUnstartedServer(newTestHandler(t, config{hostPolicy: hostPolicyFor(t, "term.example.com")}, &ready, nil))
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	addr := ln.Addr().String()
+	var out bytes.Buffer
+	if got := healthCommand(&out, addr); got != 0 {
+		t.Fatalf("healthCommand(%q) = %d, want 0 (output %q)", addr, got, out.String())
+	}
+}
+
+// TestHealthProbe_singleAddressBindAdmitted pins the host gate for a bind on
+// one non-loopback address that ALLOWED_HOSTS does not list: a request whose
+// peer and Host are both the bound address is admitted, and another peer naming
+// that Host is refused.
 func TestHealthProbe_singleAddressBindAdmitted(t *testing.T) {
 	var ready health.Status
 	ready.Set(true)
