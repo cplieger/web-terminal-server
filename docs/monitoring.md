@@ -23,7 +23,7 @@ Every access line for `/healthz` is logged at `debug`, whatever its status, beca
 
 | Route | Method | Port | Login | Answers |
 | --- | --- | --- | --- | --- |
-| `/healthz` | `GET`, `HEAD` | `LISTEN_ADDR`, `7681` in the image | none, even with `AUTH_PASSWORD` set. `ALLOWED_HOSTS` applies, except to the image's own `web-terminal-server health` check, unless `LISTEN_ADDR` names a host other than `localhost` | `200 {"status":"ok"}`, or `503 {"status":"unhealthy","reasons":[...]}` |
+| `/healthz` | `GET`, `HEAD` | `LISTEN_ADDR`, `7681` in the image | none, even with `AUTH_PASSWORD` set. `ALLOWED_HOSTS` applies, except to the image's own `web-terminal-server health` check, unless `LISTEN_ADDR` names a host name other than `localhost` | `200 {"status":"ok"}`, or `503 {"status":"unhealthy","reasons":[...]}` |
 
 **What healthy means.** The server is listening and is not shutting down. When a shutdown begins, `/healthz` answers `503` with the reason `starting up or shutting down` until the listener closes. Any other method answers `405`. The answer carries only that verdict, so it needs no login. A prober that still sends the login keeps working. A program that hangs in one tab affects only that tab, with you in front of it. The server answers for every tab, so it stays healthy.
 

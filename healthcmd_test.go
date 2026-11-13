@@ -105,6 +105,7 @@ func TestHealthCommand_probesTheNamedAddress(t *testing.T) {
 	var ready health.Status
 	ready.Set(true)
 	srv := httptest.NewUnstartedServer(newTestHandler(t, config{hostPolicy: hostPolicyFor(t, "term.example.com")}, &ready, nil))
+	_ = srv.Listener.Close()
 	srv.Listener = ln
 	srv.Start()
 	t.Cleanup(srv.Close)

@@ -119,7 +119,7 @@ Whoever passes the login gets a shell inside the container, as root by default. 
 
 ## Troubleshooting
 
-The healthcheck runs `web-terminal-server health` every 30 seconds, which asks `/healthz` at the `LISTEN_ADDR` address whether the server is serving, after a 15-second start period. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
+An unhealthy container means the server is not answering its health check, or a shutdown has begun. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
 
 - `docker ps` shows `unhealthy` while the page works. `LISTEN_ADDR` names a host name other than `localhost` that `ALLOWED_HOSTS` does not list. Add it to `ALLOWED_HOSTS`, or write the address as an IP.
 - The log warns that the server runs as PID 1. Add `init: true` to the service, or `--init` to `docker run`.
