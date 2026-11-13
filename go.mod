@@ -7,7 +7,7 @@ require (
 	github.com/cplieger/go/health/v2 v2.0.0
 	github.com/cplieger/go/httpserver v1.4.0
 	github.com/cplieger/go/slogx v1.1.0
-	github.com/cplieger/web-terminal-engine/v6 v6.5.0-dev.13
+	github.com/cplieger/web-terminal-engine/v6 v6.5.0
 )
 
 require (
