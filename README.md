@@ -9,22 +9,22 @@ web-terminal-server puts a shell in your browser, on a phone or a desktop, runni
 
 ## What it does
 
-Use a terminal on your server from any browser, and pick it up again from any device.
+Use a terminal on your server from any browser, and pick it up on any device.
 
-- Gives each tab its own terminal, with a two-pane split view for two at once.
+- Gives each tab its own terminal, and a split view shows two at once.
 - Works on a phone, with on-screen keys for Tab, Esc, the arrows, Enter and Ctrl.
-- Keeps every terminal running when you close the page, and reopens the same tabs on any device.
-- Names each tab after what runs in it, or after a name you type.
+- Keeps every terminal running when you close the page, and reopens your tabs on any device.
+- Names each tab after what runs in it, or a name you type.
 
 ## Who it is for
 
-web-terminal-server is built for people who want a shell on their own server from a phone or a laptop, with nothing to install on them. Everyone who logs in shares the same tabs, and restarting the container ends them.
+web-terminal-server is built for people who want a shell on their own server from any device, with nothing to install on it. Everyone uses one login and shares the same tabs. Restarting or updating the container ends them.
 
 You need a Docker host, and a private network or a reverse proxy with a login in front of it.
 
-Other tools suit a different setup:
+Other tools suit other setups:
 
-- Consider [ttyd](https://github.com/tsl0922/ttyd) if you want a single command-line tool that shares a terminal, read-only by default.
+- Consider [ttyd](https://github.com/tsl0922/ttyd) if you want a command-line tool that shares a terminal over the web and runs any command you give it, read-only unless you pass `--writable`.
 - Consider [WeTTY](https://github.com/butlerx/wetty) if you want a browser login to SSH on any host.
 - Consider [Web Terminal for Kiro](https://github.com/cplieger/web-terminal-kiro), by the same author, if you want the Kiro agent in each tab.
 
@@ -108,20 +108,20 @@ Each setting is an environment variable in `compose.yaml`. The server reads them
 
 ## Security
 
-Whoever passes the login gets a shell inside the container, as root by default. Treat the port like SSH. The image listens on every interface inside the container, so the published port decides who reaches it.
+Whoever passes the login gets a shell inside the container, as root by default. Treat the port like SSH. [Limiting what a terminal can do](docs/hardening.md#limiting-what-a-terminal-can-do) shows how to start terminals as another user. The image listens on every interface inside the container, so the published port decides who reaches it.
 
 - Set `AUTH_PASSWORD`, or put a reverse proxy with its own login in front. Failed logins are rate-limited.
-- Set `ALLOWED_HOSTS` to the exact names you open it at. With neither it nor a password, a malicious web page can reach even a loopback-only terminal through your browser, a trick called DNS rebinding.
-- Anyone who has a terminal's id in `/ws?session=<id>` can join it. Keep that query string out of your proxy's access log.
+- Set `ALLOWED_HOSTS` to the exact names you open it at. Without either, a malicious web page can use your browser to reach a terminal that answers on the Docker host only. This attack is called DNS rebinding.
+- Without `AUTH_PASSWORD`, a terminal's id in `/ws?session=<id>` lets anyone join it. Keep that query string out of your proxy's access log.
 - The browser keeps each tab's newest 200 lines for up to seven days, readable by anyone using that browser without the password. Set `PERSIST_SCROLLBACK=false` on a shared device.
 
 [Security](docs/hardening.md) covers the reverse proxy, the stored lines, hardening and what the image contains.
 
 ## Troubleshooting
 
-An unhealthy container means the server is not answering its health check, or a shutdown has begun. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
+An unhealthy container means the server is not answering its health check, or a shutdown has begun. Docker does not restart the container for it, so `docker ps` shows `unhealthy` while the container keeps running. Docker health alerts nobody by itself. To be told when the server is down, set up a probe as [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) describes.
 
-- `docker ps` shows `unhealthy` while the page works. `LISTEN_ADDR` names a host name other than `localhost` that `ALLOWED_HOSTS` does not list. Add it to `ALLOWED_HOSTS`, or write the address as an IP.
+- `docker ps` shows `unhealthy` while the page works. This happens when `ALLOWED_HOSTS` is set and `LISTEN_ADDR` names a host name other than `localhost` that the list leaves out. Add that name to `ALLOWED_HOSTS`, or write the address as an IP.
 - The log warns that the server runs as PID 1. Add `init: true` to the service, or `--init` to `docker run`.
 - The browser shows `host not allowed`. Add that host name to `ALLOWED_HOSTS`.
 - The container stops with `web-terminal-server exited with error`. Its `error` field names the problem and its `stage` field names the step that failed.

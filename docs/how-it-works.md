@@ -8,7 +8,9 @@ The server starts one command per tab in a real pseudo-terminal, the same kind a
 
 Tabs live on the server. Closing the page does not stop what runs in them, and reopening it attaches to the same terminals from any device. Tab names and the split-view layout are stored on the server with the tabs, so a reload or another device shows the same arrangement. The terminals are processes inside the container, so stopping or restarting the container ends them.
 
-Each tab has its own page address: the server gives every terminal a random 8-character name, and the page puts the shown tab's name after a `#`. Bookmark it, paste it into another browser tab, or use the back and forward buttons to return to tabs you looked at. With the split view open, the address holds both tabs separated by a comma, and editing it shows any two open tabs side by side without reloading. The names are not passwords and give no access by themselves. A restart gives every new terminal a new name, so an address saved before it no longer matches a tab. Opening one shows the current tab with the notice "That tab is no longer open". The browser tab's title starts with the title of the tab you are looking at, followed by the app's name: `bash · Web Terminal`.
+Each tab has its own page address. The server gives every terminal a random 8-character name, and the page puts the shown tab's name after a `#`. Bookmark it, paste it into another browser tab, or use the back and forward buttons to return to tabs you looked at. With the split view open, the address holds both tabs separated by a comma, and editing it shows any two open tabs side by side without reloading.
+
+The names are not passwords and give no access by themselves. Opening an address shows that tab. Joining the terminal takes its id, and without `AUTH_PASSWORD` that id alone is enough, as [Security](hardening.md#terminal-ids) explains. A restart gives every new terminal a new name, so an address saved before it no longer matches a tab. Opening one shows the current tab with the notice "That tab is no longer open". The browser tab's title starts with the title of the tab you are looking at, followed by the app's name: `bash · Web Terminal`.
 
 ## Why the container needs an init
 
@@ -62,6 +64,6 @@ The image runs `web-terminal-server health` every 30 seconds. It asks `/healthz`
 
 ## What this repository holds
 
-The terminal itself is two shared libraries by the same author, [web-terminal-engine](https://github.com/cplieger/web-terminal-engine), the Go engine and its browser renderer, and [web-terminal-ui](https://github.com/cplieger/web-terminal-ui), the touch-first interface. This repository is two Go files that start each terminal, serve the bundled page and apply the security settings described in [Security](hardening.md).
+The terminal itself is two shared libraries by the same author, [web-terminal-engine](https://github.com/cplieger/web-terminal-engine), the Go engine and its browser renderer, and [web-terminal-ui](https://github.com/cplieger/web-terminal-ui), the touch-first interface. This repository's server is three Go files that start each terminal, serve the bundled page and apply the security settings described in [Security](hardening.md).
 
 Two other apps run on the same engine. [Web Terminal for Kiro](https://github.com/cplieger/web-terminal-kiro) is a touch-first, multi-tab terminal wired to the Kiro CLI, on desktop or phone. [marotte](https://github.com/cplieger/marotte) puts Kiro in your browser as a self-hosted agentic IDE, with chat, a file editor, a terminal and git in one tab.

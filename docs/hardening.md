@@ -34,7 +34,7 @@ A terminal connects at `/ws?session=<id>`. With `AUTH_PASSWORD` set, anyone who 
 
 DNS rebinding reaches even a terminal bound to loopback, through your own browser. A malicious page makes its own host name resolve to this server, and the browser's same-origin checks then pass because the page's origin and the `Host` header agree.
 
-Either of two settings stops it. `ALLOWED_HOSTS` set to the exact names you browse to makes the server refuse every other `Host`. The exceptions are requests the container sends to itself: one from loopback that names a loopback host, and one from the address `LISTEN_ADDR` binds that names that address. The image's health check is one of them. `AUTH_PASSWORD` works too, because the attacker's page cannot present your credentials. The server warns at startup when neither is set.
+Either of two settings stops it. `ALLOWED_HOSTS` set to the exact names you browse to makes the server refuse every other `Host`. Two kinds of request the container sends to itself are the exception. One comes from loopback and names a loopback host, and the other comes from the address `LISTEN_ADDR` binds and names that address. The image's health check is one of them. `AUTH_PASSWORD` works too, because the attacker's page cannot present your credentials. The server warns at startup when neither is set.
 
 ## Lines stored in the browser
 
