@@ -29,7 +29,7 @@ import (
 
 	"github.com/cplieger/go/envx"
 	"github.com/cplieger/go/health/v2"
-	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
 )
@@ -129,6 +129,12 @@ func parseTrustedProxies(key string) []netip.Prefix {
 	return prefixes
 }
 
+// hostRefusal answers a refused Host with the envelope's host_not_allowed code
+// and a message that names the setting an operator changes.
+func hostRefusal(w http.ResponseWriter, r *http.Request, status int, code httpserver.ErrorCode, _ string) {
+	httpserver.WriteError(w, r, status, code, "host not allowed. Add it to ALLOWED_HOSTS to serve this hostname")
+}
+
 // parseAllowedHosts reads the comma-separated ALLOWED_HOSTS list into a
 // httpserver.HostPolicy. Closes the DNS-rebinding hole a same-origin check alone
 // leaves open: rebinding makes Origin and Host agree, so CrossOriginProtection
@@ -137,8 +143,7 @@ func parseTrustedProxies(key string) []netip.Prefix {
 func parseAllowedHosts(key string) *httpserver.HostPolicy {
 	policy, invalid := httpserver.ParseHostList(strings.Split(os.Getenv(key), ","),
 		httpserver.WithLoopbackExempt(true),
-		httpserver.WithHostAllowlistError("host_not_allowed",
-			"host not allowed. Add it to ALLOWED_HOSTS to serve this hostname"))
+		httpserver.WithHostResponder(hostRefusal))
 	if len(invalid) > 0 {
 		// Count-only, like parseTrustedProxies: a mis-expanded variable could
 		// carry a credential.
@@ -386,10 +391,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", cfg.addr)
+	ln, err := httpserver.Listen(ctx, httpserver.ListenSetting{Name: "LISTEN_ADDR", Addr: cfg.addr})
 	if err != nil {
-		return atStage(stageListen, fmt.Errorf("listen on %s: %w", cfg.addr, err))
+		return atStage(stageListen, err)
 	}
 
 	// The effective retained-history depth, resolved for the log: when this

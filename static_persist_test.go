@@ -9,7 +9,7 @@ import (
 	"testing/fstest"
 
 	"github.com/cplieger/go/health/v2"
-	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/httpserver/v2"
 )
 
 // PERSIST_SCROLLBACK reaches the page by a startup byte swap rather than a
