@@ -1,13 +1,13 @@
 package main
 
 import (
-	"cmp"
 	"fmt"
 	"io"
 	"time"
 
 	"github.com/cplieger/go/envx"
 	"github.com/cplieger/go/health/v2/probe"
+	"github.com/cplieger/go/httpserver/v2"
 )
 
 // healthProbeTimeout stays under the image's HEALTHCHECK --timeout=5s, so a hung
@@ -16,7 +16,7 @@ const healthProbeTimeout = 4 * time.Second
 
 // listenAddr is the server's bind address, which the health command also probes.
 func listenAddr() string {
-	return cmp.Or(envx.String("LISTEN_ADDR"), defaultAddr)
+	return httpserver.ListenAddr(envx.String("LISTEN_ADDR"), defaultAddr)
 }
 
 // healthCommand is the image's healthcheck: it asks /healthz on the address

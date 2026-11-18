@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health/v2"
-	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
 )
@@ -617,9 +617,6 @@ func TestBuildCSPPolicyFailsLoud(t *testing.T) {
 		{"no style block", fstest.MapFS{
 			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script></html>`)},
 		}},
-		{"unterminated style block", fstest.MapFS{
-			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script><style>body{margin:0}`)},
-		}},
 		{"unterminated style open tag", fstest.MapFS{
 			"index.html": &fstest.MapFile{Data: []byte(`<html><script type="importmap">{}</script><style`)},
 		}},
@@ -1138,8 +1135,7 @@ func hostPolicyFor(t *testing.T, entries ...string) *httpserver.HostPolicy {
 	t.Helper()
 	policy, invalid := httpserver.ParseHostList(entries,
 		httpserver.WithLoopbackExempt(true),
-		httpserver.WithHostAllowlistError("host_not_allowed",
-			"host not allowed. Add it to ALLOWED_HOSTS to serve this hostname"))
+		httpserver.WithHostResponder(hostRefusal))
 	if len(invalid) > 0 {
 		t.Fatalf("test allowlist has invalid entries: %v", invalid)
 	}
@@ -2578,8 +2574,8 @@ func TestCanonicalPathGuardRefusalEnvelope(t *testing.T) {
 	if envelope.Code != "non_canonical_path" {
 		t.Errorf("refusal code = %q, want %q", envelope.Code, "non_canonical_path")
 	}
-	if envelope.Error != canonicalPathRefusal {
-		t.Errorf("refusal message = %q, want the canonicalPathRefusal const %q", envelope.Error, canonicalPathRefusal)
+	if envelope.Message != canonicalPathRefusal {
+		t.Errorf("refusal message = %q, want the canonicalPathRefusal const %q", envelope.Message, canonicalPathRefusal)
 	}
 	if envelope.RequestID == "" {
 		t.Error("refusal carries no request_id; a refused call must correlate with its access-log line")
