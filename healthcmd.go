@@ -5,7 +5,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/envx/v2"
 	"github.com/cplieger/go/health/v2/probe"
 	"github.com/cplieger/go/httpserver/v2"
 )
