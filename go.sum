@@ -4,8 +4,8 @@ github.com/cplieger/go/envx/v2 v2.0.0-dev.1 h1:wD/C4/xfT68gAKUgWMlb2Ev4A0dGGS3Zz
 github.com/cplieger/go/envx/v2 v2.0.0-dev.1/go.mod h1:8tW2M5tRWGVUD/meU45+zATd4Ir2p6VqpdqCVF+Isoo=
 github.com/cplieger/go/health/v2 v2.0.0 h1:WHZiSYIyvmaFvkohJopPptEg9oW4QxRSV5HUxaeFUKo=
 github.com/cplieger/go/health/v2 v2.0.0/go.mod h1:Dmp78r+0ZHF2xMfOQqZ7c5pBiZF1el3QhLHA1y9um2A=
-github.com/cplieger/go/httpserver/v2 v2.0.0-dev.10 h1:hTa8RA2RVzXAFJA0KkNwkZFS0c6NCcJHirqPahlOazM=
-github.com/cplieger/go/httpserver/v2 v2.0.0-dev.10/go.mod h1:IUzAOZzxsi24r2nK1aTp2uIMi3Y1+67hBcng8bcQj6w=
+github.com/cplieger/go/httpserver/v2 v2.0.0-dev.11 h1:H5T6wcOxEleWVTe5yT1F4feCqCjR71zMFswMGBxM3WQ=
+github.com/cplieger/go/httpserver/v2 v2.0.0-dev.11/go.mod h1:IUzAOZzxsi24r2nK1aTp2uIMi3Y1+67hBcng8bcQj6w=
 github.com/cplieger/go/httpwire v1.0.0-dev.3 h1:vIyRXgrM8REDAxDoAjjXvaO0XXfhWCth4LL5z4xnGx4=
 github.com/cplieger/go/httpwire v1.0.0-dev.3/go.mod h1:69ckU3vd1xrnxjJo47xGeMLDZUAqu4BbF3OFYPCYxF8=
 github.com/cplieger/go/masked v1.0.0-dev.1 h1:Do4+avpvVJP//Jm4LLH1y468Rxrz966dAgESVp/z7wU=
@@ -20,8 +20,8 @@ github.com/cplieger/go/textsafe v1.1.0 h1:D+p7ZDBQmABv/empI2TNMZfvhMXNlfii8E2e5V
 github.com/cplieger/go/textsafe v1.1.0/go.mod h1:x29RmZpMO2yjPt1zRbjtcXWVdkekukl+jA5FN1wXUlI=
 github.com/cplieger/go/urlform v1.2.0 h1:AQkwiRasHq1e57dzpFyrSRZWgp503XNPJ0DikXQLt1E=
 github.com/cplieger/go/urlform v1.2.0/go.mod h1:o7cRPRmslS3o05jpTJHqGKebD4eawAV7rIOB4AdGLao=
-github.com/cplieger/web-terminal-engine/v6 v6.6.0-dev.5 h1:46NJV+8YN+HsmWajdafxtPrn526Gvya+yzOsHSqPk8E=
-github.com/cplieger/web-terminal-engine/v6 v6.6.0-dev.5/go.mod h1:Q9FfHBKIYRzkwHND2f1/psB2MeZtO9CgA8lev7LLx6c=
+github.com/cplieger/web-terminal-engine/v6 v6.6.0-dev.6 h1:sLzxWbTCXYV8S7Kk+2q3rKJqrwkxpDneevI66EM5l/E=
+github.com/cplieger/web-terminal-engine/v6 v6.6.0-dev.6/go.mod h1:Q9FfHBKIYRzkwHND2f1/psB2MeZtO9CgA8lev7LLx6c=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
 golang.org/x/net v0.63.0 h1:HCoTmNh9EpD1PpK8gBNFY4gcTY4N+KQEO8ylfIKqFJ0=
