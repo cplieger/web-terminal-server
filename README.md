@@ -85,6 +85,7 @@ Each setting is an environment variable in `compose.yaml`. The server reads them
 | Variable | Description | Default |
 | --- | --- | --- |
 | `AUTH_PASSWORD` | Password for HTTP Basic auth on every page and terminal connection. `/healthz` answers without it. Unset means no login. | _(unset)_ |
+| `AUTH_PASSWORD_FILE` | Path to a file holding the password, such as a Docker secret. It takes precedence over `AUTH_PASSWORD` and keeps the password out of `docker inspect`. | _(unset)_ |
 | `AUTH_USERNAME` | User name for that login, used only when `AUTH_PASSWORD` is set. | `admin` |
 | `ALLOWED_HOSTS` | Comma-separated host names and IPs you open the terminal at. Any other host name is refused. | _(unset)_ |
 | `WORK_DIR` | The folder each new terminal starts in. It must exist. | _(unset)_ |
