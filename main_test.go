@@ -1136,7 +1136,7 @@ func hostPolicyFor(t *testing.T, entries ...string) *httpserver.HostPolicy {
 	t.Helper()
 	policy, invalid := httpserver.ParseHostList(entries,
 		httpserver.WithLoopbackExempt(true),
-		httpserver.WithHostResponder(hostRefusal))
+		httpserver.WithHostResponder(errorResponder))
 	if len(invalid) > 0 {
 		t.Fatalf("test allowlist has invalid entries: %v", invalid)
 	}
