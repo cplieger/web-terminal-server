@@ -18,7 +18,7 @@ A password made only of spaces gives almost no protection, and the server warns 
 
 ## Host names
 
-`ALLOWED_HOSTS` is a comma-separated list of exact host names and IPs this server answers for. A request with any other `Host` header is refused with `host not allowed`. This is what stops DNS rebinding, explained in [Security](hardening.md#dns-rebinding).
+`ALLOWED_HOSTS` is a comma-separated list of exact host names and IPs this server answers for. A request with any other `Host` header is refused with `403` and the code `host_not_allowed`, whose remediation names `ALLOWED_HOSTS`. This is what stops DNS rebinding, explained in [Security](hardening.md#dns-rebinding).
 
 - Write bare names or IPs, such as `localhost,192.0.2.10,term.example.com`. A scheme, a path, a CIDR or a port does not belong here.
 - A request from a loopback client to a loopback host name is always accepted. That keeps the healthcheck and a `curl` on the same host working, while a remote client sending a loopback `Host` is still refused. When `LISTEN_ADDR` names one IP address, a request from that address to that address is accepted too, which is how the healthcheck reaches it. An uptime prober from outside must use a name in the list.

@@ -62,6 +62,8 @@ The image runs `web-terminal-server health` every 30 seconds. It asks `/healthz`
 - `/api/sessions/events` streams terminal status to the page.
 - `/healthz` reports readiness, answers `GET` and `HEAD` only, and needs no login.
 
+A refusal from the server itself is a JSON body with `code`, `message`, `remediation` and `request_id`: `host_not_allowed` (403), `cross_origin_refused` (403), `rate_limited` (429, too many new terminals at once), `too_many_auth_failures` (429), `non_canonical_path` (400, a path under `/api/sessions` or `/healthz` with an empty, dot or dot-dot segment), `method_not_allowed` (405) and `internal_error` (500). `remediation` says what to change before trying again. Refusals from the terminal routes themselves, such as an unknown terminal id, are still plain text.
+
 ## What this repository holds
 
 The terminal itself is two shared libraries by the same author, [web-terminal-engine](https://github.com/cplieger/web-terminal-engine), the Go engine and its browser renderer, and [web-terminal-ui](https://github.com/cplieger/web-terminal-ui), the touch-first interface. This repository's server is three Go files that start each terminal, serve the bundled page and apply the security settings described in [Security](hardening.md).

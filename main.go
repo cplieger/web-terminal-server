@@ -130,12 +130,6 @@ func parseTrustedProxies(key string) []netip.Prefix {
 	return prefixes
 }
 
-// hostRefusal answers a refused Host with the envelope's host_not_allowed code
-// and a message that names the setting an operator changes.
-func hostRefusal(w http.ResponseWriter, r *http.Request, status int, code httpserver.ErrorCode, _ string) {
-	httpserver.WriteError(w, r, status, code, "host not allowed. Add it to ALLOWED_HOSTS to serve this hostname")
-}
-
 // parseAllowedHosts reads the comma-separated ALLOWED_HOSTS list into a
 // httpserver.HostPolicy. Closes the DNS-rebinding hole a same-origin check alone
 // leaves open: rebinding makes Origin and Host agree, so CrossOriginProtection
@@ -144,7 +138,7 @@ func hostRefusal(w http.ResponseWriter, r *http.Request, status int, code httpse
 func parseAllowedHosts(key string) *httpserver.HostPolicy {
 	policy, invalid := httpserver.ParseHostList(strings.Split(os.Getenv(key), ","),
 		httpserver.WithLoopbackExempt(true),
-		httpserver.WithHostResponder(hostRefusal))
+		httpserver.WithHostResponder(errorResponder))
 	if len(invalid) > 0 {
 		// Count-only, like parseTrustedProxies: a mis-expanded variable could
 		// carry a credential.
@@ -458,6 +452,7 @@ func sessionCreateGate() httpserver.Middleware {
 			return r.Method == http.MethodPost && r.URL.Path == terminal.SessionsPath
 		}),
 		httpserver.WithRateLimitError("rate_limited", "session creation rate exceeded"),
+		httpserver.WithRateLimitResponder(errorResponder),
 	)
 }
 
@@ -532,7 +527,7 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready health.Signal) (h
 			// WithSkipPaths, which would drop those too.
 			httpserver.WithSkipUpgrades(true),
 		),
-		httpserver.Recoverer(httpserver.WithRecoverLogger(slog.Default())),
+		httpserver.Recoverer(httpserver.WithRecoverLogger(slog.Default()), httpserver.WithRecoverResponder(errorResponder)),
 		// The default JSON-only type list keeps the SSE stream (text/event-stream)
 		// unbuffered and identity; a /ws 101 is never a compression candidate and
 		// its hijack passes through; StaticHandler's assets arrive already gzipped.
@@ -726,7 +721,7 @@ func warnIfExposed(addr string, password masked.Secret) {
 
 // crossOrigin refuses an unsafe cross-site write with the cross_origin_refused
 // envelope, where the standard library's guard answers plain text.
-func crossOrigin(next http.Handler) http.Handler { return httpserver.CrossOrigin(next, nil) }
+func crossOrigin(next http.Handler) http.Handler { return httpserver.CrossOrigin(next, errorResponder) }
 
 // exceptHealthz lets a request for exactly healthzPath bypass mw, so an uptime
 // prober needs no login and never draws from the failed-login bucket. Another
@@ -789,10 +784,10 @@ func (g *basicAuthGate) middleware(next http.Handler) http.Handler {
 }
 
 // canonicalPathRefusal is the guard's response message, a const so a test
-// can pin the wording. Echoes no part of the request, since net/http accepts
-// up to MaxHeaderBytes of request line.
-const canonicalPathRefusal = "request path is not canonical. Send the route path exactly, without empty, dot, or dot-dot segments. " +
-	"This route refuses rather than redirecting, because a redirect is a success status to a client without -L."
+// can pin the wording; the catalog's non_canonical_path remediation says what
+// to send instead. Echoes no part of the request, since net/http accepts up
+// to MaxHeaderBytes of request line.
+const canonicalPathRefusal = "request path is not canonical; this route refuses rather than redirecting"
 
 // canonicalPathGuard refuses a request whose path is not the spelling
 // http.ServeMux will route, when the cleaned path falls under one of
@@ -810,7 +805,7 @@ func canonicalPathGuard(prefixes ...string) httpserver.Middleware {
 			// does not redirect.
 			clean, canonical := httpserver.CanonicalRequestPath(r.URL.EscapedPath())
 			if !canonical && pathUnderAny(clean, prefixes) {
-				httpserver.WriteError(w, r, http.StatusBadRequest, "non_canonical_path", canonicalPathRefusal)
+				errorResponder(w, r, http.StatusBadRequest, "non_canonical_path", canonicalPathRefusal)
 				return
 			}
 			next.ServeHTTP(w, r)
