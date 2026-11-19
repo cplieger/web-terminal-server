@@ -11,6 +11,7 @@ Where the image and a binary built from source differ, this page says so. The im
 ## Login
 
 - `AUTH_PASSWORD` turns on HTTP Basic auth. Every route but `/healthz` then asks for it, the terminal connection at `/ws` included. Unset, there is no login.
+- `AUTH_PASSWORD_FILE` names a file holding the password instead, such as a Docker secret, and wins over `AUTH_PASSWORD`. One trailing line ending is removed. A file that cannot be read, or holds nothing, stops the start with an error naming the setting.
 - `AUTH_USERNAME` is the user name for that login. It defaults to `admin` and is used only when `AUTH_PASSWORD` is set.
 
 A password made only of spaces gives almost no protection, and the server warns about it when it listens beyond loopback. Failed logins are rate-limited, and a request with the right password is never slowed.

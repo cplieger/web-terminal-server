@@ -30,6 +30,7 @@ import (
 
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/masked"
 	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
 )
@@ -62,7 +63,7 @@ func setServerEnv(t *testing.T, over map[string]string) {
 	t.Helper()
 	for _, k := range []string{
 		"LISTEN_ADDR", "SESSION_CMD", "WORK_DIR", "SCROLLBACK",
-		"AUTH_USERNAME", "AUTH_PASSWORD", "IDLE_TIMEOUT", "TRUSTED_PROXIES",
+		"AUTH_USERNAME", "AUTH_PASSWORD", "AUTH_PASSWORD_FILE", "IDLE_TIMEOUT", "TRUSTED_PROXIES",
 		"ALLOWED_HOSTS", "PERSIST_SCROLLBACK", "LOG_LEVEL",
 	} {
 		t.Setenv(k, "")
@@ -94,8 +95,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.username != "admin" {
 		t.Errorf("username = %q, want %q", cfg.username, "admin")
 	}
-	if cfg.password != "" {
-		t.Errorf("password = %q, want empty", cfg.password)
+	if !cfg.password.IsZero() {
+		t.Error("password is set, want none")
 	}
 }
 
@@ -296,7 +297,7 @@ func TestWarnIfExposed(t *testing.T) {
 			var buf bytes.Buffer
 			capture.SwapDefault(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
-			warnIfExposed(tc.addr, tc.pass)
+			warnIfExposed(tc.addr, masked.NewSecret(tc.pass))
 
 			gotWarn := buf.Len() > 0
 			if gotWarn != tc.wantWarn {
@@ -789,7 +790,7 @@ func TestHealthzMethods(t *testing.T) {
 // so an uptime prober needs no credential, and a prober that still sends one keeps
 // working. Every other route, and every other spelling of this one, still asks.
 func TestHealthzNeedsNoLogin(t *testing.T) {
-	cfg := config{username: "admin", password: "pw"}
+	cfg := config{username: "admin", password: masked.NewSecret("pw")}
 	get := func(h http.Handler, method, path string, creds *[2]string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, nil)
 		if creds != nil {
@@ -879,7 +880,7 @@ func TestHealthzNeedsNoLogin(t *testing.T) {
 	t.Run("the host allowlist still applies", func(t *testing.T) {
 		var ready health.Status
 		ready.Set(true)
-		h := newTestHandler(t, config{username: "admin", password: "pw", hostPolicy: hostPolicyFor(t, "term.example.com")}, &ready, nil)
+		h := newTestHandler(t, config{username: "admin", password: masked.NewSecret("pw"), hostPolicy: hostPolicyFor(t, "term.example.com")}, &ready, nil)
 		for host, want := range map[string]int{"attacker.evil:7681": http.StatusForbidden, "term.example.com:7681": http.StatusOK} {
 			req := httptest.NewRequest(http.MethodGet, "http://"+host+healthzPath, nil)
 			req.RemoteAddr = "192.168.1.50:44444"
@@ -1216,7 +1217,7 @@ func TestHostAllowlistRunsBeforeBasicAuth(t *testing.T) {
 	ready.Set(true)
 	cfg := config{
 		username:   "admin",
-		password:   "pw",
+		password:   masked.NewSecret("pw"),
 		hostPolicy: hostPolicyFor(t, "term.example.com"),
 	}
 	h := newTestHandler(t, cfg, &ready, nil)
@@ -1863,7 +1864,7 @@ func authThrottleHandler(t *testing.T) func(validCreds bool) *httptest.ResponseR
 	t.Helper()
 	var ready health.Status
 	ready.Set(true)
-	h := newTestHandler(t, config{username: "admin", password: "pw"}, &ready, nil)
+	h := newTestHandler(t, config{username: "admin", password: masked.NewSecret("pw")}, &ready, nil)
 	do := func(validCreds bool) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		if validCreds {
@@ -1953,7 +1954,7 @@ func TestFailedAuthThrottle(t *testing.T) {
 	t.Run("a disallowed Host is 403 and spends no token", func(t *testing.T) {
 		var ready health.Status
 		ready.Set(true)
-		cfg := config{username: "admin", password: "pw", hostPolicy: hostPolicyFor(t, "term.example.com")}
+		cfg := config{username: "admin", password: masked.NewSecret("pw"), hostPolicy: hostPolicyFor(t, "term.example.com")}
 		h := newTestHandler(t, cfg, &ready, nil)
 		get := func(host, pass string) int {
 			req := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
@@ -2110,7 +2111,7 @@ func TestCanonicalPathGuard(t *testing.T) {
 		// about route spelling.
 		var authReady health.Status
 		authReady.Set(true)
-		ah := newTestHandler(t, config{username: "admin", password: "pw"}, &authReady, nil)
+		ah := newTestHandler(t, config{username: "admin", password: masked.NewSecret("pw")}, &authReady, nil)
 		rec := httptest.NewRecorder()
 		ah.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "//healthz", nil))
 		if rec.Code != http.StatusUnauthorized {
@@ -2753,7 +2754,7 @@ func TestCrossOriginProtectionGatesUnsafeMethods(t *testing.T) {
 		t.Fatalf("newHandler() error: %v", err)
 	}
 
-	post := func(origin string) (int, bool) {
+	post := func(origin string) (*httptest.ResponseRecorder, bool) {
 		restHit.Store(false)
 		req := httptest.NewRequest(http.MethodPost, terminal.SessionsPath, nil)
 		req.Host = "term.example.com"
@@ -2763,15 +2764,19 @@ func TestCrossOriginProtectionGatesUnsafeMethods(t *testing.T) {
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		return rec.Code, restHit.Load()
+		return rec, restHit.Load()
 	}
 
-	code, reached := post("https://attacker.example.net")
-	if code != http.StatusForbidden {
-		t.Errorf("cross-origin POST %s = %d, want 403", terminal.SessionsPath, code)
+	refused, reached := post("https://attacker.example.net")
+	if refused.Code != http.StatusForbidden {
+		t.Errorf("cross-origin POST %s = %d, want 403", terminal.SessionsPath, refused.Code)
+	}
+	var envelope httpserver.ErrorResponse
+	if err := json.Unmarshal(refused.Body.Bytes(), &envelope); err != nil || envelope.Code != "cross_origin_refused" || envelope.RequestID == "" {
+		t.Errorf("cross-origin refusal body = %q, want the cross_origin_refused envelope with a request id", refused.Body.String())
 	}
 	if reached {
-		t.Error("cross-origin POST reached the session REST handler; CrossOriginProtection must refuse it")
+		t.Error("cross-origin POST reached the session REST handler; httpserver.CrossOrigin must refuse it")
 	}
 
 	// Same-origin must pass, or the assertion above is satisfied by a layer that refuses
@@ -2868,5 +2873,32 @@ func TestWarnIfPID1StaysSilentUnderAnInit(t *testing.T) {
 
 	if buf.Len() != 0 {
 		t.Errorf("warnIfPID1() warned while not running as PID 1: %s", buf.String())
+	}
+}
+
+// TestLoadConfigReadsAuthPasswordAsASecret pins AUTH_PASSWORD's channels: unset
+// means no login, AUTH_PASSWORD_FILE wins over the variable, and the loaded
+// password never prints.
+func TestLoadConfigReadsAuthPasswordAsASecret(t *testing.T) {
+	setServerEnv(t, nil)
+	cfg, err := loadConfig()
+	if err != nil || !cfg.password.IsZero() {
+		t.Fatalf("unset AUTH_PASSWORD: loadConfig() = (%v, %v), want no password and no error", cfg.password.IsZero(), err)
+	}
+	file := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(file, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUTH_PASSWORD", "from-env")
+	t.Setenv("AUTH_PASSWORD_FILE", file)
+	cfg, err = loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() with AUTH_PASSWORD_FILE: %v", err)
+	}
+	if got := cfg.password.Reveal(); got != "from-file" {
+		t.Errorf("password = %q, want the file's content without its line ending", got)
+	}
+	if s := fmt.Sprint(cfg.password); strings.Contains(s, "from-file") {
+		t.Errorf("fmt prints the password: %q", s)
 	}
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/cplieger/go/envx/v2"
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/masked"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/web-terminal-engine/v6/terminal"
 )
@@ -169,7 +170,7 @@ type config struct {
 	addr           string
 	workDir        string
 	username       string
-	password       string
+	password       masked.Secret
 	command        []string
 	trustedProxies []netip.Prefix
 	idleReaper     time.Duration
@@ -177,6 +178,16 @@ type config struct {
 	// localStorage so a reloaded/discarded tab resumes with a delta. ON by
 	// default; static_persist.go carries the rest.
 	persistScrollback bool
+}
+
+// optionalSecret reads key through envx.Secret, its KEY_FILE companion
+// included; unset is the zero secret, any other failure an error.
+func optionalSecret(key envx.Key) (masked.Secret, error) {
+	v, err := envx.Secret(key)
+	if _, missing := errors.AsType[*envx.MissingError](err); missing {
+		return masked.Secret{}, nil
+	}
+	return v, err
 }
 
 // loadConfig parses and validates the environment. Returns an error rather
@@ -187,7 +198,6 @@ func loadConfig() (config, error) {
 		command:        strings.Fields(cmp.Or(envx.String("SESSION_CMD"), defaultCmd)),
 		workDir:        os.Getenv("WORK_DIR"),
 		username:       cmp.Or(envx.String("AUTH_USERNAME"), defaultUsername),
-		password:       os.Getenv("AUTH_PASSWORD"),
 		trustedProxies: parseTrustedProxies("TRUSTED_PROXIES"),
 		hostPolicy:     parseAllowedHosts("ALLOWED_HOSTS"),
 		// PERSIST_SCROLLBACK is the opt-OUT; see static_persist.go.
@@ -196,6 +206,11 @@ func loadConfig() (config, error) {
 	if len(c.command) == 0 {
 		return config{}, errors.New("SESSION_CMD is empty")
 	}
+	password, err := optionalSecret("AUTH_PASSWORD")
+	if err != nil {
+		return config{}, err
+	}
+	c.password = password
 	// Local sentinel, not a config field: exists only to detect "the operator
 	// said nothing" via applyIntEnv, which writes only when set. Keeping it
 	// out of the struct is what leaves config{}'s zero value meaning "engine
@@ -331,7 +346,7 @@ func run() error {
 	// loopback/LAN bind. AUTH_PASSWORD blocks it (the attacker's page can't
 	// present credentials cross-origin), so only the unauthenticated posture
 	// warrants the warning.
-	if cfg.password == "" && !cfg.hostPolicy.Active() {
+	if cfg.password.IsZero() && !cfg.hostPolicy.Active() {
 		slog.Warn("ALLOWED_HOSTS is unset or blank and no AUTH_PASSWORD is set; any Host header is accepted, leaving DNS rebinding open even on loopback binds",
 			"hint", "set ALLOWED_HOSTS to the exact hostnames/IPs you browse to (e.g. localhost,192.168.1.5,term.example.com), or set AUTH_PASSWORD")
 	}
@@ -405,7 +420,7 @@ func run() error {
 	slog.Info("web-terminal-server listening",
 		"addr", cfg.addr, "cmd", strings.Join(cfg.command, " "),
 		"work_dir", cfg.workDir, "scrollback", scrollbackLines,
-		"auth", cfg.password != "", "idle_reaper", cfg.idleReaper)
+		"auth", !cfg.password.IsZero(), "idle_reaper", cfg.idleReaper)
 	ready.Set(true)
 
 	// httpserver.Run serves on the pre-bound listener and, on ctx cancellation,
@@ -491,8 +506,8 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready health.Signal) (h
 	// Built only when a password is configured; nil skips the Chain entry
 	// rather than a predicate that always returns false.
 	var authMW, authThrottleMW httpserver.Middleware
-	if cfg.password != "" {
-		gate := newBasicAuthGate(cfg.username, cfg.password)
+	if !cfg.password.IsZero() {
+		gate := newBasicAuthGate(cfg.username, cfg.password.Reveal())
 		// Bounds the guessing RATE against the single static AUTH_PASSWORD:
 		// only a request about to be REFUSED draws a token, so a valid
 		// credential is never throttled.
@@ -544,10 +559,10 @@ func newHandler(cfg *config, h terminal.SessionHandlers, ready health.Signal) (h
 		// bucket meant for the real operator).
 		authThrottleMW,
 		authMW,
-		// CrossOriginProtection.Check exempts GET/HEAD/OPTIONS, and a
+		// httpserver.CrossOrigin exempts GET/HEAD/OPTIONS, and a
 		// WebSocket handshake is a GET, so this layer never covers /ws — the
 		// cross-origin gate there is entirely the engine's.
-		http.NewCrossOriginProtection().Handler,
+		crossOrigin,
 		// Innermost: an unauthenticated or cross-origin caller learns
 		// nothing about route spelling.
 		canonicalPathGuard(healthzPath, terminal.SessionsPath),
@@ -687,7 +702,7 @@ func warnIfPID1() {
 //
 // A portless LISTEN_ADDR is classified as a bare host rather than left
 // unrecognized, so a portless loopback stays silent. Fail-public otherwise.
-func warnIfExposed(addr, password string) {
+func warnIfExposed(addr string, password masked.Secret) {
 	class := httpserver.ClassifyBind(addr)
 	if class == httpserver.BindInvalid {
 		class = httpserver.ClassifyBindHost(addr)
@@ -696,18 +711,22 @@ func warnIfExposed(addr, password string) {
 		return
 	}
 	switch {
-	case password == "":
+	case password.IsZero():
 		slog.Warn("listening on a non-loopback address WITHOUT authentication",
 			"addr", addr,
 			"risk", "anyone who can reach this address gets an interactive shell",
 			"fix", "set AUTH_PASSWORD, bind 127.0.0.1, or front with an authenticating reverse proxy")
-	case strings.TrimSpace(password) == "":
+	case strings.TrimSpace(password.Reveal()) == "":
 		slog.Warn("listening on a non-loopback address with a whitespace-only AUTH_PASSWORD",
 			"addr", addr,
 			"risk", "a blank/whitespace password provides negligible protection for a remote shell",
 			"fix", "set a strong AUTH_PASSWORD or front with an authenticating reverse proxy")
 	}
 }
+
+// crossOrigin refuses an unsafe cross-site write with the cross_origin_refused
+// envelope, where the standard library's guard answers plain text.
+func crossOrigin(next http.Handler) http.Handler { return httpserver.CrossOrigin(next, nil) }
 
 // exceptHealthz lets a request for exactly healthzPath bypass mw, so an uptime
 // prober needs no login and never draws from the failed-login bucket. Another

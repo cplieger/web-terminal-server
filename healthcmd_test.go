@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/masked"
 )
 
 // serveOnLoopback serves h on 127.0.0.1 and returns the ":port" listen address
@@ -41,7 +42,7 @@ func TestHealthCommand_readsTheServedVerdict(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var ready health.Status
 			ready.Set(tc.serving)
-			cfg := config{hostPolicy: hostPolicyFor(t, "term.example.com"), username: "admin", password: "pw"}
+			cfg := config{hostPolicy: hostPolicyFor(t, "term.example.com"), username: "admin", password: masked.NewSecret("pw")}
 			addr := serveOnLoopback(t, newTestHandler(t, cfg, &ready, nil))
 
 			var out bytes.Buffer
