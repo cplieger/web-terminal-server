@@ -9,7 +9,7 @@ require (
 	github.com/cplieger/go/httpwire v1.0.0-dev.4
 	github.com/cplieger/go/masked v1.0.0-dev.1
 	github.com/cplieger/go/slogx v1.1.0
-	github.com/cplieger/web-terminal-engine/v6 v6.6.0-dev.6
+	github.com/cplieger/web-terminal-engine/v6 v6.6.0-dev.7
 )
 
 require (
