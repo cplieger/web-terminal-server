@@ -1,7 +1,7 @@
 # check=error=true
 
 # --- Builder: Go server + browser bundle (engine + UI compiled with tsc) ---
-FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS builder
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV GOTOOLCHAIN=auto
@@ -301,7 +301,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
     sh scripts/collect-licenses.sh --name web-terminal-server .
 
 # --- Runtime: minimal Debian with a shell for the default SESSION_CMD ---
-FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
